@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Cursor primary-session detection and lock recognition (Phase 1).
-# Cursor is recognized as a primary harness for lock + supervision protocol.
-# It is not yet a verified crewmate launch adapter.
+# Cursor harness: primary detection/lock plus crewmate spawn hooks and teardown.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -11,6 +9,8 @@ TMP_ROOT=$(fm_test_tmproot fm-cursor-harness)
 HARNESS="$ROOT/bin/fm-harness.sh"
 LOCK="$ROOT/bin/fm-lock.sh"
 RENDER="$ROOT/bin/fm-supervision-instructions.sh"
+SPAWN="$ROOT/bin/fm-spawn.sh"
+TEARDOWN="$ROOT/bin/fm-teardown.sh"
 
 test_detect_cursor_env_marker() {
   local got
@@ -114,11 +114,83 @@ test_supervision_cursor_snippet() {
   assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: cursor" "cursor heading missing"
   assert_contains "$out" "Mode: Cursor foreground checkpoint." "cursor snippet missing"
   assert_contains "$out" "bin/fm-watch-checkpoint.sh" "cursor checkpoint helper missing"
-  assert_contains "$out" "not yet a verified crewmate launch adapter" "cursor snippet missing crewmate caveat"
+  assert_contains "$out" "Workspace Trust dialog" "cursor snippet missing trust guidance"
   assert_not_contains "$out" "Mode: Unknown harness fallback." "cursor fell through to unknown"
   out=$(FM_CURSOR_WATCH_CHECKPOINT=9 "$RENDER" --harness cursor --repair-line)
   assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 9" "cursor repair line missing checkpoint override"
   pass "cursor supervision protocol renders and repairs like a named harness"
+}
+
+make_spawn_fakebin() {
+  local dir=$1 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+esac
+case "${1:-}" in
+  display-message) printf 'firstmate\n'; exit 0 ;;
+  list-windows) exit 0 ;;
+  has-session|new-session|new-window|send-keys|kill-window) exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  printf '%s\n' "$fakebin"
+}
+
+test_cursor_spawn_installs_stop_hook() {
+  local case_dir home proj wt fakebin id out status hook
+  case_dir="$TMP_ROOT/spawn-hook"
+  home="$case_dir/home"
+  proj="$case_dir/project"
+  wt="$case_dir/wt"
+  fakebin=$(make_spawn_fakebin "$case_dir/fake")
+  id="cursor-spawn-x1"
+  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
+  printf 'brief\n' > "$home/data/$id/brief.md"
+  fm_git_worktree "$proj" "$wt" "fm/$id"
+  touch "$home/state/.last-watcher-beat"
+
+  out=$(
+    FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+      FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+      FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+      FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+      PATH="$fakebin:$PATH" \
+      "$SPAWN" "$id" "$proj" cursor 2>&1
+  )
+  status=$?
+  expect_code 0 "$status" "cursor spawn should succeed"
+  assert_contains "$out" "spawned $id harness=cursor" "cursor spawn did not report success"
+  assert_present "$wt/.cursor/hooks.json" "cursor hooks.json was not installed"
+  hook="$wt/.cursor/hooks/fm-turn-end.sh"
+  assert_present "$hook" "cursor turn-end hook script was not installed"
+  assert_grep 'fm-turn-end.sh' "$wt/.cursor/hooks.json" "hooks.json did not point at fm-turn-end.sh"
+  assert_grep '.cursor/' "$(git -C "$wt" rev-parse --git-path info/exclude)" "cursor hook path was not gitignored"
+
+  # Hook should touch the task turn-end marker when Cursor fires stop.
+  printf '%s\n' '{"hook_event_name":"stop","status":"completed","loop_count":0}' | bash "$hook" >/dev/null
+  assert_present "$home/state/$id.turn-ended" "cursor stop hook did not touch turn-ended"
+
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    PATH="$fakebin:$PATH" \
+    "$TEARDOWN" "$id" --force >/dev/null 2>&1 \
+    || fail "cursor teardown failed"
+  assert_absent "$wt/.cursor/hooks.json" "cursor hooks survived teardown"
+  assert_absent "$wt/.cursor/hooks/fm-turn-end.sh" "cursor hook script survived teardown"
+  pass "cursor spawn installs stop hook and teardown removes it"
+}
+
+test_busy_regex_matches_cursor_footer() {
+  local line
+  line='  → Add a follow-up                                             ctrl+c to stop'
+  printf '%s\n' "$line" | grep -qiE 'esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop' \
+    || fail "default busy regex should match cursor ctrl+c to stop footer"
+  pass "busy regex matches cursor mid-turn footer"
 }
 
 test_detect_cursor_env_marker
@@ -128,3 +200,5 @@ test_detect_survives_dash_comm
 test_fm_lock_recognizes_cursor_holder
 test_fm_lock_acquire_finds_cursor
 test_supervision_cursor_snippet
+test_cursor_spawn_installs_stop_hook
+test_busy_regex_matches_cursor_footer

@@ -340,6 +340,14 @@ launch_template() {
     # launch command - it is a Stop-event hook installed below (global hook +
     # per-task pointer), so the template is identical for ship/scout/secondmate.
     grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
+    # cursor (Cursor Agent CLI, verified 2026-07-09 on cursor-agent 2026.07.08):
+    # --force/--yolo auto-approves tool calls (Run Everything). --workspace pins
+    # the worktree. Positional prompt loads the brief. Interactive mode still
+    # shows a one-time Workspace Trust dialog per path (press a, then Enter);
+    # --trust only skips that in --print/headless mode. Turn-end rides a project
+    # .cursor/hooks.json stop hook installed below. Effort is not a separate
+    # CLI flag (model bracket overrides only), so __EFFORTFLAG__ is unused.
+    cursor) printf '%s' 'agent --force --workspace "$(pwd)" __MODELFLAG__"$(cat __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -427,7 +435,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|grok)
+    claude|codex|opencode|pi|grok|cursor)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -468,6 +476,8 @@ effort_flag_for_harness() {
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.
+    # cursor: effort is only available as a model bracket override
+    # (e.g. 'claude-opus-4-8[effort=high]'), not a separate CLI flag.
   esac
 }
 
@@ -896,6 +906,36 @@ EOF
       ;;
     codex*)
       # codex: turn-end rides the launch command via -c notify=[...] and __TURNEND__.
+      ;;
+    cursor*)
+      # Cursor Agent fires a project stop hook at every turn boundary (verified
+      # 2026-07-09, interactive and --print). Install a worktree-local
+      # .cursor/hooks.json + script that touches state/<id>.turn-ended. Keep both
+      # out of git via info/exclude so teardown's dirty check stays clean.
+      mkdir -p "$WT/.cursor/hooks"
+      cat > "$WT/.cursor/hooks/fm-turn-end.sh" <<EOF
+#!/usr/bin/env bash
+set -u
+# Drain stdin JSON from Cursor's stop hook; only the touch matters for firstmate.
+cat >/dev/null
+touch '$TURNEND' 2>/dev/null || true
+printf '%s\n' '{}'
+exit 0
+EOF
+      chmod +x "$WT/.cursor/hooks/fm-turn-end.sh"
+      cat > "$WT/.cursor/hooks.json" <<'EOF'
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": ".cursor/hooks/fm-turn-end.sh"
+      }
+    ]
+  }
+}
+EOF
+      exclude_path '.cursor/'
       ;;
     grok*)
       # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the
