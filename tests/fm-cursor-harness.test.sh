@@ -108,6 +108,43 @@ SH
   pass "fm-lock acquire succeeds when cursor-agent is in the process tree"
 }
 
+test_fm_lock_skips_wrapper_argv_substring() {
+  local home fakebin out holder
+  home="$TMP_ROOT/lock-wrapper"
+  fakebin=$(fm_fakebin "$TMP_ROOT/lock-wrapper-fake")
+  mkdir -p "$home/state"
+  # Ancestry: leaf (this fm-lock process) is a shell wrapper whose argv merely
+  # contains "codex" as a path substring; its parent (pid 9999) is the real
+  # Cursor Agent harness. The wrapper must NOT be recorded as the lock holder.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+pid=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "-p" ] && pid=$a
+  prev=$a
+done
+if [ "$pid" = 9999 ]; then
+  case "$*" in
+    *"comm="*) printf '%s\n' 'agent' ;;
+    *"args="*) printf '%s\n' '/Users/nohj/.local/bin/agent --use-system-ca /x/cursor-agent/y/index.js' ;;
+    *"ppid="*) printf '1\n' ;;
+  esac
+  exit 0
+fi
+case "$*" in
+  *"comm="*) printf '%s\n' 'bash' ;;
+  *"args="*) printf '%s\n' 'bash /opt/tools/codex-helper.sh --run' ;;
+  *"ppid="*) printf '9999\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/ps"
+  out=$(FM_HOME="$home" PATH="$fakebin:$PATH" "$LOCK" 2>&1) || fail "fm-lock acquire failed: $out"
+  holder=$(cat "$home/state/.lock")
+  [ "$holder" = 9999 ] || fail "lock holder should be the real harness (9999), got '$holder' - an intermediate wrapper's argv substring was matched"
+  pass "fm-lock ignores an intermediate wrapper whose argv only contains a harness substring"
+}
+
 test_supervision_cursor_snippet() {
   local out
   out=$("$RENDER" --harness cursor)
@@ -293,6 +330,7 @@ test_detect_cursor_via_args
 test_detect_survives_dash_comm
 test_fm_lock_recognizes_cursor_holder
 test_fm_lock_acquire_finds_cursor
+test_fm_lock_skips_wrapper_argv_substring
 test_supervision_cursor_snippet
 test_cursor_spawn_installs_stop_hook
 test_cursor_spawn_preserves_tracked_cursor_dir
