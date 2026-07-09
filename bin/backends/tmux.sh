@@ -134,19 +134,23 @@ fm_backend_tmux_current_command() {  # <target>
 #   dead    - the foreground command is a bare shell: nothing is running in
 #             the pane, so a prior agent process has exited.
 #   unknown - anything else, INCLUDING a bare "node"/"python" interpreter
-#             name (pi's own launcher execs into a generic "node" process
-#             with no reliable way to attribute it back to pi from outside
-#             the pane - docs/tmux-backend.md "Known gaps"), or an unreadable
-#             pane. Callers must never treat unknown as a confirmed-dead
-#             signal (bin/fm-bootstrap.sh's secondmate-liveness sweep gates a
-#             respawn on `dead` only).
+#             name (pi's own launcher and Cursor Agent's `agent` CLI both exec
+#             into a generic "node" process with no reliable way to attribute
+#             them from outside the pane - docs/tmux-backend.md "Known gaps"),
+#             or an unreadable pane. Callers must never treat unknown as a
+#             confirmed-dead signal (bin/fm-bootstrap.sh's secondmate-liveness
+#             sweep gates a respawn on `dead` only).
 fm_backend_tmux_agent_alive() {  # <target>
   local target=$1 comm
   comm=$(fm_backend_tmux_current_command "$target") || { printf 'unknown'; return 0; }
   comm=${comm#-}
   case "$comm" in
     '') printf 'unknown' ;;
-    *claude*|*codex*|*opencode*|*grok*) printf 'alive' ;;
+    *claude*|*codex*|*opencode*|*grok*|*cursor-agent*) printf 'alive' ;;
+    # Cursor Agent's interactive binary is often bare "agent" (verified
+    # 2026-07-09). Treat that as alive; a random unrelated `agent` binary is
+    # rare in firstmate panes. Bare "node" stays unknown (shared with pi).
+    agent) printf 'alive' ;;
     zsh|bash|sh|dash|ash|ksh|mksh|tcsh|csh|fish) printf 'dead' ;;
     *) printf 'unknown' ;;
   esac
