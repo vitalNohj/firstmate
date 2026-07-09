@@ -102,6 +102,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-config-inherit-lib.sh
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
+# shellcheck source=bin/fm-cursor-hook-lib.sh
+. "$SCRIPT_DIR/fm-cursor-hook-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
 # Skip the watcher guard when re-exec'd for one pair of a batch (FM_SPAWN_NO_GUARD is
@@ -909,33 +911,14 @@ EOF
       ;;
     cursor*)
       # Cursor Agent fires a project stop hook at every turn boundary (verified
-      # 2026-07-09, interactive and --print). Install a worktree-local
-      # .cursor/hooks.json + script that touches state/<id>.turn-ended. Keep both
-      # out of git via info/exclude so teardown's dirty check stays clean.
-      mkdir -p "$WT/.cursor/hooks"
-      cat > "$WT/.cursor/hooks/fm-turn-end.sh" <<EOF
-#!/usr/bin/env bash
-set -u
-# Drain stdin JSON from Cursor's stop hook; only the touch matters for firstmate.
-cat >/dev/null
-touch '$TURNEND' 2>/dev/null || true
-printf '%s\n' '{}'
-exit 0
-EOF
-      chmod +x "$WT/.cursor/hooks/fm-turn-end.sh"
-      cat > "$WT/.cursor/hooks.json" <<'EOF'
-{
-  "version": 1,
-  "hooks": {
-    "stop": [
-      {
-        "command": ".cursor/hooks/fm-turn-end.sh"
-      }
-    ]
-  }
-}
-EOF
-      exclude_path '.cursor/'
+      # 2026-07-09, interactive and --print). Install a worktree-local firstmate
+      # turn-end script + stop-hook entry that touches state/<id>.turn-ended,
+      # scoped to only the firstmate-owned files so the project's own .cursor/
+      # tree is never clobbered. Keep the files firstmate created out of git via
+      # info/exclude so teardown's dirty check stays clean.
+      while IFS= read -r cursor_excl; do
+        [ -n "$cursor_excl" ] && exclude_path "$cursor_excl"
+      done < <(fm_cursor_install_turnend "$WT" "$TURNEND")
       ;;
     grok*)
       # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the

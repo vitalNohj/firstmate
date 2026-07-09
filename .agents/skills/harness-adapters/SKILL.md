@@ -275,8 +275,10 @@ A positional prompt loads the brief.
 | Trust dialog | Interactive mode shows `Workspace Trust Required` on first use of a path; accept with `a` then Enter. Persists under `~/.cursor/projects/<slug>/.workspace-trusted`. `--trust` skips the dialog only in `--print`/headless mode. |
 
 Turn-end hook: Cursor fires a project `stop` hook at every turn boundary (verified interactive and `--print`).
-`fm-spawn` writes `<worktree>/.cursor/hooks.json` plus `<worktree>/.cursor/hooks/fm-turn-end.sh` (gitignored via info/exclude) that drains stdin JSON and `touch`es `state/<id>.turn-ended`.
-`fm-teardown` removes `.cursor/` from the worktree before pool return.
+Install and teardown are scoped to only firstmate-owned files (`bin/fm-cursor-hook-lib.sh`), never the whole `.cursor/` tree, because projects commonly track `.cursor/rules/` and sometimes commit `.cursor/hooks.json`.
+`fm-spawn` writes `<worktree>/.cursor/hooks/fm-turn-end.sh` (drains stdin JSON and `touch`es `state/<id>.turn-ended`) and registers a `stop` entry pointing at it: it creates `<worktree>/.cursor/hooks.json` when the project has none, merges the firstmate entry into an untracked project `hooks.json` (jq, keeping the project's own hooks), and leaves a tracked project `hooks.json` untouched (turn-end then falls back to pane-staleness supervision).
+Files firstmate created are gitignored via info/exclude.
+`fm-teardown` removes only the firstmate turn-end script and a firstmate-created/untracked `hooks.json`, leaves a tracked project `hooks.json` in place, and prunes only empty `.cursor/hooks` and `.cursor` directories.
 
 Primary-session supervision: Codex-shaped foreground checkpoint via `docs/supervision-protocols/cursor.md` and `bin/fm-watch-checkpoint.sh`.
 A Cursor primary stop-guard (`followup_message` port of `fm-turnend-guard`) is not yet installed; pull-based `fm-guard.sh` remains the alarm until that is verified.
