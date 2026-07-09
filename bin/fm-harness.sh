@@ -20,9 +20,8 @@
 # name and is never parsed for a model.
 # Detection layers: verified environment markers first, then process ancestry.
 # Record each newly verified env marker here.
-# cursor is recognized as a PRIMARY session harness (lock + supervision protocol).
-# It is not yet a verified crewmate launch adapter; set config/crew-harness to a
-# verified crewmate harness when the primary is cursor.
+# cursor is recognized as a PRIMARY session harness (lock + supervision protocol)
+# and a verified crewmate launch adapter (fm-spawn.sh has a cursor launch template).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
