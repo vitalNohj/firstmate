@@ -90,6 +90,7 @@ tests/fm-afk-inject-herdr-e2e.test.sh     # real-herdr end-to-end test of the af
 tests/fm-bootstrap.test.sh                # bootstrap dependency, feature-probe, fleet-sync timeout, and crew-dispatch reporting tests
 tests/fm-session-start.test.sh            # fm-session-start.sh: ABSENT vs empty-vs-present digest files, lock-refusal read-only path skipping every mutating step, diagnostics-first section ordering, status-tail bounding, tmux/herdr endpoint liveness, and composition of the real fm-lock/fm-bootstrap/fm-wake-drain scripts
 tests/fm-grok-harness.test.sh             # grok adapter spawn hook, token guard, teardown cleanup, and session-lock detection tests
+tests/fm-cursor-harness.test.sh           # cursor primary detection (CURSOR_AGENT=1), session-lock recognition, basename/-zsh regression, and supervision-protocol rendering
 tests/fm-fleet-sync.test.sh               # project clone refresh: safe detached recovery, STUCK drift reports, benign skips, single-project name resolution, and bootstrap relay
 tests/fm-fleet-snapshot-view.test.sh      # read-only fleet snapshot JSON and Markdown view coverage: stable ordering, current-state vs status-event separation, backlog parsing, scout reports, secondmate return-channel guidance, and operational directory overrides
 tests/fm-x-mode.test.sh                   # X-mode poll, inbox context round-trip, reply threading, dismiss, completion follow-up counters/caps, dry-run preview, and .env-presence activation tests

@@ -81,12 +81,15 @@ if [ -z "$HARNESS" ]; then
 fi
 
 case "$HARNESS" in
-  claude|codex|opencode|pi|grok) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
+  claude|codex|opencode|pi|grok|cursor) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
   *) HARNESS=unknown; SNIPPET="$DOC_DIR/unknown.md" ;;
 esac
 [ -f "$SNIPPET" ] || SNIPPET="$DOC_DIR/unknown.md"
 
 checkpoint_seconds=${FM_CODEX_WATCH_CHECKPOINT:-180}
+if [ "$HARNESS" = cursor ]; then
+  checkpoint_seconds=${FM_CURSOR_WATCH_CHECKPOINT:-${FM_CODEX_WATCH_CHECKPOINT:-180}}
+fi
 pi_ext="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 pi_turnend_ext="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
 x_mode_env="$CONFIG/x-mode.env"
@@ -147,6 +150,9 @@ repair_line() {
       ;;
     grok)
       printf '%s%s\n' "$prefix" 'resume supervision with bin/fm-watch-arm.sh as its own Grok tracked background task, never shell &.'
+      ;;
+    cursor)
+      printf '%s%s%s%s\n' "$prefix" 'resume supervision with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds ' "$checkpoint_seconds" '.'
       ;;
     *)
       printf '%s%s\n' "$prefix" 'resume supervision according to the session-start block for this harness; do not use shell &.'

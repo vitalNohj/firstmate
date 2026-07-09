@@ -44,6 +44,10 @@ On `unknown`, ask the captain instead of guessing.
 A captain override always beats detection.
 When verifying a new adapter, record its env marker and command name in `bin/fm-harness.sh`.
 
+`cursor` is recognized as a PRIMARY session harness only (verified 2026-07-09): env marker `CURSOR_AGENT=1`, lock identity via `cursor-agent` in process args, and supervision protocol `docs/supervision-protocols/cursor.md` (Codex-shaped foreground checkpoint).
+It is not a verified crewmate launch adapter yet - no `fm-spawn` launch template, turn-end hook, busy signature, or interrupt/exit facts.
+When the primary is Cursor, set `config/crew-harness` to a verified crewmate harness such as `claude` or `codex` before spawning without an explicit `--harness`.
+
 For stuck recovery, the target window's harness is recorded as `harness=` in `state/<id>.meta`.
 Use that value for interrupt, exit, resume, and skill-invocation facts.
 
