@@ -182,7 +182,101 @@ test_cursor_spawn_installs_stop_hook() {
     || fail "cursor teardown failed"
   assert_absent "$wt/.cursor/hooks.json" "cursor hooks survived teardown"
   assert_absent "$wt/.cursor/hooks/fm-turn-end.sh" "cursor hook script survived teardown"
+  local excl_file
+  excl_file=$(git -C "$wt" rev-parse --git-path info/exclude)
+  assert_grep '.cursor/hooks.json' "$excl_file" "firstmate hooks.json not scoped in info/exclude"
+  assert_grep '.cursor/hooks/fm-turn-end.sh' "$excl_file" "firstmate hook script not scoped in info/exclude"
+  ! grep -qxF '.cursor/' "$excl_file" || fail "info/exclude still blanket-excludes the whole .cursor/ tree"
   pass "cursor spawn installs stop hook and teardown removes it"
+}
+
+cursor_spawn_task() {
+  # cursor_spawn_task <home> <proj> <wt> <id> <fakebin>: run a cursor crewmate
+  # spawn for an already-created worktree, echoing combined output.
+  local home=$1 proj=$2 wt=$3 id=$4 fakebin=$5
+  FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$proj" cursor 2>&1
+}
+
+cursor_teardown_task() {
+  local home=$1 fakebin=$2 id=$3
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    PATH="$fakebin:$PATH" \
+    "$TEARDOWN" "$id" --force >/dev/null 2>&1
+}
+
+test_cursor_spawn_preserves_tracked_cursor_dir() {
+  local case_dir home proj wt fakebin id excl
+  case_dir="$TMP_ROOT/spawn-preserve"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
+  fakebin=$(make_spawn_fakebin "$case_dir/fake")
+  id="cursor-preserve-x1"
+  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
+  printf 'brief\n' > "$home/data/$id/brief.md"
+  # Project commits its own .cursor/rules and its own .cursor/hooks.json.
+  fm_git_init_commit "$proj"
+  mkdir -p "$proj/.cursor/rules"
+  printf 'keep me\n' > "$proj/.cursor/rules/keep.md"
+  printf '{"version":1,"hooks":{"stop":[{"command":"./project-own.sh"}]}}\n' > "$proj/.cursor/hooks.json"
+  git -C "$proj" add .cursor >/dev/null
+  git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm cursor
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  touch "$home/state/.last-watcher-beat"
+
+  cursor_spawn_task "$home" "$proj" "$wt" "$id" "$fakebin" >/dev/null 2>&1 \
+    || fail "cursor spawn with tracked .cursor should succeed"
+  assert_present "$wt/.cursor/hooks/fm-turn-end.sh" "firstmate hook script not installed"
+  # A tracked project hooks.json is left untouched: firstmate never dirties it.
+  assert_grep 'project-own.sh' "$wt/.cursor/hooks.json" "project hooks.json was clobbered"
+  assert_no_grep 'fm-turn-end.sh' "$wt/.cursor/hooks.json" "firstmate merged into a tracked project hooks.json"
+  excl=$(git -C "$wt" rev-parse --git-path info/exclude)
+  assert_no_grep '.cursor/hooks.json' "$excl" "firstmate excluded a tracked project hooks.json"
+
+  cursor_teardown_task "$home" "$fakebin" "$id" || fail "cursor teardown failed"
+  assert_present "$wt/.cursor/rules/keep.md" "teardown destroyed the project's .cursor/rules"
+  assert_present "$wt/.cursor/hooks.json" "teardown deleted the project's tracked hooks.json"
+  assert_grep 'project-own.sh' "$wt/.cursor/hooks.json" "teardown corrupted the project's tracked hooks.json"
+  assert_absent "$wt/.cursor/hooks/fm-turn-end.sh" "firstmate hook script survived teardown"
+  pass "cursor spawn/teardown preserves a project's tracked .cursor/ content"
+}
+
+test_cursor_spawn_merges_untracked_hooks_json() {
+  local case_dir home proj wt fakebin id hook
+  command -v jq >/dev/null 2>&1 || { pass "cursor untracked-hooks.json merge (skipped: jq unavailable)"; return; }
+  case_dir="$TMP_ROOT/spawn-merge"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
+  fakebin=$(make_spawn_fakebin "$case_dir/fake")
+  id="cursor-merge-x1"
+  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
+  printf 'brief\n' > "$home/data/$id/brief.md"
+  fm_git_init_commit "$proj"
+  mkdir -p "$proj/.cursor/rules"
+  printf 'keep me\n' > "$proj/.cursor/rules/keep.md"
+  git -C "$proj" add .cursor >/dev/null
+  git -C "$proj" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm rules
+  git -C "$proj" worktree add --quiet -b "fm/$id" "$wt"
+  # A dev-local, UNTRACKED hooks.json already present in the worktree.
+  printf '{"version":1,"hooks":{"stop":[{"command":"./dev-local.sh"}]}}\n' > "$wt/.cursor/hooks.json"
+  touch "$home/state/.last-watcher-beat"
+
+  cursor_spawn_task "$home" "$proj" "$wt" "$id" "$fakebin" >/dev/null 2>&1 \
+    || fail "cursor spawn with untracked hooks.json should succeed"
+  hook="$wt/.cursor/hooks/fm-turn-end.sh"
+  assert_present "$hook" "firstmate hook script not installed"
+  # Merge keeps the project's own hook and adds firstmate's.
+  assert_grep 'dev-local.sh' "$wt/.cursor/hooks.json" "merge dropped the project's own hook"
+  assert_grep 'fm-turn-end.sh' "$wt/.cursor/hooks.json" "merge did not add firstmate's stop hook"
+  printf '%s\n' '{"hook_event_name":"stop"}' | bash "$hook" >/dev/null
+  assert_present "$home/state/$id.turn-ended" "merged cursor stop hook did not fire"
+
+  cursor_teardown_task "$home" "$fakebin" "$id" || fail "cursor teardown failed"
+  assert_present "$wt/.cursor/rules/keep.md" "teardown destroyed the project's .cursor/rules"
+  assert_absent "$wt/.cursor/hooks/fm-turn-end.sh" "firstmate hook script survived teardown"
+  pass "cursor spawn merges into an untracked hooks.json and teardown spares tracked content"
 }
 
 test_busy_regex_matches_cursor_footer() {
@@ -201,4 +295,6 @@ test_fm_lock_recognizes_cursor_holder
 test_fm_lock_acquire_finds_cursor
 test_supervision_cursor_snippet
 test_cursor_spawn_installs_stop_hook
+test_cursor_spawn_preserves_tracked_cursor_dir
+test_cursor_spawn_merges_untracked_hooks_json
 test_busy_regex_matches_cursor_footer
