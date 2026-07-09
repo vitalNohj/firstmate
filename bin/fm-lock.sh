@@ -29,8 +29,19 @@ comm_base() {
 looks_like_harness() {  # <comm> <args>
   local base
   base=$(comm_base "$1")
+  # 1. comm names the harness binary directly (claude, codex, opencode, grok, pi, cursor).
   printf '%s' "$base" | grep -qE "$HARNESS_RE" && return 0
-  printf '%s' "$2" | grep -qE "$HARNESS_RE"
+  # 2. Bare interpreter running a harness script (e.g. node .../claude/cli.js):
+  #    match the harness name in argv. Gated to interpreters so an intermediate
+  #    wrapper whose argv merely contains a harness substring is never mistaken
+  #    for the harness itself.
+  case "$base" in
+    node|node[0-9]*|python|python[0-9]*|deno|bun)
+      printf '%s' "$2" | grep -qE "$HARNESS_RE" && return 0 ;;
+  esac
+  # 3. Cursor Agent: the binary is the generic "agent" and macOS truncates comm,
+  #    so the only reliable, unambiguous signal is the cursor-agent argv marker.
+  printf '%s' "$2" | grep -qE 'cursor-agent'
 }
 
 harness_pid() {
