@@ -14,21 +14,33 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 LOCK="$STATE/.lock"
 mkdir -p "$STATE"
 
-# Known harness command names; extend when a new adapter is verified.
-HARNESS_RE='claude|codex|opencode|grok|^pi$'
+# Known harness command names / argv markers; extend when a new adapter is verified.
+# cursor-agent matches Cursor Agent argv (the binary is often bare "agent", which
+# is too ambiguous alone). Do not use basename(1): macOS basename treats a
+# leading dash in the operand as options (basename -zsh -> illegal -z).
+HARNESS_RE='claude|codex|opencode|grok|^pi$|cursor-agent|^cursor$'
+
+comm_base() {
+  local c=$1
+  c=${c##*/}
+  printf '%s\n' "$c"
+}
+
+looks_like_harness() {  # <comm> <args>
+  local base
+  base=$(comm_base "$1")
+  printf '%s' "$base" | grep -qE "$HARNESS_RE" && return 0
+  printf '%s' "$2" | grep -qE "$HARNESS_RE"
+}
 
 harness_pid() {
   local pid=$$ comm args
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
     args=$(ps -o args= -p "$pid" 2>/dev/null)
-    if printf '%s' "$(basename "$comm")" | grep -qE "$HARNESS_RE"; then
+    if looks_like_harness "$comm" "$args"; then
       echo "$pid"; return 0
     fi
-    # Bare interpreter (e.g. node): match the harness name in its script path.
-    case "$comm" in
-      *node*|*python*) printf '%s' "$args" | grep -qE "$HARNESS_RE" && { echo "$pid"; return 0; } ;;
-    esac
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
     [ -n "$pid" ] && [ "$pid" -gt 1 ] || return 1
   done
@@ -36,10 +48,11 @@ harness_pid() {
 }
 
 holder_alive() {  # true if $1 is a live process that looks like a harness
-  local pid=$1 comm
+  local pid=$1 comm args
   kill -0 "$pid" 2>/dev/null || return 1
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  printf '%s' "$(basename "$comm") $(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$HARNESS_RE"
+  args=$(ps -o args= -p "$pid" 2>/dev/null)
+  looks_like_harness "$comm" "$args"
 }
 
 if [ "${1:-}" = "status" ]; then

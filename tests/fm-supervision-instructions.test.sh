@@ -107,6 +107,17 @@ test_pi_snippet_uses_effective_extension_path() {
   pass "pi supervision snippet renders the effective extension path"
 }
 
+test_cursor_is_foreground_checkpoint() {
+  local out
+  out=$("$RENDER" --harness cursor)
+  assert_contains "$out" "Mode: Cursor foreground checkpoint." "cursor snippet missing"
+  assert_contains "$out" "bin/fm-watch-checkpoint.sh" "cursor checkpoint helper missing"
+  assert_contains "$out" "not yet a verified crewmate launch adapter" "cursor snippet missing crewmate caveat"
+  out=$(FM_CURSOR_WATCH_CHECKPOINT=11 "$RENDER" --harness cursor --repair-line)
+  assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 11" "cursor repair line did not honor FM_CURSOR_WATCH_CHECKPOINT"
+  pass "cursor supervision is Codex-shaped foreground checkpoint"
+}
+
 test_selected_harness_block_only
 test_unknown_fallback
 test_conditional_stanzas
@@ -114,3 +125,4 @@ test_repair_lines
 test_grok_is_background_notify
 test_grok_command_sources_effective_config
 test_pi_snippet_uses_effective_extension_path
+test_cursor_is_foreground_checkpoint
