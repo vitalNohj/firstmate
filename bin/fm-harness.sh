@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|grok|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|grok|cursor|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -20,12 +20,24 @@
 # name and is never parsed for a model.
 # Detection layers: verified environment markers first, then process ancestry.
 # Record each newly verified env marker here.
+# cursor is recognized as a PRIMARY session harness (lock + supervision protocol).
+# It is not yet a verified crewmate launch adapter; set config/crew-harness to a
+# verified crewmate harness when the primary is cursor.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+
+# Strip a leading path without calling basename(1). macOS basename treats a
+# leading dash in the operand as options (e.g. basename -zsh -> illegal -z),
+# and ps -o comm= can truncate long paths so the trailing name is lost.
+comm_base() {
+  local c=$1
+  c=${c##*/}
+  printf '%s\n' "$c"
+}
 
 detect_own() {
   # Layer 1: environment markers for verified harnesses.
@@ -35,26 +47,41 @@ detect_own() {
   # It does NOT set CLAUDECODE despite being Claude-Code-compatible, so this marker
   # is unambiguous when firstmate runs natively on grok.
   [ "${GROK_AGENT:-}" = "1" ] && { echo grok; return; }
-  # Layer 2: walk the parent chain and match the command name.
-  local pid=$$ comm args
+  # Cursor Agent sets CURSOR_AGENT=1 for its tool/shell children (verified
+  # 2026-07-09 on cursor-agent 2026.07.08). Prefer the env marker over ancestry
+  # because macOS truncates ps -o comm= and the binary is often named bare
+  # "agent", which is too ambiguous to match alone.
+  [ "${CURSOR_AGENT:-}" = "1" ] && { echo cursor; return; }
+  # Layer 2: walk the parent chain and match the command name / args.
+  local pid=$$ comm args base
   for _ in 1 2 3 4 5 6 7 8; do
     comm=$(ps -o comm= -p "$pid" 2>/dev/null) || break
-    case "$(basename "$comm")" in
+    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    base=$(comm_base "$comm")
+    case "$base" in
       *claude*) echo claude; return ;;
       *codex*) echo codex; return ;;
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
       pi) echo pi; return ;;
+      *cursor-agent*|cursor) echo cursor; return ;;
+    esac
+    # Cursor Agent's binary is often bare "agent" with a truncated macOS comm=;
+    # the unambiguous signal is cursor-agent in the argv path.
+    case "$args" in
+      *cursor-agent*) echo cursor; return ;;
+    esac
+    # Bare interpreter: match the harness name in its script path.
+    case "$base" in
       node*|python*)
-        # Bare interpreter: match the harness name in its script path.
-        args=$(ps -o args= -p "$pid" 2>/dev/null)
         case "$args" in
           *claude*) echo claude; return ;;
           *codex*) echo codex; return ;;
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;
           *" pi "*|*/pi) echo pi; return ;;
-        esac ;;
+        esac
+        ;;
     esac
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
     if [ -z "$pid" ] || [ "$pid" -le 1 ]; then
