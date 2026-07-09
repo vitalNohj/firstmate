@@ -112,7 +112,7 @@ test_cursor_is_foreground_checkpoint() {
   out=$("$RENDER" --harness cursor)
   assert_contains "$out" "Mode: Cursor foreground checkpoint." "cursor snippet missing"
   assert_contains "$out" "bin/fm-watch-checkpoint.sh" "cursor checkpoint helper missing"
-  assert_contains "$out" "not yet a verified crewmate launch adapter" "cursor snippet missing crewmate caveat"
+  assert_contains "$out" "Workspace Trust dialog" "cursor snippet missing trust-dialog peek guidance"
   out=$(FM_CURSOR_WATCH_CHECKPOINT=11 "$RENDER" --harness cursor --repair-line)
   assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 11" "cursor repair line did not honor FM_CURSOR_WATCH_CHECKPOINT"
   pass "cursor supervision is Codex-shaped foreground checkpoint"

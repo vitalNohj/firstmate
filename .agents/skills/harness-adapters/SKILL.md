@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, and grok.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, grok, and cursor.
 user-invocable: false
 metadata:
   internal: true
@@ -43,10 +43,6 @@ If the captain asks for a new harness, propose verifying it first: spawn a trivi
 On `unknown`, ask the captain instead of guessing.
 A captain override always beats detection.
 When verifying a new adapter, record its env marker and command name in `bin/fm-harness.sh`.
-
-`cursor` is recognized as a PRIMARY session harness only (verified 2026-07-09): env marker `CURSOR_AGENT=1`, lock identity via `cursor-agent` in process args, and supervision protocol `docs/supervision-protocols/cursor.md` (Codex-shaped foreground checkpoint).
-It is not a verified crewmate launch adapter yet - no `fm-spawn` launch template, turn-end hook, busy signature, or interrupt/exit facts.
-When the primary is Cursor, set `config/crew-harness` to a verified crewmate harness such as `claude` or `codex` before spawning without an explicit `--harness`.
 
 For stuck recovery, the target window's harness is recorded as `harness=` in `state/<id>.meta`.
 Use that value for interrupt, exit, resume, and skill-invocation facts.
@@ -256,3 +252,34 @@ The adapter therefore runs the shared predicate and, when it returns 2, forces o
 It does not pass `--permission-mode`, so the passive hook cannot escalate the primary session's tool permissions.
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol is Claude-shaped background-notify around `bin/fm-watch-arm.sh`; the passive Stop hook is only a backstop for blind turn ends.
+
+## cursor (VERIFIED 2026-07-09, cursor-agent 2026.07.08-0c04a8a)
+
+Cursor Agent CLI (`agent` / `cursor-agent`).
+Launch: `agent --force --workspace "$(pwd)" "$(cat <brief>)"`.
+`--force` / `--yolo` is Run Everything (auto-approve tools).
+`--workspace` pins the worktree.
+A positional prompt loads the brief.
+
+| Fact | Value |
+|---|---|
+| Busy-pane signature | `ctrl+c to stop` (shown while a turn runs, beside `→ Add a follow-up`). Mid-turn status line also shows braille + `Working`. Prefer the ASCII stop hint for `FM_BUSY_REGEX`. |
+| Exit command | `/exit` (verified to end the interactive session). Double Ctrl+C also exits (`Press Ctrl+C again to exit` after the first interrupt). |
+| Interrupt | single Ctrl+C (footer shows `ctrl+c to stop` mid-turn). Esc was not verified as interrupt. |
+| Skill invocation | `/skills` opens skill discovery; natural language also works. `/no-mistakes` form not yet end-to-end verified on Cursor. |
+| Autonomy | `--force` / `--yolo` (footer shows `Run Everything`). |
+| Env marker | `CURSOR_AGENT=1`, set for child/tool processes. |
+| Model flag | `--model <model>` (supports bracket overrides such as `claude-opus-4-8[effort=high]`). |
+| Effort flag | none as a separate CLI flag; use model bracket overrides when needed. |
+| Resume | `agent --resume [chatId]` or `agent --continue`. |
+| Trust dialog | Interactive mode shows `Workspace Trust Required` on first use of a path; accept with `a` then Enter. Persists under `~/.cursor/projects/<slug>/.workspace-trusted`. `--trust` skips the dialog only in `--print`/headless mode. |
+
+Turn-end hook: Cursor fires a project `stop` hook at every turn boundary (verified interactive and `--print`).
+`fm-spawn` writes `<worktree>/.cursor/hooks.json` plus `<worktree>/.cursor/hooks/fm-turn-end.sh` (gitignored via info/exclude) that drains stdin JSON and `touch`es `state/<id>.turn-ended`.
+`fm-teardown` removes `.cursor/` from the worktree before pool return.
+
+Primary-session supervision: Codex-shaped foreground checkpoint via `docs/supervision-protocols/cursor.md` and `bin/fm-watch-checkpoint.sh`.
+A Cursor primary stop-guard (`followup_message` port of `fm-turnend-guard`) is not yet installed; pull-based `fm-guard.sh` remains the alarm until that is verified.
+
+Tmux agent-liveness: interactive Cursor often shows bare `node` or `agent` as `pane_current_command`.
+`fm_backend_tmux_agent_alive` treats `agent` / `*cursor-agent*` as alive; bare `node` stays `unknown` (same gap as pi).
