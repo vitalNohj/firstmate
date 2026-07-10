@@ -257,7 +257,9 @@ Grok's primary watcher protocol is Claude-shaped background-notify around `bin/f
 ## cursor (VERIFIED 2026-07-09, cursor-agent 2026.07.08-0c04a8a)
 
 Cursor Agent CLI (`agent` / `cursor-agent`).
-Launch: `agent --force --workspace "$(pwd)" "$(cat <brief>)"`.
+Launch: `cursor-agent --force --workspace "$(pwd)" "$(cat <brief>)"`.
+Prefer the `cursor-agent` binary, never bare `agent`: Cursor installs both names and other CLIs (Grok) can also own `agent` on PATH, so a bare-`agent` launch can silently run the wrong tool.
+`fm-spawn` resolves the launch binary through `fm_cursor_launch_bin` (`bin/fm-cursor-hook-lib.sh`): it always prefers `cursor-agent` when present, and falls back to bare `agent` only when `cursor-agent` is absent and `agent` is verified to be Cursor (`CURSOR_INVOKED_AS`, a resolved cursor-agent path, or a `--version` fingerprint); it aborts the spawn if neither resolves.
 `--force` / `--yolo` is Run Everything (auto-approve tools).
 `--workspace` pins the worktree.
 A positional prompt loads the brief.

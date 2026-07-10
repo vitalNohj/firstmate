@@ -14,6 +14,61 @@ FM_CURSOR_HOOK_SCRIPT_REL='.cursor/hooks/fm-turn-end.sh'
 FM_CURSOR_HOOKS_JSON_REL='.cursor/hooks.json'
 FM_CURSOR_HOOK_COMMAND='.cursor/hooks/fm-turn-end.sh'
 
+# fm_cursor_realpath <path>
+# Best-effort resolution of a possibly-symlinked binary path, portable to macOS
+# where readlink -f is absent. Follows a bounded number of symlink hops and
+# prints the resolved path (the input unchanged when it is not a symlink).
+fm_cursor_realpath() {
+  local p=$1 target i=0
+  while [ -L "$p" ] && [ "$i" -lt 10 ]; do
+    target=$(readlink "$p") || break
+    case "$target" in
+      /*) p=$target ;;
+      *) p="$(dirname "$p")/$target" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s\n' "$p"
+}
+
+# fm_cursor_agent_is_cursor
+# Return 0 when the bare `agent` binary currently on PATH is Cursor Agent rather
+# than a name collision (Grok also installs an `agent`). Checks, cheapest first:
+# the Cursor launcher env marker CURSOR_INVOKED_AS; the resolved binary path
+# mentioning cursor-agent (the common install symlinks agent -> a cursor-agent
+# path); and finally a --version fingerprint that names cursor. This mirrors the
+# cursor-agent signal that primary detection keys on (bin/fm-harness.sh).
+fm_cursor_agent_is_cursor() {
+  local bin resolved
+  bin=$(command -v agent 2>/dev/null) || return 1
+  [ -n "${CURSOR_INVOKED_AS:-}" ] && return 0
+  resolved=$(fm_cursor_realpath "$bin")
+  case "$resolved" in *cursor-agent*) return 0 ;; esac
+  case "$bin" in *cursor-agent*) return 0 ;; esac
+  "$bin" --version 2>/dev/null | grep -qi cursor && return 0
+  return 1
+}
+
+# fm_cursor_launch_bin
+# Print the binary firstmate should launch a Cursor crewmate with, matching the
+# robustness of primary Cursor detection. ALWAYS prefer cursor-agent when it is
+# on PATH, so a colliding bare `agent` (Grok, or anything else that owns the
+# ambiguous name) can never be chosen ahead of the unambiguous cursor-agent.
+# Fall back to bare `agent` only when cursor-agent is absent AND `agent` is
+# verified to be Cursor. Returns non-zero, printing nothing, when neither is
+# resolvable so the caller can abort the spawn rather than launch the wrong CLI.
+fm_cursor_launch_bin() {
+  if command -v cursor-agent >/dev/null 2>&1; then
+    printf '%s\n' cursor-agent
+    return 0
+  fi
+  if command -v agent >/dev/null 2>&1 && fm_cursor_agent_is_cursor; then
+    printf '%s\n' agent
+    return 0
+  fi
+  return 1
+}
+
 # fm_cursor_write_fresh_hooks_json <hooks.json path>
 # Writes a minimal firstmate-only hooks.json registering the turn-end stop hook.
 fm_cursor_write_fresh_hooks_json() {

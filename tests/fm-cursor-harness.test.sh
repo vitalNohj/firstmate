@@ -6,6 +6,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-cursor-harness)
+# shellcheck source=bin/fm-cursor-hook-lib.sh
+. "$ROOT/bin/fm-cursor-hook-lib.sh"
 HARNESS="$ROOT/bin/fm-harness.sh"
 LOCK="$ROOT/bin/fm-lock.sh"
 RENDER="$ROOT/bin/fm-supervision-instructions.sh"
@@ -170,12 +172,19 @@ esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
-  has-session|new-session|new-window|send-keys|kill-window) exit 0 ;;
+  send-keys)
+    # Log the literal launch payload so tests can assert the resolved binary.
+    [ -n "${FM_FAKE_SENDLOG:-}" ] && printf '%s\n' "$*" >> "$FM_FAKE_SENDLOG"
+    exit 0 ;;
+  has-session|new-session|new-window|kill-window) exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
   fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  # A real cursor-agent so the spawn's launch-binary resolution succeeds
+  # hermetically instead of depending on the host having Cursor installed.
+  fm_fake_exit0 "$fakebin" cursor-agent
   printf '%s\n' "$fakebin"
 }
 
@@ -316,6 +325,97 @@ test_cursor_spawn_merges_untracked_hooks_json() {
   pass "cursor spawn merges into an untracked hooks.json and teardown spares tracked content"
 }
 
+# fake_cursor_agent <fakebin>: a cursor-agent stub whose name alone is the
+# unambiguous Cursor signal. fake_grok_agent <fakebin>: a bare `agent` that is
+# NOT Cursor (its --version fingerprints as grok), the PATH-collision case.
+fake_cursor_agent() {
+  fm_fake_exit0 "$1" cursor-agent
+}
+fake_grok_agent() {
+  cat > "$1/agent" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf 'grok agent 1.2.3\n'; exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$1/agent"
+}
+
+test_cursor_launch_bin_prefers_cursor_agent() {
+  local fakebin got
+  fakebin=$(fm_fakebin "$TMP_ROOT/launch-prefer")
+  # A non-Cursor `agent` (Grok collision) AND cursor-agent both on PATH: the
+  # unambiguous cursor-agent must win, never the bare agent.
+  fake_grok_agent "$fakebin"
+  fake_cursor_agent "$fakebin"
+  got=$(CURSOR_INVOKED_AS='' CURSOR_AGENT='' PATH="$fakebin:/usr/bin:/bin" bash -c '. "'"$ROOT"'/bin/fm-cursor-hook-lib.sh"; fm_cursor_launch_bin') \
+    || fail "resolver failed when cursor-agent is present"
+  [ "$got" = cursor-agent ] || fail "resolver should prefer cursor-agent, got '$got'"
+  pass "cursor launch resolver prefers cursor-agent over a colliding bare agent"
+}
+
+test_cursor_launch_bin_falls_back_to_verified_agent() {
+  local fakebin got
+  fakebin=$(fm_fakebin "$TMP_ROOT/launch-fallback")
+  # No cursor-agent; a bare `agent` verified as Cursor via --version fingerprint.
+  cat > "$fakebin/agent" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf 'cursor-agent 2026.07.08-0c04a8a\n'; exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/agent"
+  got=$(CURSOR_INVOKED_AS='' CURSOR_AGENT='' PATH="$fakebin:/usr/bin:/bin" bash -c '. "'"$ROOT"'/bin/fm-cursor-hook-lib.sh"; fm_cursor_launch_bin') \
+    || fail "resolver failed when a verified Cursor agent is the only option"
+  [ "$got" = agent ] || fail "resolver should fall back to verified bare agent, got '$got'"
+  pass "cursor launch resolver falls back to a verified bare agent when cursor-agent is absent"
+}
+
+test_cursor_launch_bin_rejects_non_cursor_agent() {
+  local fakebin rc
+  fakebin=$(fm_fakebin "$TMP_ROOT/launch-reject")
+  # No cursor-agent; only a non-Cursor `agent` (Grok). Resolver must refuse.
+  fake_grok_agent "$fakebin"
+  CURSOR_INVOKED_AS='' CURSOR_AGENT='' PATH="$fakebin:/usr/bin:/bin" bash -c '. "'"$ROOT"'/bin/fm-cursor-hook-lib.sh"; fm_cursor_launch_bin' >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "resolver should refuse a non-Cursor bare agent with no cursor-agent present"
+  pass "cursor launch resolver refuses a non-Cursor bare agent"
+}
+
+test_cursor_spawn_uses_cursor_agent_not_bare_agent() {
+  local case_dir home proj wt fakebin id sendlog
+  case_dir="$TMP_ROOT/spawn-launchbin"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
+  fakebin=$(make_spawn_fakebin "$case_dir/fake")
+  # A non-Cursor `agent` sits on PATH too (Grok collision); cursor-agent from
+  # make_spawn_fakebin must still be the one that gets launched.
+  fake_grok_agent "$fakebin"
+  id="cursor-launchbin-x1"
+  sendlog="$case_dir/sendlog"
+  mkdir -p "$home/data/$id" "$home/projects" "$home/state" "$home/config"
+  printf 'brief\n' > "$home/data/$id/brief.md"
+  fm_git_worktree "$proj" "$wt" "fm/$id"
+  touch "$home/state/.last-watcher-beat"
+
+  FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_FAKE_SENDLOG="$sendlog" \
+    PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$proj" cursor >/dev/null 2>&1 \
+    || fail "cursor spawn with a colliding agent should succeed"
+  assert_grep 'cursor-agent --force --workspace' "$sendlog" "spawn did not launch via cursor-agent"
+  assert_no_grep ' -l agent --force' "$sendlog" "spawn launched the bare colliding agent"
+
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    PATH="$fakebin:$PATH" \
+    "$TEARDOWN" "$id" --force >/dev/null 2>&1 || fail "cursor teardown failed"
+  pass "cursor spawn launches cursor-agent even when a non-Cursor agent is on PATH"
+}
+
 test_busy_regex_matches_cursor_footer() {
   local line
   line='  → Add a follow-up                                             ctrl+c to stop'
@@ -332,7 +432,11 @@ test_fm_lock_recognizes_cursor_holder
 test_fm_lock_acquire_finds_cursor
 test_fm_lock_skips_wrapper_argv_substring
 test_supervision_cursor_snippet
+test_cursor_launch_bin_prefers_cursor_agent
+test_cursor_launch_bin_falls_back_to_verified_agent
+test_cursor_launch_bin_rejects_non_cursor_agent
 test_cursor_spawn_installs_stop_hook
 test_cursor_spawn_preserves_tracked_cursor_dir
 test_cursor_spawn_merges_untracked_hooks_json
+test_cursor_spawn_uses_cursor_agent_not_bare_agent
 test_busy_regex_matches_cursor_footer

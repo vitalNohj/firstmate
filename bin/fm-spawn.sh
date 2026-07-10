@@ -349,7 +349,9 @@ launch_template() {
     # --trust only skips that in --print/headless mode. Turn-end rides a project
     # .cursor/hooks.json stop hook installed below. Effort is not a separate
     # CLI flag (model bracket overrides only), so __EFFORTFLAG__ is unused.
-    cursor) printf '%s' 'agent --force --workspace "$(pwd)" __MODELFLAG__"$(cat __BRIEF__)"' ;;
+    # __CURSORBIN__ is resolved below to cursor-agent (preferred) or a verified
+    # bare agent, never a colliding non-Cursor agent (fm_cursor_launch_bin).
+    cursor) printf '%s' '__CURSORBIN__ --force --workspace "$(pwd)" __MODELFLAG__"$(cat __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -1045,6 +1047,13 @@ LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
+# Cursor installs both `agent` and `cursor-agent`, and other CLIs (Grok) can also
+# claim the bare `agent` name on PATH. Resolve the launch binary now, preferring
+# the unambiguous cursor-agent, so a colliding non-Cursor `agent` is never run.
+if [ "${LAUNCH#*__CURSORBIN__}" != "$LAUNCH" ]; then
+  CURSORBIN=$(fm_cursor_launch_bin) || { echo "error: cursor crewmate spawn needs cursor-agent on PATH (or a bare 'agent' verified to be Cursor); found neither" >&2; exit 1; }
+  LAUNCH=${LAUNCH//__CURSORBIN__/$CURSORBIN}
+fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"

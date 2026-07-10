@@ -10,5 +10,5 @@ When this session owns supervision and away mode is not active:
 7. Do not treat Cursor background Shell tasks as a verified watcher wake adapter yet.
    Prefer the bounded foreground checkpoint until a tracked background-arm path is empirically verified for Cursor Agent.
 
-Cursor Agent is a verified primary and crewmate harness (`agent --force`).
+Cursor Agent is a verified primary and crewmate harness (`cursor-agent --force`, resolved by `fm_cursor_launch_bin` so a colliding bare `agent` is never launched).
 After spawning a Cursor crewmate, peek within about 20 seconds for the Workspace Trust dialog and accept with `a` then Enter if shown.
