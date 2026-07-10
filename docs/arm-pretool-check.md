@@ -55,7 +55,8 @@ A hook must never crash-deny everything.
 
 ## Harness integrations and audit
 
-All five verified primary harnesses were audited for a PreToolUse-equivalent hook and wired where one exists.
+The five verified primary harnesses with a tracked hook integration were audited for a PreToolUse-equivalent hook and wired where one exists.
+`cursor`, verified later as a primary harness, has no tracked primary hook integration yet (`docs/turnend-guard.md`), so it is not wired here; its foreground-checkpoint supervision and the pull-based `bin/fm-guard.sh` warning are its backstop until that integration is verified.
 
 | Harness | Wired? | Mechanism |
 | --- | --- | --- |
@@ -64,8 +65,9 @@ All five verified primary harnesses were audited for a PreToolUse-equivalent hoo
 | Codex | Yes | `.codex/hooks.json`, `PreToolUse` hook, `matcher: "Bash"` |
 | OpenCode | Yes | `.opencode/plugins/fm-primary-pretool-check.js`, `tool.execute.before`, throws to block |
 | Pi | Yes | `.pi/extensions/fm-primary-turnend-guard.ts`, `tool_call` handler, returns `{block: true}` |
+| Cursor | No | no tracked primary hook integration yet; foreground checkpoints plus `bin/fm-guard.sh` are the backstop |
 
-No harness was left with a residual gap: every verified adapter supports a genuine pre-execution block for its shell tool, and all five are wired to the shared checker.
+No harness with a tracked hook integration was left with a residual gap: every such verified adapter supports a genuine pre-execution block for its shell tool, and all five are wired to the shared checker.
 
 - **Grok**: project hooks require folder trust (`/hooks-trust` or launch-time `--trust`), the same gate as the turn-end guard.
   Grok's own `${VAR}`/`$VAR` expansion runs over the raw `command` string before handing it to `bash -lc`, and it requires every `$name` reference to either be a real env var or carry an inline `:-default` - see "Grok `${VAR}` regression" below.
