@@ -33,15 +33,14 @@ fm_cursor_realpath() {
 
 # fm_cursor_agent_is_cursor
 # Return 0 when the bare `agent` binary currently on PATH is Cursor Agent rather
-# than a name collision (Grok also installs an `agent`). Checks, cheapest first:
-# the Cursor launcher env marker CURSOR_INVOKED_AS; the resolved binary path
-# mentioning cursor-agent (the common install symlinks agent -> a cursor-agent
-# path); and finally a --version fingerprint that names cursor. This mirrors the
+# than a name collision (Grok also installs an `agent`). Interrogates the
+# candidate binary itself, never ambient env: the resolved binary path mentioning
+# cursor-agent (the common install symlinks agent -> a cursor-agent path), and
+# finally a --version fingerprint that names cursor. This mirrors the
 # cursor-agent signal that primary detection keys on (bin/fm-harness.sh).
 fm_cursor_agent_is_cursor() {
   local bin resolved
   bin=$(command -v agent 2>/dev/null) || return 1
-  [ -n "${CURSOR_INVOKED_AS:-}" ] && return 0
   resolved=$(fm_cursor_realpath "$bin")
   case "$resolved" in *cursor-agent*) return 0 ;; esac
   case "$bin" in *cursor-agent*) return 0 ;; esac
