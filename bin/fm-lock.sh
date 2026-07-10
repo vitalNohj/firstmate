@@ -36,7 +36,7 @@ looks_like_harness() {  # <comm> <args>
   #    wrapper whose argv merely contains a harness substring is never mistaken
   #    for the harness itself.
   case "$base" in
-    node|node[0-9]*|python|python[0-9]*|deno|bun)
+    node|node[0-9]*|nodejs|nodejs[0-9]*|python|python[0-9]*|deno|bun)
       printf '%s' "$2" | grep -qE "$HARNESS_RE" && return 0 ;;
   esac
   # 3. Cursor Agent: the binary is the generic "agent" and macOS truncates comm,
