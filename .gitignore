@@ -13,4 +13,6 @@ config/backend
 config/x-mode.env
 config/cmux-socket-password
 
+# Local agent tooling - keep out of git. openspec/ is tracked and shared.
 .serena/
+.codebase-memory/
