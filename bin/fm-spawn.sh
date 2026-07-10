@@ -72,7 +72,7 @@
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
 #                  written by this script; outside the worktree to avoid pi's trust gate)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
-#     __PIWATCH__   absolute path to state/fm-primary-pi-watch.ts in a pi secondmate home
+#     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
 # Per-harness turn-end hooks are installed automatically; some live outside the worktree.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
@@ -102,6 +102,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-ff-lib.sh"
 # shellcheck source=bin/fm-config-inherit-lib.sh
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
+# shellcheck source=bin/fm-cursor-hook-lib.sh
+. "$SCRIPT_DIR/fm-cursor-hook-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
 # Skip the watcher guard when re-exec'd for one pair of a batch (FM_SPAWN_NO_GUARD is
@@ -279,7 +281,7 @@ FIRSTMATE_HOME=
 
 if [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|grok)
+    ''|claude|codex|opencode|pi|grok|cursor)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -340,6 +342,16 @@ launch_template() {
     # launch command - it is a Stop-event hook installed below (global hook +
     # per-task pointer), so the template is identical for ship/scout/secondmate.
     grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(cat __BRIEF__)"' ;;
+    # cursor (Cursor Agent CLI, verified 2026-07-09 on cursor-agent 2026.07.08):
+    # --force/--yolo auto-approves tool calls (Run Everything). --workspace pins
+    # the worktree. Positional prompt loads the brief. Interactive mode still
+    # shows a one-time Workspace Trust dialog per path (press a, then Enter);
+    # --trust only skips that in --print/headless mode. Turn-end rides a project
+    # .cursor/hooks.json stop hook installed below. Effort is not a separate
+    # CLI flag (model bracket overrides only), so __EFFORTFLAG__ is unused.
+    # __CURSORBIN__ is resolved below to cursor-agent (preferred) or a verified
+    # bare agent, never a colliding non-Cursor agent (fm_cursor_launch_bin).
+    cursor) printf '%s' '__CURSORBIN__ --force --workspace "$(pwd)" __MODELFLAG__"$(cat __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -427,7 +439,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|grok)
+    claude|codex|opencode|pi|grok|cursor)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -468,6 +480,8 @@ effort_flag_for_harness() {
     # opencode's interactive `opencode --prompt` launch has a verified --model
     # flag but no verified effort flag. Its `opencode run --variant` flag belongs
     # to a different, non-interactive launch mode, so fm-spawn does not pass it.
+    # cursor: effort is only available as a model bracket override
+    # (e.g. 'claude-opus-4-8[effort=high]'), not a separate CLI flag.
   esac
 }
 
@@ -631,9 +645,6 @@ if [ "$KIND" = secondmate ]; then
     BRIEF="$PROJ_ABS/data/charter.md"
   else
     BRIEF="$DATA/$ID/brief.md"
-  fi
-  if [ "$HARNESS" = pi ]; then
-    env FM_HOME="$PROJ_ABS" FM_ROOT_OVERRIDE="$PROJ_ABS" FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= "$SCRIPT_DIR/fm-pi-watch-extension.sh" >/dev/null
   fi
 else
   PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
@@ -900,6 +911,17 @@ EOF
     codex*)
       # codex: turn-end rides the launch command via -c notify=[...] and __TURNEND__.
       ;;
+    cursor*)
+      # Cursor Agent fires a project stop hook at every turn boundary (verified
+      # 2026-07-09, interactive and --print). Install a worktree-local firstmate
+      # turn-end script + stop-hook entry that touches state/<id>.turn-ended,
+      # scoped to only the firstmate-owned files so the project's own .cursor/
+      # tree is never clobbered. Keep the files firstmate created out of git via
+      # info/exclude so teardown's dirty check stays clean.
+      while IFS= read -r cursor_excl; do
+        [ -n "$cursor_excl" ] && exclude_path "$cursor_excl"
+      done < <(fm_cursor_install_turnend "$WT" "$TURNEND")
+      ;;
     grok*)
       # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the
       # clean equivalent of codex's notify= and pi's turn_end. But grok only loads
@@ -1015,7 +1037,7 @@ sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
-sq_piwatch=$(shell_quote "$PROJ_ABS/state/fm-primary-pi-watch.ts")
+sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT")
 LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
@@ -1025,6 +1047,13 @@ LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
+# Cursor installs both `agent` and `cursor-agent`, and other CLIs (Grok) can also
+# claim the bare `agent` name on PATH. Resolve the launch binary now, preferring
+# the unambiguous cursor-agent, so a colliding non-Cursor `agent` is never run.
+if [ "${LAUNCH#*__CURSORBIN__}" != "$LAUNCH" ]; then
+  CURSORBIN=$(fm_cursor_launch_bin) || { echo "error: cursor crewmate spawn needs cursor-agent on PATH (or a bare 'agent' verified to be Cursor); found neither" >&2; exit 1; }
+  LAUNCH=${LAUNCH//__CURSORBIN__/$CURSORBIN}
+fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"

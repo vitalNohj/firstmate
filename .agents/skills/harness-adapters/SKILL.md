@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, and grok.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, grok, and cursor.
 user-invocable: false
 metadata:
   internal: true
@@ -49,11 +49,21 @@ Use that value for interrupt, exit, resume, and skill-invocation facts.
 
 ## Primary turn-end guard
 
-Every verified primary harness has an empirically validated hook path for the "no turn ends blind" guard.
+Every verified primary harness except `cursor` has an empirically validated hook path for the "no turn ends blind" guard.
 `claude` and `codex` block directly through Stop hooks that preserve exit status 2 and stderr from `bin/fm-turnend-guard.sh`.
-`opencode`, `pi`, and `grok` expose passive turn-end events for this purpose, so their tracked primary adapters force one bounded follow-up or resume when the shared predicate blocks.
+`opencode`, `pi`, and `grok` expose passive lifecycle callbacks for this purpose, so their tracked primary adapters force one bounded follow-up or resume when the shared predicate blocks.
+`cursor` has no tracked turn-end guard yet, so a Cursor primary relies on the pull-based `bin/fm-guard.sh` warning alone until that integration is verified.
 The exact hook files, commands, validation transcripts, scoping rules, and fail-open tradeoffs are owned by `docs/turnend-guard.md`.
 When changing any primary turn-end hook, validate the real harness behavior in a scratch project or throwaway home before trusting it, then update that doc and the relevant concise fact below.
+
+## Primary pre-arm (PreToolUse) seatbelt
+
+Every verified primary harness except `cursor` also has a wired PreToolUse-equivalent hook that denies a watcher-arm anti-pattern (shell `&`, truncating pipe, bundling, broad `pkill -f fm-watch`) before it runs.
+`claude` and `codex` block directly through PreToolUse hooks; `grok` blocks the same way but requires every `$VAR` reference in its hook `command` string to carry an inline `:-default` or it fails to launch the hook entirely.
+`opencode` and `pi` block by throwing from `tool.execute.before` / returning `{block: true}` from `tool_call`.
+`cursor` has no tracked primary hook integration yet, so it has no wired seatbelt; its foreground-checkpoint supervision and the pull-based `bin/fm-guard.sh` warning remain its backstop.
+The exact hook files, commands, output-shaping quirks (Claude Code only honors the deny when stdout is empty), and validation transcripts are owned by `docs/arm-pretool-check.md`.
+When changing any primary PreToolUse hook, validate the real harness behavior in a scratch project before trusting it, then update that doc.
 
 ## Primary watcher supervision
 
@@ -61,8 +71,9 @@ At session start, `bin/fm-session-start.sh` prints exactly one watcher supervisi
 Do not substitute another harness's wait shape when resuming supervision.
 Claude and Grok use tracked background-notify cycles around `bin/fm-watch-arm.sh`.
 Codex uses bounded foreground checkpoints through `bin/fm-watch-checkpoint.sh` because Codex cannot reason while a foreground tool call is running.
+Cursor uses the same bounded foreground checkpoints (`FM_CURSOR_WATCH_CHECKPOINT`, falling back to `FM_CODEX_WATCH_CHECKPOINT`); a tracked background-arm path is not yet verified for Cursor Agent.
 OpenCode uses `.opencode/plugins/fm-primary-watch-arm.js`, which coordinates with the turn-end guard plugin and wakes the TUI with `client.session.promptAsync`.
-Pi uses the tracked `.pi/extensions/fm-primary-turnend-guard.ts` plus a generated `state/fm-primary-pi-watch.ts` bridge created by `bin/fm-pi-watch-extension.sh`.
+Pi uses the tracked `.pi/extensions/fm-primary-turnend-guard.ts` plus the tracked `.pi/extensions/fm-primary-pi-watch.ts`, both project-local extensions Pi auto-discovers once trusted.
 When changing any primary watcher adapter, update `docs/supervision-protocols/`, `docs/turnend-guard.md` if a shared idle or turn-end hook changed, and the relevant concise fact below.
 
 ## Launch profile axes
@@ -78,6 +89,7 @@ The supported launch-profile flags below were verified locally on 2026-06-30 wit
 | grok | `--model <model>` | `--reasoning-effort <low\|medium\|high\|xhigh>` | Verified on grok 0.2.73. `--effort` parses too, but firstmate's profile axis is reasoning effort. `--reasoning-effort max` is rejected, so `max` is omitted. |
 | pi | `--model <model>` | `--thinking <low\|medium\|high\|xhigh>` | Verified on pi 0.80.2. `max` prints an invalid-thinking warning, so firstmate omits Pi effort when the requested effort is `max`. |
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
+| cursor | `--model <model>` | none as a separate CLI flag | Verified on cursor-agent 2026.07.08. Effort is only a model bracket override (e.g. `claude-opus-4-8[effort=high]`), so `fm-spawn` passes no cursor effort flag. |
 
 When a requested effort value is outside the harness-specific accepted set, `fm-spawn` records the requested `effort=` in meta but emits no effort flag for that harness.
 This preserves launch success instead of passing a known-bad value.
@@ -92,6 +104,7 @@ Natural language is acceptable if uncertain.
 - opencode: no separate verified skill invocation beyond normal slash-command behavior; use natural language if the exact skill command is uncertain.
 - pi: no separate verified skill invocation beyond normal command behavior; use natural language if the exact skill command is uncertain.
 - grok: `/<skill>`, for example `/no-mistakes` (same form as claude). Verified end to end: grok discovers the user-level `no-mistakes` skill, `/no-mistakes` invokes it, and grok drives a real `no-mistakes axi run`. Like codex's `$`/`/` popups, typing `/<skill>` opens grok's slash-autocomplete, so a too-fast Enter selects the popup entry instead of sending, and for an argument-taking command (like `/no-mistakes`'s optional task-first argument) that first Enter only expands the popup selection into an argument-hint placeholder rather than submitting - a genuine second Enter is required (see the grok section below for the 2026-07-03 incident and fix). `fm_tmux_submit_core`'s retried Enter (used by `fm-send` on the tmux backend) already handles this correctly by reading the cursor row; the herdr backend needed a dedicated fix (`fm_backend_herdr_composer_state`, docs/herdr-backend.md) because its prior delta-based verification false-positived on that same popup-close content change.
+- cursor: `/skills` opens skill discovery; the `/no-mistakes` form is not yet end-to-end verified on Cursor, so use natural language if the exact skill command is uncertain.
 
 ## claude (VERIFIED)
 
@@ -192,13 +205,13 @@ The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in t
 The extension must listen for pi's `turn_end` event, not `agent_end`, so the watcher wakes after each completed turn instead of only when the whole agent run exits.
 Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection env marker.
 
-**Primary-session guard fact (verified 2026-07-08, Pi 0.80.2).**
-The firstmate PRIMARY's own `.pi/extensions/fm-primary-turnend-guard.ts` listens for `turn_end`.
-Pi's `turn_end` cannot block directly, so the primary adapter uses `pi.sendUserMessage(..., { deliverAs: "followUp" })` to force one follow-up turn when `bin/fm-turnend-guard.sh` returns 2.
+**Primary-session guard fact (verified 2026-07-09, Pi 0.80.5).**
+The firstmate PRIMARY's own `.pi/extensions/fm-primary-turnend-guard.ts` listens for logical-run `agent_settled`, not per-tool-loop `turn_end`, and uses `pi.sendUserMessage(..., { deliverAs: "followUp" })` to force one guarded follow-up when `bin/fm-turnend-guard.sh` returns 2.
 Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still processing.
-Pi's primary watcher protocol also requires the generated `state/fm-primary-pi-watch.ts` bridge.
-`bin/fm-session-start.sh` creates or refreshes that bridge and reports when the live Pi session has not loaded both the turn-end guard and watcher extensions.
-When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` generates the bridge in the secondmate home and launches Pi with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e state/fm-primary-pi-watch.ts`.
+Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-primary-pi-watch.ts` extension, same trust-once discovery as the turn-end guard.
+The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
+`bin/fm-session-start.sh` reports when the live Pi session has not loaded both the turn-end guard and watcher extensions, and points at plain `pi` after project trust as the fix, with `-e` as a trust-free fallback.
+When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` launches Pi with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit behavior re-verified 2026-07-03, grok 0.2.82)
 
@@ -244,3 +257,38 @@ The adapter therefore runs the shared predicate and, when it returns 2, forces o
 It does not pass `--permission-mode`, so the passive hook cannot escalate the primary session's tool permissions.
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol is Claude-shaped background-notify around `bin/fm-watch-arm.sh`; the passive Stop hook is only a backstop for blind turn ends.
+
+## cursor (VERIFIED 2026-07-09, cursor-agent 2026.07.08-0c04a8a)
+
+Cursor Agent CLI (`agent` / `cursor-agent`).
+Launch: `cursor-agent --force --workspace "$(pwd)" "$(cat <brief>)"`.
+Prefer the `cursor-agent` binary, never bare `agent`: Cursor installs both names and other CLIs (Grok) can also own `agent` on PATH, so a bare-`agent` launch can silently run the wrong tool.
+`fm-spawn` resolves the launch binary through `fm_cursor_launch_bin` (`bin/fm-cursor-hook-lib.sh`): it always prefers `cursor-agent` when present, and falls back to bare `agent` only when `cursor-agent` is absent and the candidate binary itself is verified to be Cursor (a resolved cursor-agent path or a `--version` fingerprint naming cursor, never ambient env); it aborts the spawn if neither resolves.
+`--force` / `--yolo` is Run Everything (auto-approve tools).
+`--workspace` pins the worktree.
+A positional prompt loads the brief.
+
+| Fact | Value |
+|---|---|
+| Busy-pane signature | `ctrl+c to stop` (shown while a turn runs, beside `→ Add a follow-up`). Mid-turn status line also shows braille + `Working`. Prefer the ASCII stop hint for `FM_BUSY_REGEX`. |
+| Exit command | `/exit` (verified to end the interactive session). Double Ctrl+C also exits (`Press Ctrl+C again to exit` after the first interrupt). |
+| Interrupt | single Ctrl+C (footer shows `ctrl+c to stop` mid-turn). Esc was not verified as interrupt. |
+| Skill invocation | `/skills` opens skill discovery; natural language also works. `/no-mistakes` form not yet end-to-end verified on Cursor. |
+| Autonomy | `--force` / `--yolo` (footer shows `Run Everything`). |
+| Env marker | `CURSOR_AGENT=1`, set for child/tool processes. |
+| Model flag | `--model <model>` (supports bracket overrides such as `claude-opus-4-8[effort=high]`). |
+| Effort flag | none as a separate CLI flag; use model bracket overrides when needed. |
+| Resume | `agent --resume [chatId]` or `agent --continue`. |
+| Trust dialog | Interactive mode shows `Workspace Trust Required` on first use of a path; accept with `a` then Enter. Persists under `~/.cursor/projects/<slug>/.workspace-trusted`. `--trust` skips the dialog only in `--print`/headless mode. |
+
+Turn-end hook: Cursor fires a project `stop` hook at every turn boundary (verified interactive and `--print`).
+Install and teardown are scoped to only firstmate-owned files (`bin/fm-cursor-hook-lib.sh`), never the whole `.cursor/` tree, because projects commonly track `.cursor/rules/` and sometimes commit `.cursor/hooks.json`.
+`fm-spawn` writes `<worktree>/.cursor/hooks/fm-turn-end.sh` (drains stdin JSON and `touch`es `state/<id>.turn-ended`) and registers a `stop` entry pointing at it: it creates `<worktree>/.cursor/hooks.json` when the project has none, merges the firstmate entry into an untracked project `hooks.json` (jq, keeping the project's own hooks), and leaves a tracked project `hooks.json` untouched (turn-end then falls back to pane-staleness supervision).
+Files firstmate created are gitignored via info/exclude.
+`fm-teardown` removes only the firstmate turn-end script and a firstmate-created/untracked `hooks.json`, leaves a tracked project `hooks.json` in place, and prunes only empty `.cursor/hooks` and `.cursor` directories.
+
+Primary-session supervision: Codex-shaped foreground checkpoint via `docs/supervision-protocols/cursor.md` and `bin/fm-watch-checkpoint.sh`.
+A Cursor primary stop-guard (`followup_message` port of `fm-turnend-guard`) is not yet installed; pull-based `fm-guard.sh` remains the alarm until that is verified.
+
+Tmux agent-liveness: interactive Cursor often shows bare `node` or `agent` as `pane_current_command`.
+`fm_backend_tmux_agent_alive` treats `agent` / `*cursor-agent*` as alive; bare `node` stays `unknown` (same gap as pi).
