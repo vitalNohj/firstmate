@@ -184,16 +184,18 @@ SH
   chmod +x "$fakebin/herdr"
 }
 
-run_session_start() {  # <home> <root> <path>
+# run_session_start <home> <root> <path>
+# Drop every harness env marker from bin/fm-harness.sh detect_own so the
+# surrounding interactive shell cannot leak past the suite's fake ps harness.
+# Markers today: CLAUDECODE (claude), PI_CODING_AGENT (pi), GROK_AGENT (grok), and CURSOR_AGENT (cursor).
+# codex and opencode have no env markers (ancestry only). Without this, a local
+# claude/pi/grok session fails cases that pin a different fake harness while CI
+# (no ambient markers) still passes.
+run_session_start() {
   local home=$1 root=$2 path=$3
-  # Strip ambient harness env markers (CLAUDECODE, PI_CODING_AGENT, GROK_AGENT,
-  # CURSOR_AGENT) so detection is driven purely by the fake ps ancestry this
-  # suite installs. Otherwise, running the suite under a real harness (e.g.
-  # Claude Code sets CLAUDECODE=1, or Cursor sets CURSOR_AGENT=1) would
-  # short-circuit fm-harness.sh's layer-1 marker check and misdetect the
-  # harness regardless of FM_FAKE_HARNESS.
   env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u CURSOR_AGENT \
-    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" "$SESSION_START"
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
+    "$SESSION_START"
 }
 
 hash_file_for_test() {
@@ -376,6 +378,46 @@ EOF
   [ "$missing_line" -lt "$fleet_line" ] || fail "actionable MISSING diagnostic was buried after the bulk fleet-state digest"
 
   pass "digest sections are ordered diagnostics-first, bulk-context-last"
+}
+
+test_herdr_backend_diagnostics_follow_real_session_start() {
+  local mode rec root home fakebin mask out
+  for mode in configured autodetected; do
+    rec=$(new_world "herdr-$mode")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_ps_claude "$fakebin"
+    rm -f "$fakebin/tmux"
+    fm_fake_exit0 "$fakebin" herdr jq
+    printf '%s\n' manual > "$home/config/backlog-backend"
+    mask="$home/mask-tmux.bash"
+    cat > "$mask" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = tmux ]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+SH
+    if [ "$mode" = configured ]; then
+      printf '%s\n' herdr > "$home/config/backend"
+      out=$(TMUX='' HERDR_ENV='' BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+      assert_not_contains "$out" "NOTICE: auto-detected herdr runtime" \
+        "an explicit Herdr home should not be reported as auto-detected"
+    else
+      out=$(TMUX='' HERDR_ENV=1 BASH_ENV="$mask" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+      assert_contains "$out" "NOTICE: auto-detected herdr runtime (HERDR_ENV=1)" \
+        "session start did not preserve the Herdr runtime auto-detection fallback"
+    fi
+    assert_contains "$out" "SESSION START - $home" "the real session-start path did not run in the throwaway home"
+    assert_not_contains "$out" "MISSING: tmux" "Herdr session start falsely required masked tmux"
+    assert_not_contains "$out" "MISSING: herdr" "Herdr session start missed its available session CLI"
+    assert_not_contains "$out" "MISSING: jq" "Herdr session start missed its available JSON dependency"
+    assert_not_contains "$out" "MISSING: treehouse" "Herdr session start missed its available worktree provider"
+  done
+  pass "session start: configured and auto-detected Herdr homes never require tmux"
 }
 
 # --- status tail bounding -----------------------------------------------------
@@ -701,6 +743,7 @@ EOF
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_output_ordering_diagnostics_lead
+test_herdr_backend_diagnostics_follow_real_session_start
 test_status_tail_bounding
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux

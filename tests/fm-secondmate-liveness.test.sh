@@ -85,6 +85,14 @@ test_tmux_agent_alive_classifies() {
   [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = alive ] \
     || fail "a live grok foreground process should classify as alive"
 
+  fb=$(make_probe_tmux "$TMP_ROOT/tmux-cursor-agent" cursor-agent)
+  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = alive ] \
+    || fail "a live cursor-agent foreground process should classify as alive"
+
+  fb=$(make_probe_tmux "$TMP_ROOT/tmux-cursor-bare-agent" agent)
+  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = alive ] \
+    || fail "Cursor's verified bare agent foreground process should classify as alive"
+
   fb=$(make_probe_tmux "$TMP_ROOT/tmux-zsh" zsh)
   [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = dead ] \
     || fail "a bare zsh foreground process should classify as dead"
@@ -100,7 +108,7 @@ test_tmux_agent_alive_classifies() {
   [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = dead ] \
     || fail "a defensively-stripped login-shell name should still classify as dead"
 
-  # A bare interpreter name is ambiguous (pi's own launcher execs into a
+  # A bare interpreter name is ambiguous (Pi and Cursor can both present as a
   # generic "node" process - docs/tmux-backend.md "Known gap") - must be
   # unknown, never dead, so the sweep can never respawn on a false-dead read.
   fb=$(make_probe_tmux "$TMP_ROOT/tmux-node" node)

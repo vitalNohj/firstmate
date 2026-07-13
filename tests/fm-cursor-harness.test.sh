@@ -405,15 +405,21 @@ test_cursor_spawn_uses_cursor_agent_not_bare_agent() {
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     FM_FAKE_SENDLOG="$sendlog" \
     PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" "$proj" cursor >/dev/null 2>&1 \
+    "$SPAWN" "$id" "$proj" cursor --model cursor-test-model --effort high >/dev/null 2>&1 \
     || fail "cursor spawn with a colliding agent should succeed"
   assert_grep 'cursor-agent --force --workspace' "$sendlog" "spawn did not launch via cursor-agent"
   assert_no_grep ' -l agent --force' "$sendlog" "spawn launched the bare colliding agent"
+  assert_contains "$(cat "$sendlog")" "--model 'cursor-test-model'" "cursor spawn omitted its verified model flag"
+  assert_not_contains "$(cat "$sendlog")" "--effort" "cursor spawn passed an unverified standalone effort flag"
+  assert_not_contains "$(cat "$sendlog")" "--thinking" "cursor spawn reused Pi's effort flag"
+  assert_not_contains "$(cat "$sendlog")" "--reasoning-effort" "cursor spawn reused Grok's effort flag"
+  assert_grep 'model=cursor-test-model' "$home/state/$id.meta" "cursor spawn did not record the requested model axis"
+  assert_grep 'effort=high' "$home/state/$id.meta" "cursor spawn did not record the requested effort axis"
 
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     PATH="$fakebin:$PATH" \
     "$TEARDOWN" "$id" --force >/dev/null 2>&1 || fail "cursor teardown failed"
-  pass "cursor spawn launches cursor-agent even when a non-Cursor agent is on PATH"
+  pass "cursor spawn launches cursor-agent, passes model, and records-but-omits standalone effort"
 }
 
 test_busy_regex_matches_cursor_footer() {
