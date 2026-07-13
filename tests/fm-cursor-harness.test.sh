@@ -155,9 +155,42 @@ test_supervision_cursor_snippet() {
   assert_contains "$out" "bin/fm-watch-checkpoint.sh" "cursor checkpoint helper missing"
   assert_contains "$out" "Workspace Trust dialog" "cursor snippet missing trust guidance"
   assert_not_contains "$out" "Mode: Unknown harness fallback." "cursor fell through to unknown"
+  out=$("$RENDER" --harness cursor)
+  # shellcheck disable=SC2016 # Single quotes are deliberate: the snippet carries the literal fallback chain for the reading agent to expand.
+  assert_contains "$out" '${FM_CURSOR_WATCH_CHECKPOINT:-${FM_CODEX_WATCH_CHECKPOINT:-180}}' "cursor snippet missing the documented checkpoint fallback chain"
   out=$(FM_CURSOR_WATCH_CHECKPOINT=9 "$RENDER" --harness cursor --repair-line)
   assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 9" "cursor repair line missing checkpoint override"
+  out=$(FM_CURSOR_WATCH_CHECKPOINT='' FM_CODEX_WATCH_CHECKPOINT=13 "$RENDER" --harness cursor --repair-line)
+  assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 13" "cursor repair line did not fall back to FM_CODEX_WATCH_CHECKPOINT"
   pass "cursor supervision protocol renders and repairs like a named harness"
+}
+
+test_cursor_install_turnend_idempotent() {
+  local case_dir wt turnend count
+  command -v jq >/dev/null 2>&1 || { pass "cursor turn-end install idempotence (skipped: jq unavailable)"; return; }
+  case_dir="$TMP_ROOT/install-idem"
+  wt="$case_dir/wt"
+  turnend="$case_dir/turn-ended"
+  fm_git_init_commit "$wt"
+  # Respawn into a reused worktree re-installs over the firstmate-created
+  # manifest; the stop entry must not be appended a second time.
+  fm_cursor_install_turnend "$wt" "$turnend" >/dev/null
+  fm_cursor_install_turnend "$wt" "$turnend" >/dev/null
+  count=$(jq --arg cmd "$FM_CURSOR_HOOK_COMMAND" \
+    '[.hooks.stop[] | select(type == "object" and .command == $cmd)] | length' \
+    "$wt/.cursor/hooks.json")
+  [ "$count" = 1 ] || fail "re-install duplicated the firstmate stop hook ($count entries)"
+  # Same over a dev-local untracked manifest: the project's own hook is kept
+  # and the firstmate entry appears exactly once across repeated installs.
+  printf '{"version":1,"hooks":{"stop":[{"command":"./dev-local.sh"}]}}\n' > "$wt/.cursor/hooks.json"
+  fm_cursor_install_turnend "$wt" "$turnend" >/dev/null
+  fm_cursor_install_turnend "$wt" "$turnend" >/dev/null
+  assert_grep 'dev-local.sh' "$wt/.cursor/hooks.json" "re-install dropped the project's own hook"
+  count=$(jq --arg cmd "$FM_CURSOR_HOOK_COMMAND" \
+    '[.hooks.stop[] | select(type == "object" and .command == $cmd)] | length' \
+    "$wt/.cursor/hooks.json")
+  [ "$count" = 1 ] || fail "re-install duplicated the firstmate stop hook in a merged manifest ($count entries)"
+  pass "cursor turn-end install is idempotent across respawns"
 }
 
 make_spawn_fakebin() {
@@ -438,6 +471,7 @@ test_fm_lock_recognizes_cursor_holder
 test_fm_lock_acquire_finds_cursor
 test_fm_lock_skips_wrapper_argv_substring
 test_supervision_cursor_snippet
+test_cursor_install_turnend_idempotent
 test_cursor_launch_bin_prefers_cursor_agent
 test_cursor_launch_bin_falls_back_to_verified_agent
 test_cursor_launch_bin_rejects_non_cursor_agent

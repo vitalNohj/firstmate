@@ -89,7 +89,8 @@ EOF
 # Writes the firstmate turn-end script and registers a stop hook that touches
 # <turnend-path> at every Cursor turn boundary. Creates hooks.json fresh when
 # the project has none. When the project provides an UNTRACKED hooks.json, the
-# firstmate stop entry is merged in (jq) so the project's own hooks are kept;
+# firstmate stop entry is merged in exactly once (jq), so the project's own
+# hooks are kept and a respawn into a reused worktree never duplicates it;
 # without jq the untracked file is replaced with the firstmate-only manifest.
 # A TRACKED project hooks.json is left untouched, because firstmate must never
 # dirty or leak a committed project file; turn-end then falls back to
@@ -128,7 +129,9 @@ EOF
     if jq --arg cmd "$FM_CURSOR_HOOK_COMMAND" '
           .version = (.version // 1)
           | .hooks = (.hooks // {})
-          | .hooks.stop = ((.hooks.stop // []) + [{"command": $cmd}])
+          | .hooks.stop = (.hooks.stop // [])
+          | if (.hooks.stop | any(type == "object" and .command == $cmd)) then .
+            else .hooks.stop += [{"command": $cmd}] end
         ' "$json" > "$tmp" 2>/dev/null; then
       mv "$tmp" "$json"
     else
