@@ -95,7 +95,6 @@ detect_own() {
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;
           *" pi "*|*/pi) echo pi; return ;;
-          *" omp "*|*/omp) echo omp; return ;;
         esac
         ;;
     esac

@@ -218,8 +218,9 @@ When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` launches Pi with
 
 ## OMP
 
-Verified on OMP 17.0.5 on 2026-07-19 for crewmate and scout launches only.
+Verified on OMP 17.0.5 on 2026-07-19 for crewmate and scout launches on tmux only.
 Primary and secondmate lifecycle support remains unverified and must not be selected.
+Herdr, zellij, Orca, and cmux launches remain unverified and must not be selected.
 
 - Launch with `omp --cwd "<worktree>" --session-dir "<task-temp>/omp-sessions" --auto-approve [--model "<model>"] [--thinking "<level>"] -e "<state>/<id>.pi-ext.ts" "<brief>"`.
 - A positional brief auto-submits and enters the interactive session.
@@ -227,6 +228,7 @@ Primary and secondmate lifecycle support remains unverified and must not be sele
 - `--thinking` accepts `off|minimal|low|medium|high|xhigh|max|auto`; Firstmate maps its shared `low|medium|high|xhigh|max` axis directly.
 - `--auto-approve` allowed autonomous bash file creation, reading, and removal without a tool prompt in the live smoke.
 - Detect OMP tools with `OMPCODE=1` before checking `CLAUDECODE=1`; OMP deliberately exports both.
+- The ancestry fallback recognizes only an exact `omp` executable basename, never an `omp` token in Node or Python argv.
 - Busy output ends in a shipped-theme bracketed Escape hint: `⟦esc⟧`, `⟨esc⟩`, or `[esc]`.
 - Match `(\[|⟦|⟨)esc(\]|⟧|⟩)[[:space:]]*$` rather than the mutable working-intent text or spinner.
 - A single `Escape` stops the active turn and returns to the idle composer without exiting.

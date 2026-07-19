@@ -90,6 +90,19 @@ SH
   got=$(OMPCODE='' CLAUDECODE='' PI_CODING_AGENT='' GROK_AGENT='' CURSOR_AGENT='' \
     PATH="$fakebin:$PATH" "$HARNESS")
   [ "$got" = omp ] || fail "exact omp process ancestry should detect OMP, got '$got'"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *"comm="*) printf '%s\n' '/opt/homebrew/bin/node'; exit 0 ;;
+  *"args="*) printf '%s\n' 'node wrapper.js omp --auto-approve'; exit 0 ;;
+  *"ppid="*) printf '1\n'; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+  got=$(OMPCODE='' CLAUDECODE='' PI_CODING_AGENT='' GROK_AGENT='' CURSOR_AGENT='' \
+    PATH="$fakebin:$PATH" "$HARNESS")
+  [ "$got" = unknown ] || fail "non-omp interpreter ancestry should remain unknown, got '$got'"
   pass "fm-harness detects OMPCODE precedence and exact omp ancestry"
 }
 
@@ -158,6 +171,25 @@ test_omp_secondmate_stays_rejected() {
   [ "$status" -ne 0 ] || fail "config/secondmate-harness=omp should remain rejected"
   assert_contains "$out" "OMP is verified for crewmate and scout launches only" "configured OMP secondmate rejection was unclear"
   pass "OMP remains unavailable for secondmate launches"
+}
+
+test_omp_non_tmux_backends_are_rejected_before_workspace_creation() {
+  local backend rec case_dir home proj wt fakebin id sendlog out status
+  for backend in herdr zellij orca cmux; do
+    rec=$(make_spawn_case "backend-$backend")
+    IFS='|' read -r case_dir home proj wt fakebin id <<EOF
+$rec
+EOF
+    sendlog="$case_dir/send.log"
+    : > "$sendlog"
+    out=$(run_omp_spawn "$home" "$proj" "$wt" "$fakebin" "$id" "$sendlog" --backend "$backend")
+    status=$?
+    [ "$status" -ne 0 ] || fail "OMP launch on backend=$backend should be rejected"
+    assert_contains "$out" "verified on backend=tmux only" "OMP backend=$backend rejection was unclear"
+    [ ! -s "$sendlog" ] || fail "OMP backend=$backend rejection sent workspace commands"
+    [ ! -e "$home/state/$id.meta" ] || fail "OMP backend=$backend rejection created task metadata"
+  done
+  pass "OMP rejects every non-tmux backend before task workspace creation"
 }
 
 test_omp_busy_and_liveness_signatures() {
@@ -235,5 +267,6 @@ test_omp_marker_precedes_claude_marker
 test_omp_spawn_maps_profile_and_extension
 test_omp_max_effort_is_mapped
 test_omp_secondmate_stays_rejected
+test_omp_non_tmux_backends_are_rejected_before_workspace_creation
 test_omp_busy_and_liveness_signatures
 test_omp_swallowed_first_enter_retries_without_retyping

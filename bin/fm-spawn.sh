@@ -181,9 +181,6 @@ if [ "$BACKEND" = cmux ] && [ "$KIND" = secondmate ]; then
   echo "error: backend=cmux does not support --secondmate spawns yet" >&2
   exit 1
 fi
-if [ "$BACKEND" = orca ]; then
-  fm_backend_orca_runtime_check || exit 1
-fi
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
@@ -370,6 +367,10 @@ reject_unsupported_harness_role() {
     echo "error: OMP is verified for crewmate and scout launches only; secondmate support is not verified" >&2
     exit 1
   fi
+  if [ "$HARNESS" = omp ] && [ "$BACKEND" != tmux ]; then
+    echo "error: OMP crewmate and scout launches are verified on backend=tmux only; backend=$BACKEND is unsupported" >&2
+    exit 1
+  fi
 }
 
 case "$ARG3" in
@@ -379,6 +380,7 @@ case "$ARG3" in
     for word in $LAUNCH; do
       case "$word" in [A-Za-z_]*=*) continue ;; *) HARNESS=$(basename "$word"); break ;; esac
     done
+    reject_unsupported_harness_role
     ;;
   '')
     # No explicit harness: resolve from config. A secondmate AGENT launches on the
@@ -409,6 +411,10 @@ case "$ARG3" in
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
+
+if [ "$BACKEND" = orca ]; then
+  fm_backend_orca_runtime_check || exit 1
+fi
 
 # config/secondmate-harness may carry optional model/effort tokens alongside the
 # harness ("<harness> [<model>] [<effort>]"). They apply only when this is a

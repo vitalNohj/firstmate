@@ -64,6 +64,7 @@ $ printenv PI_CODING_AGENT
 `OMPCODE=1` is the OMP-specific marker.
 It must be checked before `CLAUDECODE=1` because OMP deliberately exports both.
 The process ancestry fallback matches the exact native command basename `omp`.
+Interpreter argv containing the token `omp` does not qualify as OMP ancestry.
 
 ## Busy, idle, and submission
 
@@ -129,7 +130,8 @@ Firstmate reuses its existing state-resident Pi marker extension and teardown cl
 
 ## Support boundary
 
-OMP is selectable for crewmate and scout dispatch.
+OMP is selectable for crewmate and scout dispatch on the tmux backend only.
+Firstmate rejects OMP with herdr, zellij, Orca, or cmux before creating a task workspace because those backend combinations have not been verified.
 OMP is not selectable for secondmate launch because Firstmate's primary watcher and turn-end guard extensions have not been smoke-tested inside an OMP secondmate.
 OMP is not documented as a supported primary harness for the same reason.
 A follow-up may enable those roles only after an end-to-end watcher, actionable wake, guarded turn end, exit, and exact-ID resume smoke.
