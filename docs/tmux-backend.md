@@ -101,7 +101,10 @@ Verified the same session: a persisting parent process running a child command (
 
 The classifier (`fm_backend_tmux_agent_alive`) maps the observed name to `alive`, `dead`, or `unknown`:
 
-- `alive` - the name contains `claude`, `codex`, `opencode`, `grok`, or `cursor-agent`, or is the bare Cursor Agent `agent` binary. The first four were confirmed to run as their own literal process name (`ps -ef`, 2026-07-07): `claude` and `codex` and `opencode` are each a native compiled binary (`file` reports Mach-O), so their `comm` is their own binary name with no interpreter wrapper to hide behind. Cursor Agent's interactive binary is often bare `agent` (verified 2026-07-09), treated as alive because a random unrelated `agent` binary is rare in firstmate panes; its bare `node` case shares pi's gap below.
+- `alive` - the name contains `claude`, `codex`, `opencode`, `grok`, or `cursor-agent`, is the bare Cursor Agent `agent` binary, or is exact bare `omp`.
+  The first four were confirmed to run as their own literal process name (`ps -ef`, 2026-07-07): `claude` and `codex` and `opencode` are each a native compiled binary (`file` reports Mach-O), so their `comm` is their own binary name with no interpreter wrapper to hide behind.
+  Cursor Agent's interactive binary is often bare `agent` (verified 2026-07-09), treated as alive because a random unrelated `agent` binary is rare in firstmate panes; its bare `node` case shares pi's gap below.
+  OMP 17.0.5 reported exact `omp` from `tmux display-message -p -t <target> '#{pane_current_command}'` during a live interactive run (verified 2026-07-19).
 - `dead` - the name is a bare shell (`zsh`, `bash`, `sh`, `dash`, `ash`, `ksh`, `mksh`, `tcsh`, `csh`, `fish`).
 - `unknown` - anything else, including an unreadable pane.
 
