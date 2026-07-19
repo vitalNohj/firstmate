@@ -258,9 +258,11 @@ It does not pass `--permission-mode`, so the passive hook cannot escalate the pr
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol is Claude-shaped background-notify around `bin/fm-watch-arm.sh`; the passive Stop hook is only a backstop for blind turn ends.
 
-## cursor (VERIFIED 2026-07-09, cursor-agent 2026.07.08-0c04a8a; IDE agent-exec 2026-07-19)
+## cursor (VERIFIED 2026-07-09, cursor-agent 2026.07.08-0c04a8a; IDE agent-exec detect 2026-07-19)
 
-Cursor Agent CLI (`agent` / `cursor-agent`) and Cursor IDE-embedded chat agent.
+Cursor Agent CLI (`agent` / `cursor-agent`) is the full primary and crewmate harness.
+Cursor IDE-embedded chat agent is a separate session shape: recognition only for collision-awareness and future alongside-mode policy - not a supported full primary.
+Roles and future alongside-mode intent: `docs/cursor-harness.md`.
 Launch (crewmate CLI): `cursor-agent --force --workspace "$(pwd)" "$(cat <brief>)"`.
 Prefer the `cursor-agent` binary, never bare `agent`: Cursor installs both names and other CLIs (Grok) can also own `agent` on PATH, so a bare-`agent` launch can silently run the wrong tool.
 `fm-spawn` resolves the launch binary through `fm_cursor_launch_bin` (`bin/fm-cursor-hook-lib.sh`): it always prefers `cursor-agent` when present, and falls back to bare `agent` only when `cursor-agent` is absent and the candidate binary itself is verified to be Cursor (a resolved cursor-agent path or a `--version` fingerprint naming cursor, never ambient env); it aborts the spawn if neither resolves.
@@ -268,11 +270,12 @@ Prefer the `cursor-agent` binary, never bare `agent`: Cursor installs both names
 `--workspace` pins the worktree.
 A positional prompt loads the brief.
 
-IDE-embedded primary (Cursor chat agent inside the IDE, not `cursor-agent`): tool shells sit under a process whose `ps -o comm=` / `ps -o args=` label is `Cursor Helper (Plugin): extension-host (agent-exec) <workspace> [<id>]` (verified macOS Cursor IDE 2026-07-19).
+IDE-embedded agent (Cursor chat inside the IDE, not `cursor-agent`): tool shells sit under a process whose `ps -o comm=` / `ps -o args=` label is `Cursor Helper (Plugin): extension-host (agent-exec) <workspace> [<id>]` (verified macOS Cursor IDE 2026-07-19).
 Sibling hosts use `(user)`, `(retrieval)`, or `(always-local)` and must not be treated as the harness.
-`fm-lock.sh` / `fm-harness.sh` recognize the literal `extension-host (agent-exec)` marker so an IDE primary can acquire the session lock; a bare `Cursor.app` GUI process never matches.
+`fm-lock.sh` / `fm-harness.sh` recognize the literal `extension-host (agent-exec)` marker so an IDE session is identifiable (groundwork for alongside mode); a bare `Cursor.app` GUI process never matches.
+That recognition is not a claim that the IDE is a supported primary: intended end-state is alongside a terminal firstmate in the same `FM_HOME` without contending for the fleet lock (future work).
 Grok collision guard: bare `agent` without a `cursor-agent` argv marker must not classify as cursor (same discipline as launch via `fm_cursor_launch_bin`).
-CLI `MainThread` / broader bare-agent argv detect is deferred to upstream kunchenguid/firstmate#705; this fork's IDE shape is complementary.
+CLI `MainThread` / broader bare-agent argv detect is deferred to upstream kunchenguid/firstmate#705.
 `fm-harness.sh` still prefers `CURSOR_AGENT=1` when set (CLI tool children verified; prefer env over ancestry).
 The lock always needs the harness PID from ancestry - the env marker alone cannot hold the lock.
 
@@ -284,7 +287,7 @@ The lock always needs the harness PID from ancestry - the env marker alone canno
 | Skill invocation | `/skills` opens skill discovery; natural language also works. `/no-mistakes` form not yet end-to-end verified on Cursor. |
 | Autonomy | `--force` / `--yolo` (footer shows `Run Everything`). |
 | Env marker | `CURSOR_AGENT=1`, set for child/tool processes (CLI verified; prefer when present). |
-| IDE harness process | `Cursor Helper (Plugin): extension-host (agent-exec) ...` in `ps -o comm=` and `ps -o args=` (macOS). |
+| IDE process (detect only) | `Cursor Helper (Plugin): extension-host (agent-exec) ...` in `ps -o comm=` and `ps -o args=` (macOS). Not a supported primary; alongside-mode policy is future work. |
 | Detect collision | Bare `agent` without `cursor-agent` in argv must not classify as cursor (Grok). |
 | Model flag | `--model <model>` (supports bracket overrides such as `claude-opus-4-8[effort=high]`). |
 | Effort flag | none as a separate CLI flag; use model bracket overrides when needed. |

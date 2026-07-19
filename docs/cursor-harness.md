@@ -1,9 +1,21 @@
-# Cursor IDE session lock
+# Cursor CLI vs IDE session shapes
 
-This note covers the Cursor IDE-embedded agent shape for session lock and harness detect.
-CLI `MainThread` / bare-agent argv detection is deferred to upstream [kunchenguid/firstmate#705](https://github.com/kunchenguid/firstmate/pull/705); this work is complementary.
+Cursor CLI and Cursor IDE have different intended roles.
+Do not treat IDE recognition as a claim that the IDE agent is a supported full primary.
 
-## IDE shape (this PR)
+## Roles (design intent)
+
+| Shape | Intended role |
+| --- | --- |
+| **Cursor CLI** (`cursor-agent` / verified bare `agent`) | Full primary and crewmate harness (as today): holds the fleet lock, runs the supervision protocol, spawns and steers crewmates. |
+| **Cursor IDE** embedded agent (`extension-host (agent-exec)`) | Not a full primary. Intended end-state is **alongside** mode: the IDE agent runs side-by-side with a terminal firstmate in the same `FM_HOME`, never contends for the fleet lock, may spawn crewmates (future: tag `owner=ide` in meta) and steer its own, while the terminal firstmate sees them in the digest and acts only as a safety net. |
+
+IDE-shape detection in `fm-lock.sh` / `fm-harness.sh` is groundwork for that policy: firstmate must recognize an IDE session before it can treat it differently.
+Alongside-mode policy (skip lock contention, owner tagging, digest safety-net behavior) is future work - not implemented here.
+
+CLI `MainThread` / broader bare-agent argv detection is deferred to upstream [kunchenguid/firstmate#705](https://github.com/kunchenguid/firstmate/pull/705); this fork's IDE recognition is complementary.
+
+## IDE process shape (detection only)
 
 Observed macOS ancestry (2026-07):
 
@@ -14,7 +26,7 @@ zsh
 ```
 
 Both `ps -o comm=` and `ps -o args=` return the full agent-exec label.
-`fm-lock.sh` and `fm-harness.sh` match the literal `extension-host (agent-exec)` marker only.
+Matchers use the literal `extension-host (agent-exec)` marker only.
 Sibling hosts `(user)`, `(retrieval)`, `(always-local)` and bare `Cursor.app` must not match.
 
 ## Grok collision guard
