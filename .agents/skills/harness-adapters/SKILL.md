@@ -218,26 +218,17 @@ When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` launches Pi with
 
 ## OMP
 
-Verified on OMP 17.0.5 on 2026-07-19 for crewmate and scout launches on tmux only.
-Primary and secondmate lifecycle support remains unverified and must not be selected.
-Herdr, zellij, Orca, and cmux launches remain unverified and must not be selected.
+Before selecting OMP, apply the role and backend support boundary in [`docs/configuration.md`](../../../docs/configuration.md#harness-support).
 
-- Launch with `omp --cwd "<worktree>" --session-dir "<task-temp>/omp-sessions" --auto-approve [--model "<model>"] [--thinking "<level>"] -e "<state>/<id>.pi-ext.ts" "<brief>"`.
-- A positional brief auto-submits and enters the interactive session.
-- `--model` accepts provider-qualified or fuzzy model names.
-- `--thinking` accepts `off|minimal|low|medium|high|xhigh|max|auto`; Firstmate maps its shared `low|medium|high|xhigh|max` axis directly.
-- `--auto-approve` allowed autonomous bash file creation, reading, and removal without a tool prompt in the live smoke.
-- Detect OMP tools with `OMPCODE=1` before checking `CLAUDECODE=1`; OMP deliberately exports both.
-- The ancestry fallback recognizes only an exact `omp` executable basename, never an `omp` token in Node or Python argv.
-- Busy output ends in a shipped-theme bracketed Escape hint: `⟦esc⟧`, `⟨esc⟩`, or `[esc]`.
-- Match `(\[|⟦|⟨)esc(\]|⟧|⟩)[[:space:]]*$` rather than the mutable working-intent text or spinner.
-- A single `Escape` stops the active turn and returns to the idle composer without exiting.
-- `/exit` cleanly exits, prints the session identifier, and prints the exact resume command `omp --resume <session-id>`.
-- Resume with the same `--cwd` and `--session-dir` launch scope plus the printed `--resume` identifier.
-- OMP accepts Pi-compatible `-e` extensions and fires `pi.on("turn_end", ...)` after each completed turn; Firstmate reuses its state-resident Pi marker extension.
-- OMP's empty composer cursor row is `╰─ ... ─╯`; the shared structural composer parser strips only those edge glyphs so typed text remains detectable.
-- No trust, onboarding, approval, or first-run dialog appeared in the isolated live launch.
-- OMP attempted configured MCP connections at startup; unavailable integrations emitted diagnostics but did not block prompt processing.
+| Fact | Value |
+|---|---|
+| Busy-pane signature | A shipped-theme bracketed Escape suffix (`⟦esc⟧`, `⟨esc⟩`, or `[esc]`); match `(\[|⟦|⟨)esc(\]|⟧|⟩)[[:space:]]*$` rather than mutable intent text or the spinner. |
+| Exit command | `/exit`; prints `omp --resume <session-id>`. |
+| Interrupt | Single Escape. |
+| Resume | Reuse the task's original `--cwd` and `--session-dir` with the printed session identifier. |
+
+No trust, onboarding, approval, or first-run dialog appeared in the verified OMP 17.0.5 isolated launch on 2026-07-19.
+The full empirical record, exact launch shape, detection evidence, extension behavior, and submission regression are in [`docs/omp-harness.md`](../../../docs/omp-harness.md).
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit behavior re-verified 2026-07-03, grok 0.2.82)
 

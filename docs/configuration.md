@@ -116,7 +116,7 @@ The full cmux home label also includes a short hash of the resolved `FM_ROOT` pa
 ## Harness support
 
 claude, codex, opencode, pi, grok, and cursor are empirically verified across their documented roles.
-OMP 17.0.5 is verified for crewmate and scout launches on tmux only; other runtime backends, primary operation, and secondmate operation remain unsupported pending dedicated lifecycle smoke tests.
+OMP 17.0.5 is verified for crewmate and scout launches on tmux only; other runtime backends, primary operation, and secondmate operation remain unsupported pending dedicated lifecycle smoke tests documented in [`docs/omp-harness.md`](omp-harness.md).
 The verified adapter knowledge - busy signatures, interrupt and exit commands, skill-invocation syntax, and per-harness quirks - lives in [`.agents/skills/harness-adapters/SKILL.md`](../.agents/skills/harness-adapters/SKILL.md).
 Launch mechanics, including the verified command templates, live in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
 Primary-session turn-end guard integrations for verified harnesses are tracked as repo-level hook files and documented in [`docs/turnend-guard.md`](turnend-guard.md).
@@ -135,7 +135,6 @@ When `config/crew-dispatch.json` exists, crewmate and scout spawns require an ex
 The primary propagates `config/crew-dispatch.json`, `config/crew-harness`, and `config/backlog-backend` into secondmate homes at secondmate spawn, during the locked session-start bootstrap secondmate sweep, and during explicit `bin/fm-config-push.sh` runs, so a secondmate's own crewmates, dispatch profiles, and backlog backend use the primary values.
 `config/secondmate-harness` is not inherited because secondmates do not launch secondmates.
 For grok, `fm-spawn.sh` installs one firstmate-owned global turn-end hook under `$GROK_HOME/hooks/`, or `~/.grok/hooks/` when `GROK_HOME` is unset, and drops a per-task `.fm-grok-turnend` pointer in the worktree, with teardown removing the task token and pointer.
-For OMP, `fm-spawn.sh` reuses Pi's state-resident `turn_end` extension through OMP's compatible `-e` Extension API and keeps resumable sessions under the per-task temp root.
 For cursor, `fm-spawn.sh` installs a worktree-local turn-end hook (`.cursor/hooks/fm-turn-end.sh` plus a `stop` entry in `.cursor/hooks.json`) scoped to only firstmate-owned files via `bin/fm-cursor-hook-lib.sh`, so a project's own `.cursor/` tree is never clobbered; teardown removes only those firstmate-created files and leaves a tracked project `hooks.json` untouched.
 For Pi secondmate launches, `fm-spawn.sh` starts Pi with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
 

@@ -2,8 +2,7 @@
 
 Date: 2026-07-19.
 Installed version: OMP 17.0.5 from Homebrew.
-Scope: Firstmate crewmate and scout launches on the tmux backend.
-Primary and secondmate operation were not verified and remain unsupported.
+Scope: empirical verification of Firstmate crewmate and scout launches on the tmux backend; [`docs/configuration.md`](configuration.md#harness-support) owns the supported-role and backend boundary.
 
 ## Version and launch
 
@@ -81,11 +80,7 @@ A model-selected intent replaced the working text while preserving the suffix:
 ```
 
 OMP's shipped themes use `⟦esc⟧`, `⟨esc⟩`, or `[esc]`.
-The stable busy ERE is:
-
-```text
-(\[|⟦|⟨)esc(\]|⟧|⟩)[[:space:]]*$
-```
+Operator busy-signature matching is owned by the [harness adapter skill](../.agents/skills/harness-adapters/SKILL.md), which derives it from these observed variants rather than mutable intent text or the spinner.
 
 The idle composer cursor row rendered as:
 
@@ -130,8 +125,5 @@ Firstmate reuses its existing state-resident Pi marker extension and teardown cl
 
 ## Support boundary
 
-OMP is selectable for crewmate and scout dispatch on the tmux backend only.
-Firstmate rejects OMP with herdr, zellij, Orca, or cmux before creating a task workspace because those backend combinations have not been verified.
-OMP is not selectable for secondmate launch because Firstmate's primary watcher and turn-end guard extensions have not been smoke-tested inside an OMP secondmate.
-OMP is not documented as a supported primary harness for the same reason.
-A follow-up may enable those roles only after an end-to-end watcher, actionable wake, guarded turn end, exit, and exact-ID resume smoke.
+Primary and secondmate lifecycle verification was not performed.
+A follow-up must complete an end-to-end watcher, actionable wake, guarded turn end, exit, and exact-ID resume smoke before expanding the support boundary.
