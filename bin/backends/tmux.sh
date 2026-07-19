@@ -129,8 +129,8 @@ fm_backend_tmux_current_command() {  # <target>
 # AGENTS.md's session-start guarantee closes). See docs/tmux-backend.md
 # "Agent liveness probe" for the empirical basis. Prints one of:
 #   alive   - the foreground command is one of the verified harness binaries
-#             (claude, codex, opencode, grok - each confirmed to run as its
-#             own process name, never wrapped by a generic interpreter).
+#             (claude, codex, opencode, omp, grok - each confirmed to run as
+#             its own process name, never wrapped by a generic interpreter).
 #   dead    - the foreground command is a bare shell: nothing is running in
 #             the pane, so a prior agent process has exited.
 #   unknown - anything else, INCLUDING a bare "node"/"python" interpreter
@@ -146,7 +146,7 @@ fm_backend_tmux_agent_alive() {  # <target>
   comm=${comm#-}
   case "$comm" in
     '') printf 'unknown' ;;
-    *claude*|*codex*|*opencode*|*grok*|*cursor-agent*) printf 'alive' ;;
+    *claude*|*codex*|*opencode*|omp|*grok*|*cursor-agent*) printf 'alive' ;;
     # Cursor Agent's interactive binary is often bare "agent" (verified
     # 2026-07-09). Treat that as alive; a random unrelated `agent` binary is
     # rare in firstmate panes. Bare "node" stays unknown (shared with pi).

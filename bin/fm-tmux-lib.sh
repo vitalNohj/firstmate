@@ -34,11 +34,11 @@
 # All functions are `set -u` and `set -e` safe (guarded tmux calls, explicit
 # returns) so they can be sourced into either context.
 
-# Busy footers per harness (mirror fm-watch.sh). claude/codex: "esc to
-# interrupt"; opencode: "esc interrupt"; pi: "Working..."; grok: "Ctrl+c:cancel"
-# (grok's mid-turn cancel hint, shown iff a turn is running - verified grok 0.2.73);
-# cursor: "ctrl+c to stop" (shown while a turn runs - verified 2026-07-09).
-FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
+# Shared busy-footer defaults: claude/codex use "esc to interrupt", opencode
+# uses "esc interrupt", Pi uses "Working...", Grok uses "Ctrl+c:cancel", Cursor
+# uses "ctrl+c to stop", and OMP uses a shipped-theme bracketed "esc" suffix.
+# Match only OMP's stable suffix because its working intent is model-selected.
+FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop|(\[|⟦|⟨)esc(\]|⟧|⟩)[[:space:]]*$'
 
 # fm_tmux_strip_ghost: remove dim/faint (ANSI SGR 2) styled runs from one captured
 # composer line, then drop any remaining escape sequences, leaving only the plain,
@@ -142,6 +142,17 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
   case "$stripped" in
     '>'|'❯'|'$'|'%'|'#') printf 'empty'; return 0 ;;
   esac
+  # Normalize OMP's horizontal composer border before the final checks.
+  # OMP's two-line composer puts the cursor on a horizontal bottom border:
+  # "╰─ <typed text> ─╯". Strip only edge border glyphs so an empty OMP
+  # composer is empty while real text, including interior hyphens, stays pending.
+  case "$stripped" in ╰*) stripped=${stripped#╰} ;; esac
+  while [ "${stripped#─}" != "$stripped" ]; do stripped=${stripped#─}; done
+  case "$stripped" in *╯) stripped=${stripped%╯} ;; esac
+  while [ "${stripped%─}" != "$stripped" ]; do stripped=${stripped%─}; done
+  stripped="${stripped#"${stripped%%[![:space:]]*}"}"
+  stripped="${stripped%"${stripped##*[![:space:]]}"}"
+  [ -n "$stripped" ] || { printf 'empty'; return 0; }
   # A busy footer landing on the cursor line is not pending input.
   if printf '%s' "$stripped" | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"; then
     printf 'empty'; return 0

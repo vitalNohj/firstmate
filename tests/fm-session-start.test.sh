@@ -186,13 +186,12 @@ SH
 
 run_session_start() {  # <home> <root> <path>
   local home=$1 root=$2 path=$3
-  # Strip ambient harness env markers (CLAUDECODE, PI_CODING_AGENT, GROK_AGENT,
-  # CURSOR_AGENT) so detection is driven purely by the fake ps ancestry this
-  # suite installs. Otherwise, running the suite under a real harness (e.g.
-  # Claude Code sets CLAUDECODE=1, or Cursor sets CURSOR_AGENT=1) would
-  # short-circuit fm-harness.sh's layer-1 marker check and misdetect the
-  # harness regardless of FM_FAKE_HARNESS.
-  env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u CURSOR_AGENT \
+  # Strip ambient harness env markers (OMPCODE, CLAUDECODE, PI_CODING_AGENT,
+  # GROK_AGENT, CURSOR_AGENT) so detection is driven purely by the fake ps
+  # ancestry this suite installs. Otherwise, running the suite under a real
+  # harness would short-circuit fm-harness.sh's layer-1 marker check and
+  # misdetect the harness regardless of FM_FAKE_HARNESS.
+  env -u OMPCODE -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u CURSOR_AGENT \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" "$SESSION_START"
 }
 
