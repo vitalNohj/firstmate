@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|grok|cursor|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|omp|grok|cursor|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -40,6 +40,10 @@ comm_base() {
 
 detect_own() {
   # Layer 1: environment markers for verified harnesses.
+  # OMP exports both OMPCODE=1 and CLAUDECODE=1 to child tools. Check the
+  # OMP-specific marker first so a native OMP process is never misclassified
+  # as Claude (verified live on omp 17.0.5, 2026-07-19).
+  [ "${OMPCODE:-}" = "1" ] && { echo omp; return; }
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
   [ "${PI_CODING_AGENT:-}" = "true" ] && { echo pi; return; }
   # grok sets GROK_AGENT=1 for its child/tool processes (verified, grok 0.2.73).
@@ -64,6 +68,7 @@ detect_own() {
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
       pi) echo pi; return ;;
+      omp) echo omp; return ;;
       # cursor-agent or exact cursor only - never bare agent (Grok collision).
       *cursor-agent*|cursor) echo cursor; return ;;
     esac
@@ -90,6 +95,7 @@ detect_own() {
           *opencode*) echo opencode; return ;;
           *grok*) echo grok; return ;;
           *" pi "*|*/pi) echo pi; return ;;
+          *" omp "*|*/omp) echo omp; return ;;
         esac
         ;;
     esac

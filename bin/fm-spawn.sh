@@ -334,6 +334,15 @@ launch_template() {
         printf '%s' 'pi __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(cat __BRIEF__)"'
       fi
       ;;
+    # omp 17.0.5: --cwd pins the isolated worktree, --session-dir keeps
+    # resumable state inside the per-task temp root, --auto-approve removes tool
+    # gates, and a positional prompt auto-submits. The Pi-compatible turn_end
+    # extension is loaded from state/ to avoid project trust/config changes.
+    # Primary and secondmate operation remain unverified.
+    omp)
+      [ "$kind" != secondmate ] || return 1
+      printf '%s' 'omp --cwd "$(pwd)" --session-dir "$GOTMPDIR/../omp-sessions" --auto-approve __MODELFLAG____EFFORTFLAG__-e __OMPEXT__ "$(cat __BRIEF__)"'
+      ;;
     # grok (Grok Build TUI): a positional prompt starts the supervised interactive
     # session. --always-approve auto-approves every tool execution (verified: the
     # crewmate runs fully autonomously, no permission gate), which an unattended
@@ -354,6 +363,13 @@ launch_template() {
     cursor) printf '%s' '__CURSORBIN__ --force --workspace "$(pwd)" __MODELFLAG__"$(cat __BRIEF__)"' ;;
     *) return 1 ;;
   esac
+}
+
+reject_unsupported_harness_role() {
+  if [ "$KIND" = secondmate ] && [ "$HARNESS" = omp ]; then
+    echo "error: OMP is verified for crewmate and scout launches only; secondmate support is not verified" >&2
+    exit 1
+  fi
 }
 
 case "$ARG3" in
@@ -384,10 +400,12 @@ case "$ARG3" in
       HARNESS=$("$FM_ROOT/bin/fm-harness.sh" crew)
       harness_src='config/crew-harness'
     fi
+    reject_unsupported_harness_role
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: no launch template for harness '$HARNESS' (from $harness_src or detection); pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
   *)
     HARNESS=$ARG3
+    reject_unsupported_harness_role
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     ;;
 esac
@@ -439,7 +457,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|grok|cursor)
+    claude|codex|opencode|pi|omp|grok|cursor)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -475,6 +493,13 @@ effort_flag_for_harness() {
       # omit max rather than passing a flag the installed CLI will reject as invalid.
       case "$effort" in
         low|medium|high|xhigh) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
+      esac
+      ;;
+    omp)
+      # OMP accepts --thinking off|minimal|low|medium|high|xhigh|max|auto.
+      # Firstmate maps its shared low through max effort vocabulary directly.
+      case "$effort" in
+        low|medium|high|xhigh|max) printf -- '--thinking %s ' "$(shell_quote "$effort")" ;;
       esac
       ;;
     # opencode's interactive `opencode --prompt` launch has a verified --model
@@ -893,15 +918,15 @@ export const FmTurnEnd = async ({ \$ }) => ({
 EOF
       exclude_path '.opencode/plugins/fm-turn-end.js'
       ;;
-    pi*)
+    pi*|omp*)
       # Written OUTSIDE the worktree: pi's project-trust gate fires on any extension
       # loaded from inside the project (verified live), but an explicit -e path
       # elsewhere loads without a dialog. Lives in state/, cleaned by teardown.
       cat > "$STATE/$ID.pi-ext.ts" <<EOF
 // Firstmate turn-end signal; written by fm-spawn.
+// Pi and OMP share this Extension API and the per-turn "turn_end" event.
 // Use "turn_end" (fires after each turn the agent finishes), not "agent_end"
 // (fires once, only when the whole run exits): the watcher needs a signal at
-// every turn boundary so an idle crewmate is surfaced, not just at shutdown.
 import { execFile } from "node:child_process";
 export default function (pi: any) {
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
@@ -1036,6 +1061,7 @@ META_WINDOW=$T
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
+sq_ompext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
@@ -1045,6 +1071,7 @@ LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
+LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
 # Cursor installs both `agent` and `cursor-agent`, and other CLIs (Grok) can also

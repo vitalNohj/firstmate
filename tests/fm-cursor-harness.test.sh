@@ -16,7 +16,7 @@ TEARDOWN="$ROOT/bin/fm-teardown.sh"
 
 test_detect_cursor_env_marker() {
   local got
-  got=$(CURSOR_AGENT=1 CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' "$HARNESS")
+  got=$(OMPCODE='' CURSOR_AGENT=1 CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' "$HARNESS")
   [ "$got" = cursor ] || fail "CURSOR_AGENT=1 should detect cursor, got '$got'"
   pass "fm-harness detects CURSOR_AGENT=1 as cursor"
 }
@@ -24,7 +24,7 @@ test_detect_cursor_env_marker() {
 test_detect_cursor_env_does_not_override_claude() {
   local got
   # Claude marker wins when both are somehow set (verified-harness precedence).
-  got=$(CURSOR_AGENT=1 CLAUDECODE=1 "$HARNESS")
+  got=$(OMPCODE='' CURSOR_AGENT=1 CLAUDECODE=1 "$HARNESS")
   [ "$got" = claude ] || fail "CLAUDECODE=1 should win over CURSOR_AGENT, got '$got'"
   pass "claude env marker still outranks cursor"
 }
@@ -43,7 +43,7 @@ esac
 exit 1
 SH
   chmod +x "$fakebin/ps"
-  got=$(CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
+  got=$(OMPCODE='' CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
   [ "$got" = cursor ] || fail "args with cursor-agent should detect cursor, got '$got'"
   pass "fm-harness detects cursor-agent in process args despite truncated comm"
 }
@@ -62,7 +62,7 @@ esac
 exit 1
 SH
   chmod +x "$fakebin/ps"
-  got=$(CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS" 2>"$TMP_ROOT/detect-dash.err")
+  got=$(OMPCODE='' CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS" 2>"$TMP_ROOT/detect-dash.err")
   [ "$got" = unknown ] || fail "dash-comm ancestry should be unknown, got '$got'"
   if grep -q 'illegal option' "$TMP_ROOT/detect-dash.err" 2>/dev/null; then
     fail "basename still choked on -zsh: $(cat "$TMP_ROOT/detect-dash.err")"
@@ -164,7 +164,7 @@ esac
 exit 1
 SH
   chmod +x "$fakebin/ps"
-  got=$(CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
+  got=$(OMPCODE='' CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
   [ "$got" = cursor ] || fail "IDE agent-exec ancestry should detect cursor, got '$got'"
   pass "fm-harness detects Cursor IDE extension-host (agent-exec) ancestry"
 }
@@ -295,7 +295,7 @@ esac
 exit 1
 SH
   chmod +x "$fakebin/ps"
-  got=$(CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
+  got=$(OMPCODE='' CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
   [ "$got" = unknown ] || fail "bare agent without cursor-agent evidence should be unknown, got '$got'"
   pass "fm-harness rejects bare agent without cursor-agent argv evidence"
 }

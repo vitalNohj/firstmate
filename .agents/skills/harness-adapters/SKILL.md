@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, grok, and cursor.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, omp, grok, and cursor.
 user-invocable: false
 metadata:
   internal: true
@@ -88,6 +88,7 @@ The supported launch-profile flags below were verified locally on 2026-06-30 wit
 | codex | `--model <model>` | `-c 'model_reasoning_effort="<low\|medium\|high\|xhigh>"'` | Verified on codex-cli 0.142.1. The installed binary schema contains `model_reasoning_effort`, the active config uses it, and the bundled model catalog advertises only low/medium/high/xhigh. `max` is omitted. |
 | grok | `--model <model>` | `--reasoning-effort <low\|medium\|high\|xhigh>` | Verified on grok 0.2.73. `--effort` parses too, but firstmate's profile axis is reasoning effort. `--reasoning-effort max` is rejected, so `max` is omitted. |
 | pi | `--model <model>` | `--thinking <low\|medium\|high\|xhigh>` | Verified on pi 0.80.2. `max` prints an invalid-thinking warning, so firstmate omits Pi effort when the requested effort is `max`. |
+| omp | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified on OMP 17.0.5. OMP also accepts `off`, `minimal`, and `auto` outside Firstmate's shared profile axis. |
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 | cursor | `--model <model>` | none as a separate CLI flag | Verified on cursor-agent 2026.07.08. Effort is only a model bracket override (e.g. `claude-opus-4-8[effort=high]`), so `fm-spawn` passes no cursor effort flag. |
 
@@ -103,6 +104,7 @@ Natural language is acceptable if uncertain.
 - codex: `$<skill>`, for example `$no-mistakes`; `/<skill>` is claude-only and codex rejects it as "Unrecognized command".
 - opencode: no separate verified skill invocation beyond normal slash-command behavior; use natural language if the exact skill command is uncertain.
 - pi: no separate verified skill invocation beyond normal command behavior; use natural language if the exact skill command is uncertain.
+- omp: no separate verified skill invocation beyond normal command behavior; use natural language.
 - grok: `/<skill>`, for example `/no-mistakes` (same form as claude). Verified end to end: grok discovers the user-level `no-mistakes` skill, `/no-mistakes` invokes it, and grok drives a real `no-mistakes axi run`. Like codex's `$`/`/` popups, typing `/<skill>` opens grok's slash-autocomplete, so a too-fast Enter selects the popup entry instead of sending, and for an argument-taking command (like `/no-mistakes`'s optional task-first argument) that first Enter only expands the popup selection into an argument-hint placeholder rather than submitting - a genuine second Enter is required (see the grok section below for the 2026-07-03 incident and fix). `fm_tmux_submit_core`'s retried Enter (used by `fm-send` on the tmux backend) already handles this correctly by reading the cursor row; the herdr backend needed a dedicated fix (`fm_backend_herdr_composer_state`, docs/herdr-backend.md) because its prior delta-based verification false-positived on that same popup-close content change.
 - cursor: `/skills` opens skill discovery; the `/no-mistakes` form is not yet end-to-end verified on Cursor, so use natural language if the exact skill command is uncertain.
 
@@ -203,6 +205,7 @@ The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in t
 
 `fm-spawn` keeps the turn-end extension in `state/`, outside the worktree, because project-local extension files make the trust gate strictly worse and pollute the project.
 The extension must listen for pi's `turn_end` event, not `agent_end`, so the watcher wakes after each completed turn instead of only when the whole agent run exits.
+
 Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection env marker.
 
 **Primary-session guard fact (verified 2026-07-09, Pi 0.80.5).**
@@ -212,6 +215,27 @@ Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-prima
 The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
 `bin/fm-session-start.sh` reports when the live Pi session has not loaded both the turn-end guard and watcher extensions, and points at plain `pi` after project trust as the fix, with `-e` as a trust-free fallback.
 When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` launches Pi with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
+
+## OMP
+
+Verified on OMP 17.0.5 on 2026-07-19 for crewmate and scout launches only.
+Primary and secondmate lifecycle support remains unverified and must not be selected.
+
+- Launch with `omp --cwd "<worktree>" --session-dir "<task-temp>/omp-sessions" --auto-approve [--model "<model>"] [--thinking "<level>"] -e "<state>/<id>.pi-ext.ts" "<brief>"`.
+- A positional brief auto-submits and enters the interactive session.
+- `--model` accepts provider-qualified or fuzzy model names.
+- `--thinking` accepts `off|minimal|low|medium|high|xhigh|max|auto`; Firstmate maps its shared `low|medium|high|xhigh|max` axis directly.
+- `--auto-approve` allowed autonomous bash file creation, reading, and removal without a tool prompt in the live smoke.
+- Detect OMP tools with `OMPCODE=1` before checking `CLAUDECODE=1`; OMP deliberately exports both.
+- Busy output ends in a shipped-theme bracketed Escape hint: `⟦esc⟧`, `⟨esc⟩`, or `[esc]`.
+- Match `(\[|⟦|⟨)esc(\]|⟧|⟩)[[:space:]]*$` rather than the mutable working-intent text or spinner.
+- A single `Escape` stops the active turn and returns to the idle composer without exiting.
+- `/exit` cleanly exits, prints the session identifier, and prints the exact resume command `omp --resume <session-id>`.
+- Resume with the same `--cwd` and `--session-dir` launch scope plus the printed `--resume` identifier.
+- OMP accepts Pi-compatible `-e` extensions and fires `pi.on("turn_end", ...)` after each completed turn; Firstmate reuses its state-resident Pi marker extension.
+- OMP's empty composer cursor row is `╰─ ... ─╯`; the shared structural composer parser strips only those edge glyphs so typed text remains detectable.
+- No trust, onboarding, approval, or first-run dialog appeared in the isolated live launch.
+- OMP attempted configured MCP connections at startup; unavailable integrations emitted diagnostics but did not block prompt processing.
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit behavior re-verified 2026-07-03, grok 0.2.82)
 
