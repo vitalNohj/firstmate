@@ -15,10 +15,20 @@ LOCK="$STATE/.lock"
 mkdir -p "$STATE"
 
 # Known harness command names / argv markers; extend when a new adapter is verified.
-# cursor-agent matches Cursor Agent argv (the binary is often bare "agent", which
-# is too ambiguous alone). Do not use basename(1): macOS basename treats a
-# leading dash in the operand as options (basename -zsh -> illegal -z).
+# Do not use basename(1): macOS basename treats a leading dash in the operand as
+# options (basename -zsh -> illegal -z).
+# Grok collision guard: never put bare ^agent$ here. Grok Build can own that
+# name; classify Cursor CLI only via a cursor-agent argv marker (or the IDE
+# shape below). MainThread / bare-agent CLI argv shapes are owned by upstream
+# kunchenguid/firstmate#705 - do not duplicate them here.
 HARNESS_RE='claude|codex|opencode|grok|^pi$|cursor-agent|^cursor$'
+# Cursor IDE-embedded agent (not the Cursor CLI): macOS names the harness
+# process with spaces/parentheses, e.g.
+#   Cursor Helper (Plugin): extension-host (agent-exec) <workspace> [<id>]
+# Require both extension-host and the literal (agent-exec) tag so a plain
+# Cursor.app GUI, a (user)/(retrieval)/(always-local) extension host, or an
+# unrelated agent binary never matches. Verified 2026-07 on Cursor IDE macOS.
+CURSOR_IDE_AGENT_RE='extension-host \(agent-exec\)'
 
 comm_base() {
   local c=$1
@@ -39,9 +49,15 @@ looks_like_harness() {  # <comm> <args>
     node|node[0-9]*|nodejs|nodejs[0-9]*|python|python[0-9]*|deno|bun)
       printf '%s' "$2" | grep -qE "$HARNESS_RE" && return 0 ;;
   esac
-  # 3. Cursor Agent: the binary is the generic "agent" and macOS truncates comm,
-  #    so the only reliable, unambiguous signal is the cursor-agent argv marker.
-  printf '%s' "$2" | grep -qE 'cursor-agent'
+  # 3. Existing Cursor CLI corroboration on this fork: require a cursor-agent
+  #    substring in argv. Bare basename/path "agent" alone must not match (Grok).
+  printf '%s' "$2" | grep -qE 'cursor-agent' && return 0
+  # 4. Cursor IDE agent-exec extension host: this PR's shape. Comms/args both
+  #    carry "Cursor Helper (Plugin): extension-host (agent-exec) ..." (verified
+  #    via ps -o comm= / ps -o args= on macOS). Check both so holder_alive stays
+  #    symmetric with harness_pid.
+  printf '%s' "$1" | grep -qE "$CURSOR_IDE_AGENT_RE" && return 0
+  printf '%s' "$2" | grep -qE "$CURSOR_IDE_AGENT_RE"
 }
 
 harness_pid() {

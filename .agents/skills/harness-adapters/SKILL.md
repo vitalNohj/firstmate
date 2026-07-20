@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, grok, and cursor.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, omp, grok, and cursor.
 user-invocable: false
 metadata:
   internal: true
@@ -88,6 +88,7 @@ The supported launch-profile flags below were verified locally on 2026-06-30 wit
 | codex | `--model <model>` | `-c 'model_reasoning_effort="<low\|medium\|high\|xhigh>"'` | Verified on codex-cli 0.142.1. The installed binary schema contains `model_reasoning_effort`, the active config uses it, and the bundled model catalog advertises only low/medium/high/xhigh. `max` is omitted. |
 | grok | `--model <model>` | `--reasoning-effort <low\|medium\|high\|xhigh>` | Verified on grok 0.2.73. `--effort` parses too, but firstmate's profile axis is reasoning effort. `--reasoning-effort max` is rejected, so `max` is omitted. |
 | pi | `--model <model>` | `--thinking <low\|medium\|high\|xhigh>` | Verified on pi 0.80.2. `max` prints an invalid-thinking warning, so firstmate omits Pi effort when the requested effort is `max`. |
+| omp | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified on OMP 17.0.5. OMP also accepts `off`, `minimal`, and `auto` outside Firstmate's shared profile axis. |
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 | cursor | `--model <model>` | none as a separate CLI flag | Verified on cursor-agent 2026.07.08. Effort is only a model bracket override (e.g. `claude-opus-4-8[effort=high]`), so `fm-spawn` passes no cursor effort flag. |
 
@@ -103,6 +104,7 @@ Natural language is acceptable if uncertain.
 - codex: `$<skill>`, for example `$no-mistakes`; `/<skill>` is claude-only and codex rejects it as "Unrecognized command".
 - opencode: no separate verified skill invocation beyond normal slash-command behavior; use natural language if the exact skill command is uncertain.
 - pi: no separate verified skill invocation beyond normal command behavior; use natural language if the exact skill command is uncertain.
+- omp: no separate verified skill invocation beyond normal command behavior; use natural language.
 - grok: `/<skill>`, for example `/no-mistakes` (same form as claude). Verified end to end: grok discovers the user-level `no-mistakes` skill, `/no-mistakes` invokes it, and grok drives a real `no-mistakes axi run`. Like codex's `$`/`/` popups, typing `/<skill>` opens grok's slash-autocomplete, so a too-fast Enter selects the popup entry instead of sending, and for an argument-taking command (like `/no-mistakes`'s optional task-first argument) that first Enter only expands the popup selection into an argument-hint placeholder rather than submitting - a genuine second Enter is required (see the grok section below for the 2026-07-03 incident and fix). `fm_tmux_submit_core`'s retried Enter (used by `fm-send` on the tmux backend) already handles this correctly by reading the cursor row; the herdr backend needed a dedicated fix (`fm_backend_herdr_composer_state`, docs/herdr-backend.md) because its prior delta-based verification false-positived on that same popup-close content change.
 - cursor: `/skills` opens skill discovery; the `/no-mistakes` form is not yet end-to-end verified on Cursor, so use natural language if the exact skill command is uncertain.
 
@@ -204,6 +206,7 @@ The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in t
 
 `fm-spawn` keeps the turn-end extension in `state/`, outside the worktree, because project-local extension files make the trust gate strictly worse and pollute the project.
 The extension must listen for pi's `turn_end` event, not `agent_end`, so the watcher wakes after each completed turn instead of only when the whole agent run exits.
+
 Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection env marker.
 
 **Primary-session guard fact (verified 2026-07-09, Pi 0.80.5).**
@@ -213,6 +216,20 @@ Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-prima
 The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
 `bin/fm-session-start.sh` reports when the live Pi session has not loaded both the turn-end guard and watcher extensions, and points at plain `pi` after project trust as the fix, with `-e` as a trust-free fallback.
 When a secondmate is launched on Pi, `fm-spawn.sh --secondmate` launches Pi with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
+
+## OMP
+
+Before selecting OMP, apply the role and backend support boundary in [`docs/configuration.md`](../../../docs/configuration.md#harness-support).
+
+| Fact | Value |
+|---|---|
+| Busy-pane signature | A shipped-theme bracketed Escape suffix (`⟦esc⟧`, `⟨esc⟩`, or `[esc]`); match `(\[|⟦|⟨)esc(\]|⟧|⟩)[[:space:]]*$` rather than mutable intent text or the spinner. |
+| Exit command | `/exit`; prints `omp --resume <session-id>`. |
+| Interrupt | Single Escape. |
+| Resume | Reuse the task's original `--cwd` and `--session-dir` with the printed session identifier. |
+
+No trust, onboarding, approval, or first-run dialog appeared in the verified OMP 17.0.5 isolated launch on 2026-07-19.
+The full empirical record, exact launch shape, detection evidence, extension behavior, and submission regression are in [`docs/omp-harness.md`](../../../docs/omp-harness.md).
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit behavior re-verified 2026-07-03, grok 0.2.82)
 
@@ -270,15 +287,26 @@ It does not pass `--permission-mode`, so the passive hook cannot escalate the pr
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol is Claude-shaped background-notify around `bin/fm-watch-arm.sh`; the passive Stop hook is only a backstop for blind turn ends.
 
-## cursor (VERIFIED 2026-07-09, cursor-agent 2026.07.08-0c04a8a)
+## cursor (VERIFIED 2026-07-09, cursor-agent 2026.07.08-0c04a8a; IDE agent-exec detect 2026-07-19)
 
-Cursor Agent CLI (`agent` / `cursor-agent`).
-Launch: `cursor-agent --force --workspace "$(pwd)" "$(cat <brief>)"`.
+Cursor Agent CLI (`agent` / `cursor-agent`) is the full primary and crewmate harness.
+Cursor IDE-embedded chat agent is a separate session shape: recognition only for collision-awareness and future alongside-mode policy - not a supported full primary.
+Roles and future alongside-mode intent: `docs/cursor-harness.md`.
+Launch (crewmate CLI): `cursor-agent --force --workspace "$(pwd)" "$(cat <brief>)"`.
 Prefer the `cursor-agent` binary, never bare `agent`: Cursor installs both names and other CLIs (Grok) can also own `agent` on PATH, so a bare-`agent` launch can silently run the wrong tool.
 `fm-spawn` resolves the launch binary through `fm_cursor_launch_bin` (`bin/fm-cursor-hook-lib.sh`): it always prefers `cursor-agent` when present, and falls back to bare `agent` only when `cursor-agent` is absent and the candidate binary itself is verified to be Cursor (a resolved cursor-agent path or a `--version` fingerprint naming cursor, never ambient env); it aborts the spawn if neither resolves.
 `--force` / `--yolo` is Run Everything (auto-approve tools).
 `--workspace` pins the worktree.
 A positional prompt loads the brief.
+
+IDE-embedded agent (Cursor chat inside the IDE, not `cursor-agent`): tool shells sit under a process whose `ps -o comm=` / `ps -o args=` label is `Cursor Helper (Plugin): extension-host (agent-exec) <workspace> [<id>]` (verified macOS Cursor IDE 2026-07-19).
+Sibling hosts use `(user)`, `(retrieval)`, or `(always-local)` and must not be treated as the harness.
+`fm-lock.sh` / `fm-harness.sh` recognize the literal `extension-host (agent-exec)` marker so an IDE session is identifiable (groundwork for alongside mode); a bare `Cursor.app` GUI process never matches.
+That recognition is not a claim that the IDE is a supported primary: intended end-state is alongside a terminal firstmate in the same `FM_HOME` without contending for the fleet lock (future work).
+Grok collision guard: bare `agent` without a `cursor-agent` argv marker must not classify as cursor (same discipline as launch via `fm_cursor_launch_bin`).
+CLI `MainThread` / broader bare-agent argv detect is deferred to upstream kunchenguid/firstmate#705.
+`fm-harness.sh` still prefers `CURSOR_AGENT=1` when set (CLI tool children verified; prefer env over ancestry).
+The lock always needs the harness PID from ancestry - the env marker alone cannot hold the lock.
 
 | Fact | Value |
 |---|---|
@@ -287,7 +315,9 @@ A positional prompt loads the brief.
 | Interrupt | single Ctrl+C (footer shows `ctrl+c to stop` mid-turn). Esc was not verified as interrupt. |
 | Skill invocation | `/skills` opens skill discovery; natural language also works. `/no-mistakes` form not yet end-to-end verified on Cursor. |
 | Autonomy | `--force` / `--yolo` (footer shows `Run Everything`). |
-| Env marker | `CURSOR_AGENT=1`, set for child/tool processes. |
+| Env marker | `CURSOR_AGENT=1`, set for child/tool processes (CLI verified; prefer when present). |
+| IDE process (detect only) | `Cursor Helper (Plugin): extension-host (agent-exec) ...` in `ps -o comm=` and `ps -o args=` (macOS). Not a supported primary; alongside-mode policy is future work. |
+| Detect collision | Bare `agent` without `cursor-agent` in argv must not classify as cursor (Grok). |
 | Model flag | `--model <model>` (supports bracket overrides such as `claude-opus-4-8[effort=high]`). |
 | Effort flag | none as a separate CLI flag; use model bracket overrides when needed. |
 | Resume | `agent --resume [chatId]` or `agent --continue`. |

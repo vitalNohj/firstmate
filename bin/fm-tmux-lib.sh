@@ -46,11 +46,11 @@
 # shellcheck source=bin/fm-composer-lib.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/fm-composer-lib.sh"
 
-# Busy footers per harness (mirror fm-watch.sh). claude/codex: "esc to
-# interrupt"; opencode: "esc interrupt"; pi: "Working..."; grok: "Ctrl+c:cancel"
-# (grok's mid-turn cancel hint, shown iff a turn is running - verified grok 0.2.73);
-# cursor: "ctrl+c to stop" (shown while a turn runs - verified 2026-07-09).
-FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
+# Shared busy-footer defaults: claude/codex use "esc to interrupt", opencode
+# uses "esc interrupt", Pi uses "Working...", Grok uses "Ctrl+c:cancel", Cursor
+# uses "ctrl+c to stop", and OMP uses a shipped-theme bracketed "esc" suffix.
+# Match only OMP's stable suffix because its working intent is model-selected.
+FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop|(\[|⟦|⟨)esc(\]|⟧|⟩)[[:space:]]*$'
 
 # fm_tmux_strip_ghost: thin adapter over the shared, fleet-wide ghost extractor
 # fm_composer_strip_ghost (bin/fm-composer-lib.sh). It drops de-emphasised
@@ -96,7 +96,9 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
   plain="${plain#"${plain%%[![:space:]]*}"}"
   plain="${plain%"${plain##*[![:space:]]}"}"
   case "$plain" in
-    '│'*'│'|'┃'*'┃'|'|'*'|') bordered=1 ;;
+    '│'*'│'|'┃'*'┃') bordered=1 ;;
+    '|'*'|') bordered=1 ;;
+    '╰'*'╯') bordered=1 ;;
   esac
   # content: from the ghost-stripped row (real typed text only).
   stripped=$(printf '%s\n' "$raw" | fm_composer_strip_ghost)
@@ -107,6 +109,14 @@ fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
     '┃'*'┃') stripped=${stripped#┃}; stripped=${stripped%┃} ;;
     '|'*'|') stripped=${stripped#|}; stripped=${stripped%|} ;;
   esac
+  # Normalize OMP's horizontal composer border before classification.
+  # OMP's two-line composer puts the cursor on a horizontal bottom border:
+  # "╰─ <typed text> ─╯". Strip only edge border glyphs so an empty OMP
+  # composer is empty while real text, including interior hyphens, stays pending.
+  case "$stripped" in ╰*) stripped=${stripped#╰} ;; esac
+  while [ "${stripped#─}" != "$stripped" ]; do stripped=${stripped#─}; done
+  case "$stripped" in *╯) stripped=${stripped%╯} ;; esac
+  while [ "${stripped%─}" != "$stripped" ]; do stripped=${stripped%─}; done
   stripped="${stripped#"${stripped%%[![:space:]]*}"}"
   stripped="${stripped%"${stripped##*[![:space:]]}"}"
   # A busy footer landing on the cursor line is not pending input (tmux-specific:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|grok|cursor|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|omp|grok|cursor|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -40,6 +40,10 @@ comm_base() {
 
 detect_own() {
   # Layer 1: environment markers for verified harnesses.
+  # OMP exports both OMPCODE=1 and CLAUDECODE=1 to child tools. Check the
+  # OMP-specific marker first so a native OMP process is never misclassified
+  # as Claude (verified live on omp 17.0.5, 2026-07-19).
+  [ "${OMPCODE:-}" = "1" ] && { echo omp; return; }
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
   [ "${PI_CODING_AGENT:-}" = "true" ] && { echo pi; return; }
   # grok sets GROK_AGENT=1 for its child/tool processes (verified, grok 0.2.73).
@@ -48,8 +52,9 @@ detect_own() {
   [ "${GROK_AGENT:-}" = "1" ] && { echo grok; return; }
   # Cursor Agent sets CURSOR_AGENT=1 for its tool/shell children (verified
   # 2026-07-09 on cursor-agent 2026.07.08). Prefer the env marker over ancestry
-  # because macOS truncates ps -o comm= and the binary is often named bare
-  # "agent", which is too ambiguous to match alone.
+  # when present. The IDE-embedded agent-exec ancestry shape below covers
+  # Cursor chat primaries even when the env marker is absent: fm-lock records a
+  # durable harness PID from ancestry, not an env flag.
   [ "${CURSOR_AGENT:-}" = "1" ] && { echo cursor; return; }
   # Layer 2: walk the parent chain and match the command name / args.
   local pid=$$ comm args base
@@ -63,12 +68,23 @@ detect_own() {
       *opencode*) echo opencode; return ;;
       *grok*) echo grok; return ;;
       pi) echo pi; return ;;
+      omp) echo omp; return ;;
+      # cursor-agent or exact cursor only - never bare agent (Grok collision).
       *cursor-agent*|cursor) echo cursor; return ;;
     esac
-    # Cursor Agent's binary is often bare "agent" with a truncated macOS comm=;
-    # the unambiguous signal is cursor-agent in the argv path.
+    # Existing Cursor CLI corroboration: cursor-agent in argv. Bare agent alone
+    # must not match. MainThread / broader CLI argv shapes: upstream #705.
     case "$args" in
       *cursor-agent*) echo cursor; return ;;
+    esac
+    # Cursor IDE-embedded agent: this PR's shape.
+    # "extension-host (agent-exec)" (verified 2026-07 on macOS Cursor IDE).
+    # Narrower than Cursor.app or (user)/(retrieval)/(always-local) hosts.
+    case "$comm" in
+      *'extension-host (agent-exec)'*) echo cursor; return ;;
+    esac
+    case "$args" in
+      *'extension-host (agent-exec)'*) echo cursor; return ;;
     esac
     # Bare interpreter: match the harness name in its script path.
     case "$base" in

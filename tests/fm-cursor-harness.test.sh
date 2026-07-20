@@ -16,7 +16,7 @@ TEARDOWN="$ROOT/bin/fm-teardown.sh"
 
 test_detect_cursor_env_marker() {
   local got
-  got=$(CURSOR_AGENT=1 CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' "$HARNESS")
+  got=$(OMPCODE='' CURSOR_AGENT=1 CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' "$HARNESS")
   [ "$got" = cursor ] || fail "CURSOR_AGENT=1 should detect cursor, got '$got'"
   pass "fm-harness detects CURSOR_AGENT=1 as cursor"
 }
@@ -24,7 +24,7 @@ test_detect_cursor_env_marker() {
 test_detect_cursor_env_does_not_override_claude() {
   local got
   # Claude marker wins when both are somehow set (verified-harness precedence).
-  got=$(CURSOR_AGENT=1 CLAUDECODE=1 "$HARNESS")
+  got=$(OMPCODE='' CURSOR_AGENT=1 CLAUDECODE=1 "$HARNESS")
   [ "$got" = claude ] || fail "CLAUDECODE=1 should win over CURSOR_AGENT, got '$got'"
   pass "claude env marker still outranks cursor"
 }
@@ -43,7 +43,7 @@ esac
 exit 1
 SH
   chmod +x "$fakebin/ps"
-  got=$(CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
+  got=$(OMPCODE='' CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
   [ "$got" = cursor ] || fail "args with cursor-agent should detect cursor, got '$got'"
   pass "fm-harness detects cursor-agent in process args despite truncated comm"
 }
@@ -62,7 +62,7 @@ esac
 exit 1
 SH
   chmod +x "$fakebin/ps"
-  got=$(CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS" 2>"$TMP_ROOT/detect-dash.err")
+  got=$(OMPCODE='' CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS" 2>"$TMP_ROOT/detect-dash.err")
   [ "$got" = unknown ] || fail "dash-comm ancestry should be unknown, got '$got'"
   if grep -q 'illegal option' "$TMP_ROOT/detect-dash.err" 2>/dev/null; then
     fail "basename still choked on -zsh: $(cat "$TMP_ROOT/detect-dash.err")"
@@ -145,6 +145,159 @@ SH
   holder=$(cat "$home/state/.lock")
   [ "$holder" = 9999 ] || fail "lock holder should be the real harness (9999), got '$holder' - an intermediate wrapper's argv substring was matched"
   pass "fm-lock ignores an intermediate wrapper whose argv only contains a harness substring"
+}
+
+# Observed macOS Cursor IDE agent-exec process label (2026-07): both
+# ps -o comm= and ps -o args= return the full string with spaces/parentheses.
+CURSOR_IDE_AGENT_COMM='Cursor Helper (Plugin): extension-host (agent-exec) fpsunity [4-60]'
+
+test_detect_cursor_ide_agent_exec_ancestry() {
+  local fakebin got
+  fakebin=$(fm_fakebin "$TMP_ROOT/detect-ide-agent-exec")
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *"comm="*) printf '%s\\n' '$CURSOR_IDE_AGENT_COMM'; exit 0 ;;
+  *"args="*) printf '%s\\n' '$CURSOR_IDE_AGENT_COMM'; exit 0 ;;
+  *"ppid="*) printf '1\\n'; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+  got=$(OMPCODE='' CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
+  [ "$got" = cursor ] || fail "IDE agent-exec ancestry should detect cursor, got '$got'"
+  pass "fm-harness detects Cursor IDE extension-host (agent-exec) ancestry"
+}
+
+test_fm_lock_acquire_finds_cursor_ide_agent_exec() {
+  local home fakebin out holder
+  home="$TMP_ROOT/lock-ide-acquire"
+  fakebin=$(fm_fakebin "$TMP_ROOT/lock-ide-acquire-fake")
+  mkdir -p "$home/state"
+  # Ancestry: zsh tool shell -> agent-exec host (62891) -> Cursor.app (87685).
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+pid=""; prev=""
+for a in "\$@"; do
+  [ "\$prev" = "-p" ] && pid=\$a
+  prev=\$a
+done
+if [ "\$pid" = 62891 ]; then
+  case "\$*" in
+    *"comm="*) printf '%s\\n' '$CURSOR_IDE_AGENT_COMM' ;;
+    *"args="*) printf '%s\\n' '$CURSOR_IDE_AGENT_COMM' ;;
+    *"ppid="*) printf '87685\\n' ;;
+  esac
+  exit 0
+fi
+if [ "\$pid" = 87685 ]; then
+  case "\$*" in
+    *"comm="*) printf '%s\\n' 'Cursor' ;;
+    *"args="*) printf '%s\\n' '/Applications/Cursor.app/Contents/MacOS/Cursor' ;;
+    *"ppid="*) printf '1\\n' ;;
+  esac
+  exit 0
+fi
+case "\$*" in
+  *"comm="*) printf '%s\\n' '/bin/zsh' ;;
+  *"args="*) printf '%s\\n' '/bin/zsh' ;;
+  *"ppid="*) printf '62891\\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/ps"
+  out=$(FM_HOME="$home" PATH="$fakebin:$PATH" "$LOCK" 2>&1) || fail "fm-lock acquire failed for IDE agent-exec: $out"
+  assert_contains "$out" "lock acquired: harness pid" "IDE agent-exec process did not acquire the lock"
+  holder=$(cat "$home/state/.lock")
+  [ "$holder" = 62891 ] || fail "lock holder should be agent-exec pid 62891, got '$holder'"
+  pass "fm-lock acquire succeeds for Cursor IDE extension-host (agent-exec)"
+}
+
+test_fm_lock_recognizes_cursor_ide_agent_exec_holder() {
+  local home fakebin out
+  home="$TMP_ROOT/lock-ide-holder"
+  fakebin=$(fm_fakebin "$TMP_ROOT/lock-ide-holder-fake")
+  mkdir -p "$home/state"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *"comm="*) printf '%s\\n' '$CURSOR_IDE_AGENT_COMM'; exit 0 ;;
+  *"args="*) printf '%s\\n' '$CURSOR_IDE_AGENT_COMM'; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+  out=$(FM_HOME="$home" PATH="$fakebin:$PATH" "$LOCK" status)
+  assert_contains "$out" "lock: held by live harness pid" "fm-lock did not recognize IDE agent-exec as a live holder"
+  pass "fm-lock recognizes Cursor IDE agent-exec harness holders"
+}
+
+test_fm_lock_rejects_non_agent_exec_cursor_hosts() {
+  local home fakebin out label
+  home="$TMP_ROOT/lock-ide-reject"
+  fakebin=$(fm_fakebin "$TMP_ROOT/lock-ide-reject-fake")
+  mkdir -p "$home/state"
+  for label in \
+    'Cursor Helper (Plugin): extension-host (user) fpsunity [4-57]' \
+    'Cursor Helper (Plugin): extension-host (retrieval) fpsunity [4-70]' \
+    'Cursor Helper (Plugin): extension-host (always-local) fpsunity [4-71]' \
+    '/Applications/Cursor.app/Contents/MacOS/Cursor'
+  do
+    cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *"comm="*) printf '%s\\n' '$label'; exit 0 ;;
+  *"args="*) printf '%s\\n' '$label'; exit 0 ;;
+  *"ppid="*) printf '1\\n'; exit 0 ;;
+esac
+exit 1
+SH
+    chmod +x "$fakebin/ps"
+    out=$(FM_HOME="$home" PATH="$fakebin:$PATH" "$LOCK" 2>&1) && fail "fm-lock should refuse non-agent-exec Cursor host: $label (got: $out)"
+    assert_contains "$out" "cannot locate harness process in ancestry" "unexpected error for non-agent-exec host ($label): $out"
+  done
+  pass "fm-lock rejects non-agent-exec Cursor extension hosts and Cursor.app"
+}
+
+test_fm_lock_rejects_bare_agent_without_cursor_evidence() {
+  local home fakebin out
+  home="$TMP_ROOT/lock-bare-agent-reject"
+  fakebin=$(fm_fakebin "$TMP_ROOT/lock-bare-agent-reject-fake")
+  mkdir -p "$home/state"
+  # Grok collision: basename agent + argv with no cursor-agent marker must not
+  # acquire the lock.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *"comm="*) printf '%s\n' 'agent'; exit 0 ;;
+  *"args="*) printf '%s\n' '/usr/local/bin/agent --yolo'; exit 0 ;;
+  *"ppid="*) printf '1\n'; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+  out=$(FM_HOME="$home" PATH="$fakebin:$PATH" "$LOCK" 2>&1) && fail "fm-lock should refuse bare agent without cursor-agent evidence (got: $out)"
+  assert_contains "$out" "cannot locate harness process in ancestry" "unexpected error for bare agent: $out"
+  pass "fm-lock rejects bare agent without cursor-agent argv evidence"
+}
+
+test_fm_harness_rejects_bare_agent_without_cursor_evidence() {
+  local fakebin got
+  fakebin=$(fm_fakebin "$TMP_ROOT/detect-bare-agent-reject")
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *"comm="*) printf '%s\n' 'agent'; exit 0 ;;
+  *"args="*) printf '%s\n' '/usr/local/bin/agent --yolo'; exit 0 ;;
+  *"ppid="*) printf '1\n'; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+  got=$(OMPCODE='' CURSOR_AGENT='' CLAUDECODE='' GROK_AGENT='' PI_CODING_AGENT='' PATH="$fakebin:$PATH" "$HARNESS")
+  [ "$got" = unknown ] || fail "bare agent without cursor-agent evidence should be unknown, got '$got'"
+  pass "fm-harness rejects bare agent without cursor-agent argv evidence"
 }
 
 test_supervision_cursor_snippet() {
@@ -470,6 +623,12 @@ test_detect_survives_dash_comm
 test_fm_lock_recognizes_cursor_holder
 test_fm_lock_acquire_finds_cursor
 test_fm_lock_skips_wrapper_argv_substring
+test_detect_cursor_ide_agent_exec_ancestry
+test_fm_lock_acquire_finds_cursor_ide_agent_exec
+test_fm_lock_recognizes_cursor_ide_agent_exec_holder
+test_fm_lock_rejects_non_agent_exec_cursor_hosts
+test_fm_lock_rejects_bare_agent_without_cursor_evidence
+test_fm_harness_rejects_bare_agent_without_cursor_evidence
 test_supervision_cursor_snippet
 test_cursor_install_turnend_idempotent
 test_cursor_launch_bin_prefers_cursor_agent
