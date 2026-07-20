@@ -18,7 +18,6 @@ config/cmux-socket-password
 config/wedge-alarm
 
 # Local agent tooling - keep out of git.
-.serena/
 .codebase-memory/
 .codesearch/
 .lsmcp/

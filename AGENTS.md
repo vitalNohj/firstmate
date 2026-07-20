@@ -207,7 +207,6 @@ For code discovery, use codebase-memory-mcp as the primary layer: index the repo
 Codesearch and lsmcp are permitted supplementary discovery tools when available; fall back to `rg` for literals, non-code files, or insufficient indexed results.
 Generated indexes, caches, and tool state from these tools are local-only and must never be committed.
 Default future planning artifacts to Markdown.
-Preserve existing project OpenSpec artifacts and workflows unless a project-specific captain decision authorizes changing them; never initialize or require OpenSpec as a firstmate-wide default.
 
 Firstmate never writes a project's `AGENTS.md` directly.
 A crewmate creates or updates it lazily through the project's selected delivery path, using `bin/fm-ensure-agents-md.sh` and preferring pointers to authoritative sources over copied detail.
