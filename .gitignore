@@ -13,9 +13,11 @@ config/crew-dispatch.json
 config/secondmate-harness
 config/backlog-backend
 config/backend
+config/calm
 config/x-mode.env
 config/cmux-socket-password
 config/wedge-alarm
+config/herdr-presentation-spaces
 
 # Local agent tooling - keep out of git.
 .codebase-memory/
