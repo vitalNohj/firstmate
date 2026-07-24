@@ -9,7 +9,7 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-backend-orca-tests)
 
 make_orca_fakebin() {  # <dir> -> echoes fakebin dir
-  local dir=$1 fb="$1/fakebin"
+  local fb="$1/fakebin"
   mkdir -p "$fb"
   cat > "$fb/orca" <<'SH'
 #!/usr/bin/env bash
@@ -49,7 +49,7 @@ orca_case() {  # <name> -> sets CASE_DIR LOG RESP FB
 }
 
 neutral_fm_root() {  # <dir> -> echoes a minimal root with a quiet guard
-  local dir=$1 root="$1/root"
+  local root="$1/root"
   mkdir -p "$root/bin"
   cat > "$root/bin/fm-guard.sh" <<'SH'
 #!/usr/bin/env bash
@@ -195,6 +195,20 @@ test_composer_state_popup_placeholder_fill_is_pending() {
     bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_composer_state term-123' "$ROOT" )
   [ "$out" = pending ] || fail "a popup-close-with-placeholder-fill must still read as pending (not yet submitted), got '$out'"
   pass "fm_backend_orca_composer_state: a slash-command popup's argument-hint placeholder still reads pending"
+}
+
+# Dead-shell injection safety (task fm-composer-shellglyph-safety): a pane whose
+# agent has exited to a bare login shell has no bordered composer row, so the
+# classifier finds nothing and reports `unknown` - NOT a safe (empty) injection
+# target. Covers the same guarantee herdr/cmux/tmux tests pin for their backends.
+test_composer_state_bare_shell_prompt_is_unknown() {
+  local out
+  orca_case composer-bare-shell
+  printf '{"ok":true,"result":{"terminal":{"tail":["some earlier output","kunchen@mac firstmate $ "]}}}\n' > "$RESP/1.out"
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_composer_state term-123' "$ROOT" )
+  [ "$out" = unknown ] || fail "a bare dead-shell prompt (no bordered composer row) must read unknown, got '$out'"
+  pass "fm_backend_orca_composer_state: a bare dead-shell prompt reads unknown (unsafe-for-injection), never empty"
 }
 
 test_send_text_submit_popup_autocomplete_requires_second_enter() {
@@ -517,7 +531,7 @@ test_spawn_refuses_orca_secondmate_before_home_mutation() {
   assert_contains "$out" "backend=orca does not support --secondmate spawns yet" \
     "orca secondmate refusal should happen at backend selection"
   assert_absent "$subhome/config/crew-harness" \
-    "orca secondmate refusal should not propagate inheritable config into the secondmate home"
+    "orca secondmate refusal should not propagate inherited local material into the secondmate home"
   pass "fm-spawn.sh --backend orca --secondmate: refuses before secondmate-home mutation"
 }
 
@@ -774,7 +788,8 @@ test_scout_teardown_removes_orca_worktree_via_helper() {
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "terminal=term-teardown" "worktree=$wt" "project=$proj" \
     "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" \
-    "backend=orca" "orca_worktree_id=wt-teardown"
+    "backend=orca" "orca_worktree_id=wt-teardown" \
+    "decisions_reviewed=1" "decision_keys="
   orca_case teardown
   printf '{"ok":true,"result":{"worktree":{"id":"wt-teardown","path":"%s"}}}\n' "$wt" > "$RESP/1.out"
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
@@ -810,7 +825,8 @@ test_scout_teardown_refuses_orca_id_path_mismatch() {
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "terminal=term-scout-mismatch" "worktree=$wt" "project=$proj" \
     "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" \
-    "backend=orca" "orca_worktree_id=wt-scout-mismatch"
+    "backend=orca" "orca_worktree_id=wt-scout-mismatch" \
+    "decisions_reviewed=1" "decision_keys="
   orca_case scout-mismatch
   printf '{"ok":true,"result":{"worktree":{"id":"wt-scout-mismatch","path":"%s"}}}\n' "$other_wt" > "$RESP/1.out"
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
@@ -845,7 +861,8 @@ test_teardown_removes_orca_worktree_when_path_missing() {
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "terminal=term-missing-path" "worktree=$wt" "project=$proj" \
     "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" \
-    "backend=orca" "orca_worktree_id=wt-missing-path"
+    "backend=orca" "orca_worktree_id=wt-missing-path" \
+    "decisions_reviewed=1" "decision_keys="
   orca_case missing-path
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
   set +e
@@ -877,7 +894,8 @@ test_teardown_preserves_metadata_when_orca_remove_error_json() {
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "worktree=$wt" "project=$proj" \
     "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" \
-    "backend=orca" "orca_worktree_id=wt-remove-error"
+    "backend=orca" "orca_worktree_id=wt-remove-error" \
+    "decisions_reviewed=1" "decision_keys="
   orca_case remove-error-teardown
   printf '{"ok":false,"error":{"code":"worktree_not_removed","message":"worktree not removed"}}\n' > "$RESP/1.out"
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
@@ -1078,7 +1096,8 @@ test_teardown_refuses_orca_missing_worktree_id() {
   touch "$state/.last-watcher-beat"
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "terminal=term-missing-id" "worktree=$wt" "project=$proj" \
-    "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" "backend=orca"
+    "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" "backend=orca" \
+    "decisions_reviewed=1" "decision_keys="
   orca_case missing-id
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
   set +e
@@ -1109,7 +1128,8 @@ test_teardown_removes_orca_worktree_without_terminal_handle() {
   fm_write_meta "$state/$id.meta" \
     "window=fm-$id" "worktree=$wt" "project=$proj" \
     "harness=claude" "kind=scout" "mode=no-mistakes" "yolo=off" \
-    "backend=orca" "orca_worktree_id=wt-no-terminal"
+    "backend=orca" "orca_worktree_id=wt-no-terminal" \
+    "decisions_reviewed=1" "decision_keys="
   orca_case no-terminal
   printf '{"ok":true,"result":{"worktree":{"id":"wt-no-terminal","path":"%s"}}}\n' "$wt" > "$RESP/1.out"
   neutral=$(neutral_fm_root "$CASE_DIR/neutral")
@@ -1267,6 +1287,7 @@ test_send_text_submit_verifies_empty_composer_after_enter
 test_send_text_submit_keeps_current_tail_when_limited
 test_send_text_submit_retries_when_composer_stays_pending
 test_composer_state_popup_placeholder_fill_is_pending
+test_composer_state_bare_shell_prompt_is_unknown
 test_send_text_submit_popup_autocomplete_requires_second_enter
 test_send_literal_constructs_non_enter_send
 test_send_text_submit_reports_send_failed

@@ -308,9 +308,42 @@ test_supervision_cursor_snippet() {
   assert_contains "$out" "bin/fm-watch-checkpoint.sh" "cursor checkpoint helper missing"
   assert_contains "$out" "Workspace Trust dialog" "cursor snippet missing trust guidance"
   assert_not_contains "$out" "Mode: Unknown harness fallback." "cursor fell through to unknown"
+  out=$("$RENDER" --harness cursor)
+  # shellcheck disable=SC2016 # Single quotes are deliberate: the snippet carries the literal fallback chain for the reading agent to expand.
+  assert_contains "$out" '${FM_CURSOR_WATCH_CHECKPOINT:-${FM_CODEX_WATCH_CHECKPOINT:-180}}' "cursor snippet missing the documented checkpoint fallback chain"
   out=$(FM_CURSOR_WATCH_CHECKPOINT=9 "$RENDER" --harness cursor --repair-line)
   assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 9" "cursor repair line missing checkpoint override"
+  out=$(FM_CURSOR_WATCH_CHECKPOINT='' FM_CODEX_WATCH_CHECKPOINT=13 "$RENDER" --harness cursor --repair-line)
+  assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 13" "cursor repair line did not fall back to FM_CODEX_WATCH_CHECKPOINT"
   pass "cursor supervision protocol renders and repairs like a named harness"
+}
+
+test_cursor_install_turnend_idempotent() {
+  local case_dir wt turnend count
+  command -v jq >/dev/null 2>&1 || { pass "cursor turn-end install idempotence (skipped: jq unavailable)"; return; }
+  case_dir="$TMP_ROOT/install-idem"
+  wt="$case_dir/wt"
+  turnend="$case_dir/turn-ended"
+  fm_git_init_commit "$wt"
+  # Respawn into a reused worktree re-installs over the firstmate-created
+  # manifest; the stop entry must not be appended a second time.
+  fm_cursor_install_turnend "$wt" "$turnend" >/dev/null
+  fm_cursor_install_turnend "$wt" "$turnend" >/dev/null
+  count=$(jq --arg cmd "$FM_CURSOR_HOOK_COMMAND" \
+    '[.hooks.stop[] | select(type == "object" and .command == $cmd)] | length' \
+    "$wt/.cursor/hooks.json")
+  [ "$count" = 1 ] || fail "re-install duplicated the firstmate stop hook ($count entries)"
+  # Same over a dev-local untracked manifest: the project's own hook is kept
+  # and the firstmate entry appears exactly once across repeated installs.
+  printf '{"version":1,"hooks":{"stop":[{"command":"./dev-local.sh"}]}}\n' > "$wt/.cursor/hooks.json"
+  fm_cursor_install_turnend "$wt" "$turnend" >/dev/null
+  fm_cursor_install_turnend "$wt" "$turnend" >/dev/null
+  assert_grep 'dev-local.sh' "$wt/.cursor/hooks.json" "re-install dropped the project's own hook"
+  count=$(jq --arg cmd "$FM_CURSOR_HOOK_COMMAND" \
+    '[.hooks.stop[] | select(type == "object" and .command == $cmd)] | length' \
+    "$wt/.cursor/hooks.json")
+  [ "$count" = 1 ] || fail "re-install duplicated the firstmate stop hook in a merged manifest ($count entries)"
+  pass "cursor turn-end install is idempotent across respawns"
 }
 
 make_spawn_fakebin() {
@@ -558,15 +591,21 @@ test_cursor_spawn_uses_cursor_agent_not_bare_agent() {
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     FM_FAKE_SENDLOG="$sendlog" \
     PATH="$fakebin:$PATH" \
-    "$SPAWN" "$id" "$proj" cursor >/dev/null 2>&1 \
+    "$SPAWN" "$id" "$proj" cursor --model cursor-test-model --effort high >/dev/null 2>&1 \
     || fail "cursor spawn with a colliding agent should succeed"
   assert_grep 'cursor-agent --force --workspace' "$sendlog" "spawn did not launch via cursor-agent"
   assert_no_grep ' -l agent --force' "$sendlog" "spawn launched the bare colliding agent"
+  assert_contains "$(cat "$sendlog")" "--model 'cursor-test-model'" "cursor spawn omitted its verified model flag"
+  assert_not_contains "$(cat "$sendlog")" "--effort" "cursor spawn passed an unverified standalone effort flag"
+  assert_not_contains "$(cat "$sendlog")" "--thinking" "cursor spawn reused Pi's effort flag"
+  assert_not_contains "$(cat "$sendlog")" "--reasoning-effort" "cursor spawn reused Grok's effort flag"
+  assert_grep 'model=cursor-test-model' "$home/state/$id.meta" "cursor spawn did not record the requested model axis"
+  assert_grep 'effort=high' "$home/state/$id.meta" "cursor spawn did not record the requested effort axis"
 
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     PATH="$fakebin:$PATH" \
     "$TEARDOWN" "$id" --force >/dev/null 2>&1 || fail "cursor teardown failed"
-  pass "cursor spawn launches cursor-agent even when a non-Cursor agent is on PATH"
+  pass "cursor spawn launches cursor-agent, passes model, and records-but-omits standalone effort"
 }
 
 test_busy_regex_matches_cursor_footer() {
@@ -591,6 +630,7 @@ test_fm_lock_rejects_non_agent_exec_cursor_hosts
 test_fm_lock_rejects_bare_agent_without_cursor_evidence
 test_fm_harness_rejects_bare_agent_without_cursor_evidence
 test_supervision_cursor_snippet
+test_cursor_install_turnend_idempotent
 test_cursor_launch_bin_prefers_cursor_agent
 test_cursor_launch_bin_falls_back_to_verified_agent
 test_cursor_launch_bin_rejects_non_cursor_agent

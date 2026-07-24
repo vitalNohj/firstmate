@@ -44,7 +44,7 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
 pass() { printf 'ok - %s\n' "$1"; }
 
-SESSION="fm-afk-herdr-e2e-$$"
+SESSION="fm-lab-afk-herdr-e2e-$$"
 export HERDR_SESSION="$SESSION"
 STATE_DIR=
 HERDR_SHIM_DIR=
@@ -65,6 +65,7 @@ cleanup_all() {
   rm -rf "${STATE_DIR:-}" 2>/dev/null || true
 }
 trap cleanup_all EXIT
+fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # --- source the daemon (for afk_enter/afk_exit/FM_INJECT_MARK) + the backend -
 # shellcheck source=bin/fm-supervise-daemon.sh
@@ -123,7 +124,7 @@ EOF
 LOOP_SCRIPT="$STATE_DIR/supervisor-loop.sh"
 cat > "$LOOP_SCRIPT" <<'LOOP'
 #!/usr/bin/env bash
-MARK=$'\x1f'
+MARK=$'\xE2\x81\xA3'
 LOG="$1"
 AGENT_SOURCE=fm-test-supervisor
 AGENT_LABEL=fm-test-supervisor
@@ -377,21 +378,17 @@ test_scenario_b() {
 
   sleep 10
 
-  local digest_count
-  digest_count=$(grep -c 'Supervisor escalate' "$LOG_FILE" || true)
-  [ "$digest_count" -eq 1 ] \
-    || fail "Scenario B: expected exactly 1 digest, got $digest_count (duplicate or lost)"
-
-  if grep -q "$(printf '\x1f').*$(printf '\x1f')" "$LOG_FILE"; then
-    fail "Scenario B: digest concatenated with itself (two sentinel markers in one line)"
-  fi
+  local marker_count
+  marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
+  [ "$marker_count" -eq 1 ] \
+    || fail "Scenario B: expected exactly 1 U+2063 marker, got $marker_count (duplicate or lost)"
 
   local digest_line digest_hex
   digest_line=$(grep 'Supervisor escalate' "$LOG_FILE" | head -1)
   digest_hex=$(printf '%s' "$digest_line" | cut -f1)
   case "$digest_hex" in
-    1f*) ;;
-    *) fail "Scenario B: digest does not start with the sentinel marker (hex: $digest_hex)" ;;
+    e281a3*) ;;
+    *) fail "Scenario B: digest does not start with the terminal-safe sentinel marker (hex: $digest_hex)" ;;
   esac
 
   local user_count
@@ -413,14 +410,10 @@ test_scenario_c() {
   echo "done: PR https://example.test/pr/300" > "$STATE_DIR/fake-c1.status"
   sleep 8
 
-  local digest_count
-  digest_count=$(grep -c 'Supervisor escalate' "$LOG_FILE" || true)
-  [ "$digest_count" -eq 1 ] \
-    || fail "Scenario C: expected exactly 1 digest, got $digest_count"
-
-  if grep -q "$(printf '\x1f').*$(printf '\x1f')" "$LOG_FILE"; then
-    fail "Scenario C: digest concatenated with itself (two sentinel markers in one line)"
-  fi
+  local marker_count
+  marker_count=$(awk -F '\t' '{ hex=$1; count += gsub(/e281a3/, "", hex) } END { print count + 0 }' "$LOG_FILE")
+  [ "$marker_count" -eq 1 ] \
+    || fail "Scenario C: expected exactly 1 U+2063 marker, got $marker_count"
 
   local digest_line digest_hex
   digest_line=$(grep 'Supervisor escalate' "$LOG_FILE" | head -1)
@@ -430,8 +423,8 @@ test_scenario_c() {
   esac
   digest_hex=$(printf '%s' "$digest_line" | cut -f1)
   case "$digest_hex" in
-    1f*) ;;
-    *) fail "Scenario C: digest does not start with the sentinel marker (hex: $digest_hex)" ;;
+    e281a3*) ;;
+    *) fail "Scenario C: digest does not start with the terminal-safe sentinel marker (hex: $digest_hex)" ;;
   esac
 
   local user_count
