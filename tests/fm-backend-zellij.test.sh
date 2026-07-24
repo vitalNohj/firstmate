@@ -437,7 +437,7 @@ test_dispatch_routes_zellij_backend() {
 }
 
 test_dispatch_busy_state_unknown_for_zellij() {
-  # shellcheck source=bin/fm-backend.sh
+  # shellcheck source=/dev/null
   . "$ROOT/bin/fm-backend.sh"
   [ "$(fm_backend_busy_state zellij 'firstmate:5')" = unknown ] \
     || fail "fm_backend_busy_state should report unknown for zellij (no native agent-state primitive; D5: watcher falls back to regex, same as tmux)"
@@ -800,7 +800,9 @@ test_teardown_passes_recorded_tab_id_to_zellij_kill() {
     "zellij_tab_id=3" \
     "worktree=$dir/missing-worktree" \
     "project=$project" \
-    "kind=scout"
+    "kind=scout" \
+    "decisions_reviewed=1" \
+    "decision_keys="
   printf '[]\n' > "$dir/responses/1.out"
   printf '[{"tab_id":3,"name":"fm-zghost"}]\n' > "$dir/responses/2.out"
   fb=$(make_zellij_fakebin "$dir")
@@ -1008,7 +1010,7 @@ test_scripts_reject_fm_target_label_mismatch() {
   pass "fm-send: fm-id zellij targets reject pane ids whose tab label no longer matches"
 }
 
-# shellcheck source=bin/fm-backend.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-backend.sh"
 
 test_version_check_accepts_current_version
