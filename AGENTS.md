@@ -156,8 +156,7 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 ## 4. Harness and runtime dispatch
 
 Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
-The verified general harnesses are `claude`, `codex`, `opencode`, `pi`, `grok`, and `cursor`; OMP is verified only for crewmate and scout dispatch on tmux, not as a primary or secondmate harness.
-Never dispatch on an unverified adapter or outside a verified role and backend boundary.
+The verified harnesses are `claude`, `codex`, `opencode`, `pi`, and `grok`; never dispatch on an unverified adapter.
 If configured harness data names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-dispatch-select.sh` owns selector mechanics, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
@@ -207,11 +206,6 @@ Route durable knowledge to its most specific owner:
 - Task-scoped notes belong with the backlog item, and investigation findings belong in the scout report.
 - Knowledge useful to almost every contributor to one project belongs in that project's committed `AGENTS.md`.
 - Knowledge general to every firstmate user belongs in this repo's shared tracked surface.
-
-For code discovery, use codebase-memory-mcp as the primary layer: index the repository when necessary, then prefer its graph search, path tracing, snippet, query, and architecture tools over file search.
-Codesearch and lsmcp are permitted supplementary discovery tools when available; fall back to `rg` for literals, non-code files, or insufficient indexed results.
-Generated indexes, caches, and tool state from these tools are local-only and must never be committed.
-Default future planning artifacts to Markdown.
 
 Firstmate never writes a project's `AGENTS.md` directly.
 A crewmate creates or updates it lazily through the project's selected delivery path, using `bin/fm-ensure-agents-md.sh` and preferring pointers to authoritative sources over copied detail.

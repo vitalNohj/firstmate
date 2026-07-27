@@ -175,7 +175,7 @@ The full cmux home label also includes a short hash of the resolved `FM_ROOT` pa
 ## Harness support
 
 claude, codex, opencode, pi, grok, and cursor are empirically verified across their documented roles.
-OMP 17.0.5 is verified for crewmate and scout launches on tmux only; other runtime backends, primary operation, and secondmate operation remain unsupported pending dedicated lifecycle smoke tests documented in [`docs/omp-harness.md`](omp-harness.md).
+OMP 17.0.5 is verified for crewmate and scout launches on tmux only, which is the intended scope rather than a partial rollout: OMP is reserved for crewmate work where firstmate or a secondmate judges its `/orchestrate` capability necessary, so primary and secondmate operation are deliberately out of scope and other runtime backends are unverified. The empirical record is in [`docs/omp-harness.md`](omp-harness.md).
 The verified adapter knowledge - busy signatures, interrupt and exit commands, skill-invocation syntax, and per-harness quirks - lives in [`.agents/skills/harness-adapters/SKILL.md`](../.agents/skills/harness-adapters/SKILL.md).
 Launch mechanics, including the verified command templates, live in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
 Primary-session turn-end guard integrations are tracked as repo-level hook files where empirically verified and documented in [`docs/turnend-guard.md`](turnend-guard.md); Cursor's unverified hook gap is explicit there.
