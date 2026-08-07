@@ -328,6 +328,51 @@ Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, and
 Stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
 Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner; other primary harnesses are not applicable because they do not use this Pi extension lifecycle.
 
+The Claude active-turn continuity gate was empirically verified on 2026-08-07 against Claude Code 2.1.223 in a disposable Firstmate-shaped home.
+A real `claude -p` session loaded that home's tracked `.claude/settings.json` Bash `PreToolUse` registration and ran an end-user acceptance sequence.
+With a task record present and no watcher, `bin/fm-send.sh task before` was denied before the fixture script ran, and the session recorded one `permission_denials` entry for it.
+The same session then ran `printf ordinary-ok`, `bin/fm-wake-drain.sh`, literal `bin/fm-teardown.sh finished-task`, restored an identity-matched watcher lock with a fresh beacon, and successfully ran `bin/fm-send.sh task after`.
+The fixture execution log contained only `fm-wake-drain.sh`, `fm-teardown.sh finished-task`, and `fm-send.sh task after`, proving the denied command never executed.
+After the task record was removed, the idle home allowed the same fleet command.
+
+Exact commands and bounded output:
+
+```text
+claude --version
+2.1.223 (Claude Code)
+
+# Disposable Firstmate-shaped home, real tracked Claude Bash PreToolUse path.
+FM_HOME="$home" claude -p "$acceptance_prompt" \
+  --dangerously-skip-permissions --max-turns 20 \
+  --output-format stream-json --verbose
+# exit 0; result contains ACCEPTANCE_DONE; permission_denials = 1 (bin/fm-send.sh task before)
+
+# state/exec.log after the run:
+fm-wake-drain.sh
+fm-teardown.sh finished-task
+fm-send.sh task after
+
+tests/fm-continuity-pretool-check.test.sh
+ok - direct, absolute, grouped, substituted, shell -c, sourced, eval, here-string, and heredoc fleet execution is classified
+ok - quoted, non-executed, cross-home, malformed, and opaque controls preserve compatibility
+ok - a reserved word leading a loop, branch, or negation does not mask the executed fleet script
+ok - env split-string payloads are classified as executed commands
+ok - wake drain, Claude arm recovery, and literal cleanup stay available while forced or expanded cleanup is denied
+ok - the gate keys on real work plus an identity-matched live lock and fresh beacon
+ok - another home or process identity cannot satisfy this home's health proof
+ok - marked secondmate homes guard their own isolated fleet
+ok - child task copies are outside the continuity gate
+ok - malformed input and dependency degradation fail open silently
+ok - the tracked Claude Bash PreToolUse registration invokes the continuity gate
+ok - continuity hook is shellcheck-clean
+```
+
+The deterministic suite additionally proves the deny writes no stdout and emits Claude's `permissionDecision: deny` object on stderr with exit 2, quoting the current Claude recovery mechanism rendered by `bin/fm-supervision-instructions.sh`.
+Every other supported primary runtime was inspected before marking it not applicable.
+Codex (`.codex/hooks.json`), Grok (`.grok/hooks/fm-primary-pretool-check.json`), and OpenCode (`.opencode/plugins/fm-primary-pretool-check.js`) do carry Bash `PreToolUse` surfaces, but each registers only `bin/fm-arm-pretool-check.sh` and the `cd` guard, and Pi and pi-signed expose no Bash `PreToolUse` command gate at all.
+They are not applicable because the gate targets Claude's residual Stop-owned active-turn window specifically: Pi and OpenCode start a verified successor arm before delivering a wake, Codex uses bounded foreground checkpoints, and Grok uses native background-completion notifications.
+None of those runtimes reaches a turn boundary with work under way and no arm claim, so the behavior was not broadened to them without supporting evidence and tests.
+
 Deterministic entry points:
 
 ```sh
@@ -335,6 +380,7 @@ tests/fm-pi-watch-extension.test.sh
 tests/fm-pi-primary-types.test.sh
 tests/fm-watcher-lock.test.sh
 tests/fm-subagent-pretool-check.test.sh
+tests/fm-continuity-pretool-check.test.sh
 tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
