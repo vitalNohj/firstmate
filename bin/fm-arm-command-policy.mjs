@@ -642,7 +642,7 @@ function shellHeredocPayloads(tokens, position) {
   return heredocs.length === 0 ? [] : [heredocs.at(-1).heredoc];
 }
 
-export function shellHereStringPayloads(tokens, position) {
+function shellHereStringPayloads(tokens, position) {
   if (shellInvocation(position)?.kind !== "stdin") return [];
   const payloads = [];
   for (let i = 0; i < tokens.length; i += 1) {

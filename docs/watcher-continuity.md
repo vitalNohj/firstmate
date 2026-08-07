@@ -31,24 +31,12 @@ This is deliberate Option B ordering: the fleet is protected before the model ha
 Claude's Stop hook starts the successor arm at the next Stop after the handling turn, rather than before notification as Pi and OpenCode do.
 The durable wake queue preserves actionable events during the residual active-turn window, and the bounded turn-end guard enforces recovery at Stop when no watcher or auto-arm claim is present.
 The model no longer re-arms after ordinary wakes.
+No PreToolUse hook denies fleet commands based on watcher status.
 A genuine auto-arm failure describes the automatic mechanism as broken and never directs a routine manual background arm.
 Terminal arm-output classification (`started`, `attached`, or `FAILED`) remains defense in depth for the manual recovery path.
 Codex retains its bounded foreground checkpoint protocol.
 Grok retains its tracked background-task notification protocol.
 No adapter starts a replacement with shell `&`.
-
-During that active-turn window, Claude's Bash `PreToolUse` integration runs `bin/fm-continuity-pretool-check.sh` before fleet commands.
-When real task records exist but no identity-matched watcher holds the active home's lock with a fresh beacon, it denies executed `bin/fm-*.sh` commands except wake drain, manual arm recovery, and ordinary literal fail-closed cleanup.
-It denies forced cleanup and cleanup with shell-expanded arguments.
-The deny quotes the current Claude recovery mechanism rendered by `bin/fm-supervision-instructions.sh` rather than restating a second copy of it.
-The main home and each marked secondmate home enforce that boundary only for their own fleet.
-Linked child worktrees and commands that name another home's absolute fleet-script path remain outside it.
-Malformed or opaque shell input and missing parsing dependencies remain silent fail-open compatibility paths rather than becoming a blanket shell block.
-
-That gate is a stateless advisory check, not a transactional guarantee.
-It reads watcher health in its own short-lived process and writes no approval token, so supervision can be lost in the interval between the hook allowing a command and Claude executing it.
-A command approved while a watcher was healthy still runs after that watcher dies, and the same command is denied on its next attempt.
-The gate therefore narrows the active-turn window rather than closing it, and the unchanged turn-end guard remains the enforcing backstop.
 
 The turn-end guard remains the final backstop rather than the normal continuity mechanism and cooperates with the auto-arm in its `--claude` mode.
 
@@ -76,7 +64,6 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
-`tests/fm-continuity-pretool-check.test.sh` drives the shared shell parser through direct and nested execution forms, reserved-word compound commands, `env` split-string payloads, scope and watcher identity boundaries, recovery and cleanup exceptions, dependency degradation, output shape, and the tracked Claude hook registration.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
 `tests/fm-turnend-guard.test.sh` covers the cooperative `--claude` guard, including monotonic failed-epoch progression, the integrated bounded fail-open, post-alarm continuation suppression, and positive recovery reset.
@@ -86,8 +73,6 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 The goal is continuity without a Pi or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.
 OpenCode support targets persistent TUI sessions rather than headless `opencode run`.
-Claude depends on the Stop `asyncRewake` rewake and is the only primary integration with the active-turn fleet-command gate.
-Grok retains native background-completion notifications, and Codex retains bounded foreground checkpoints.
-Codex, Grok, OpenCode, Pi, and pi-signed keep their existing continuity mechanisms because their current hook or extension surfaces do not share Claude's residual Stop-owned active-turn gap.
+Claude depends on the Stop `asyncRewake` rewake, Grok retains native background-completion notifications, and Codex retains bounded foreground checkpoints.
 
 [`verification/supervision.md`](verification/supervision.md#watcher-continuity) records the current five-harness live evidence, the 2026-07-24 Stop-owned Claude auto-arm results, and exact opt-in commands.
