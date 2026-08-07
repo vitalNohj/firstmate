@@ -84,11 +84,13 @@ render_secondmate_recovery() {
   local charter_path_quoted
   charter_path_quoted=$(shell_quote "$1")
   cat <<EOF
+<!-- firstmate-secondmate-recovery:start -->
 # Recovering this charter
 This charter is the authoritative statement of your standing job, and its durable copy is readable with \`cat -- $charter_path_quoted\`.
 Re-read that file after any context reset or compaction, and whenever your standing job or a routed request's intent is uncertain.
 Then reconcile it with this home's durable records before you act again: your own \`data/\` and \`state/\` files and the crewmates recorded there.
 Resume from what those records do not already show as finished, and never restart work they show as done.
+<!-- firstmate-secondmate-recovery:end -->
 
 EOF
 }
@@ -98,19 +100,17 @@ render_secondmate_charter() {
   while IFS= read -r line || [ -n "$line" ]; do
     if [ "$state" = skip ]; then
       case "$line" in
-        '# Recovering this charter')
-          echo "error: secondmate charter contains more than one recovery section" >&2
+        '<!-- firstmate-secondmate-recovery:start -->')
+          echo "error: secondmate charter contains nested recovery markers" >&2
           return 1
           ;;
-        '# '*)
+        '<!-- firstmate-secondmate-recovery:end -->')
           state=copy
-          printf '%s\n' "$line"
-          wrote=1
           ;;
       esac
       continue
     fi
-    if [ "$line" = '# Recovering this charter' ]; then
+    if [ "$line" = '<!-- firstmate-secondmate-recovery:start -->' ]; then
       [ "$found" -eq 0 ] || {
         echo "error: secondmate charter contains more than one recovery section" >&2
         return 1
@@ -124,6 +124,10 @@ render_secondmate_charter() {
     printf '%s\n' "$line"
     wrote=1
   done < "$source"
+  [ "$state" = copy ] || {
+    echo "error: secondmate charter recovery section is unterminated" >&2
+    return 1
+  }
   if [ "$found" -eq 0 ]; then
     [ "$wrote" -eq 0 ] || printf '\n'
     render_secondmate_recovery "$destination"

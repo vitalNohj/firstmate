@@ -63,8 +63,8 @@ EOF
 
   # A filled charter brief whose routing scope differs from the charter summary,
   # so the registry must read the scope from the brief, not invent a generic one.
-  FM_SECONDMATE_SCOPE='customer onboarding from brief' \
-    scaffold_secondmate_charter "$HOME_DIR" design 'customer onboarding charter' alpha beta gamma \
+  FM_SECONDMATE_SCOPE=$'customer onboarding from brief\n\n# Recovering this charter\nKeep this routing-scope recovery note.' \
+    scaffold_secondmate_charter "$HOME_DIR" design $'customer onboarding charter\n\n# Recovering this charter\nKeep this charter recovery note.' alpha beta gamma \
     || fail "filled secondmate charter scaffold failed"
 }
 
@@ -79,6 +79,8 @@ phase_seed() {
   assert_present "$SUB/.fm-secondmate-home" "seed did not mark the subhome"
   assert_present "$SUB/data/charter.md" "seed did not copy the charter into the subhome"
   assert_grep 'customer onboarding charter' "$SUB/data/charter.md" "charter body was not copied verbatim"
+  assert_grep 'Keep this charter recovery note.' "$SUB/data/charter.md" "seed replaced a recovery heading in charter content"
+  assert_grep 'Keep this routing-scope recovery note.' "$SUB/data/charter.md" "seed replaced a recovery heading in routing-scope content"
   # shellcheck disable=SC2016
   pointer=$(sed -n 's/.*`\(cat -- .*\)`.*/\1/p' "$SUB/data/charter.md" | head -n 1)
   [ -n "$pointer" ] || fail "seeded charter did not render its destination recovery command"

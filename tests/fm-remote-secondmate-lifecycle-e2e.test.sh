@@ -303,6 +303,13 @@ seed_env() {
 
 REAL_GIT=$(command -v git)
 CONCURRENT_HOME="$TMP_ROOT/concurrent home"
+PROVISION_SOURCE_HOME="$TMP_ROOT/provision source"
+mkdir -p "$PROVISION_SOURCE_HOME/data"
+FM_HOME="$PROVISION_SOURCE_HOME" \
+  FM_SECONDMATE_CHARTER=$'Concurrent provisioning charter.\n\n# Recovering this charter\nKeep this remote charter recovery note.' \
+  FM_SECONDMATE_SCOPE=$'concurrent provisioning\n\n# Recovering this charter\nKeep this remote routing-scope recovery note.' \
+  "$REMOTE_ROOT/bin/fm-brief.sh" provision-source --secondmate --no-projects >/dev/null \
+  || fail "remote provisioning source charter scaffold failed"
 cat > "$FAKEBIN/git" <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = clone ] && [ "\${!#}" = "$CONCURRENT_HOME" ]; then
@@ -317,7 +324,7 @@ SH
 chmod +x "$FAKEBIN/git"
 printf 'schema=fm-remote-home-provision.v1\nid_b64=%s\ncharter_b64=%s\nproject_count=0\n' \
   "$(printf ios | base64 | tr -d '\n')" \
-  "$(printf 'Concurrent provisioning charter.\n' | base64 | tr -d '\n')" \
+  "$(base64 < "$PROVISION_SOURCE_HOME/data/provision-source/brief.md" | tr -d '\n')" \
   > "$TMP_ROOT/provision.manifest"
 PATH="$FAKEBIN:$PATH" FM_HOME="$CONCURRENT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" \
   "$REMOTE_ROOT/bin/fm-remote-home-provision.sh" < "$TMP_ROOT/provision.manifest" \
@@ -351,6 +358,10 @@ remote_recovered=$(bash -c "$remote_pointer") \
   || fail "remote provisioning recovery command was not shell-safe: $remote_pointer"
 [ "$remote_recovered" = "$(cat "$CONCURRENT_HOME/data/charter.md")" ] \
   || fail "remote provisioning recovery command did not read the destination charter"
+assert_grep 'Keep this remote charter recovery note.' "$CONCURRENT_HOME/data/charter.md" \
+  "remote provisioning replaced a recovery heading in charter content"
+assert_grep 'Keep this remote routing-scope recovery note.' "$CONCURRENT_HOME/data/charter.md" \
+  "remote provisioning replaced a recovery heading in routing-scope content"
 pass "overlapping remote home provisioning serializes through publication and rollback"
 if [ "${FM_TEST_PROVISION_ONLY:-0}" = 1 ]; then
   echo "ALL TESTS PASSED"
