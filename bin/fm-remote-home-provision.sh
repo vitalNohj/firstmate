@@ -239,7 +239,9 @@ EOF
   printf '%s\n' "$REGISTRY_LINE" >> "$PROJECT_REG"
 done < <(grep '^project=' "$TMP/manifest")
 
-cp "$TMP/charter" "$FM_HOME/data/charter.md.tmp.$$"
+"$SCRIPT_DIR/fm-brief.sh" --render-secondmate-charter \
+  "$TMP/charter" "$FM_HOME/data/charter.md" > "$FM_HOME/data/charter.md.tmp.$$" \
+  || die "cannot render the remote charter's durable path"
 chmod 600 "$FM_HOME/data/charter.md.tmp.$$"
 mv -f -- "$FM_HOME/data/charter.md.tmp.$$" "$FM_HOME/data/charter.md"
 cp "$PROJECT_REG" "$FM_HOME/data/projects.md.tmp.$$"

@@ -943,7 +943,9 @@ seed_home() {
     fi
   done
 
-  cp "$SEED_PARENT_BRIEF" "$home/data/charter.md"
+  "$FM_ROOT/bin/fm-brief.sh" --render-secondmate-charter \
+    "$SEED_PARENT_BRIEF" "$home/data/charter.md" > "$SEED_BACKUP_DIR/rendered-charter.md"
+  cp "$SEED_BACKUP_DIR/rendered-charter.md" "$home/data/charter.md"
 
   projects_csv=$(join_projects "$@")
   # Durable record of this home's route to its parent, written once here next

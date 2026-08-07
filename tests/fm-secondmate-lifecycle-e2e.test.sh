@@ -31,7 +31,7 @@ TMP_ROOT=$(fm_test_tmproot fm-secondmate-lifecycle)
 export FM_BACKEND=tmux
 
 HOME_DIR="$TMP_ROOT/main home"
-SUB="$TMP_ROOT/design-home"
+SUB="$TMP_ROOT/design home path"
 SUB_ABS=
 FAKEBIN=
 LOG="$TMP_ROOT/tmux.log"
@@ -69,7 +69,7 @@ EOF
 }
 
 phase_seed() {
-  local out
+  local out pointer recovered
   out=$(PATH="$FAKEBIN:$PATH" FM_HOME="$HOME_DIR" \
     "$ROOT/bin/fm-home-seed.sh" design "$SUB" alpha beta gamma) \
     || fail "seed failed"
@@ -79,6 +79,12 @@ phase_seed() {
   assert_present "$SUB/.fm-secondmate-home" "seed did not mark the subhome"
   assert_present "$SUB/data/charter.md" "seed did not copy the charter into the subhome"
   assert_grep 'customer onboarding charter' "$SUB/data/charter.md" "charter body was not copied verbatim"
+  # shellcheck disable=SC2016
+  pointer=$(sed -n 's/.*`\(cat -- .*\)`.*/\1/p' "$SUB/data/charter.md" | head -n 1)
+  [ -n "$pointer" ] || fail "seeded charter did not render its destination recovery command"
+  recovered=$(bash -c "$pointer") || fail "seeded charter recovery command was not shell-safe: $pointer"
+  [ "$recovered" = "$(cat "$SUB/data/charter.md")" ] \
+    || fail "seeded charter recovery command did not read the destination charter"
 
   # Projects cloned; remote-backed origins preserved.
   assert_present "$SUB/projects/alpha/.git" "alpha was not cloned"

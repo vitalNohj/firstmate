@@ -9,6 +9,7 @@
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#        fm-brief.sh --render-secondmate-charter <source> <absolute-destination-path>
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -73,8 +74,77 @@ usage() {
   ' "$0"
 }
 
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+render_secondmate_recovery() {
+  local charter_path_quoted
+  charter_path_quoted=$(shell_quote "$1")
+  cat <<EOF
+# Recovering this charter
+This charter is the authoritative statement of your standing job, and its durable copy is readable with \`cat -- $charter_path_quoted\`.
+Re-read that file after any context reset or compaction, and whenever your standing job or a routed request's intent is uncertain.
+Then reconcile it with this home's durable records before you act again: your own \`data/\` and \`state/\` files and the crewmates recorded there.
+Resume from what those records do not already show as finished, and never restart work they show as done.
+
+EOF
+}
+
+render_secondmate_charter() {
+  local source=$1 destination=$2 line state=copy found=0 wrote=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$state" = skip ]; then
+      case "$line" in
+        '# Recovering this charter')
+          echo "error: secondmate charter contains more than one recovery section" >&2
+          return 1
+          ;;
+        '# '*)
+          state=copy
+          printf '%s\n' "$line"
+          wrote=1
+          ;;
+      esac
+      continue
+    fi
+    if [ "$line" = '# Recovering this charter' ]; then
+      [ "$found" -eq 0 ] || {
+        echo "error: secondmate charter contains more than one recovery section" >&2
+        return 1
+      }
+      render_secondmate_recovery "$destination"
+      found=1
+      wrote=1
+      state=skip
+      continue
+    fi
+    printf '%s\n' "$line"
+    wrote=1
+  done < "$source"
+  if [ "$found" -eq 0 ]; then
+    [ "$wrote" -eq 0 ] || printf '\n'
+    render_secondmate_recovery "$destination"
+  fi
+}
+
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
+  --render-secondmate-charter)
+    [ "$#" -eq 3 ] || {
+      echo "error: --render-secondmate-charter requires a source and absolute destination path" >&2
+      exit 1
+    }
+    [ -f "$2" ] || { echo "error: secondmate charter source is not a regular file: $2" >&2; exit 1; }
+    case "$3" in
+      /*) ;;
+      *) echo "error: secondmate charter destination path must be absolute: $3" >&2; exit 1 ;;
+    esac
+    render_secondmate_charter "$2" "$3"
+    exit
+    ;;
 esac
 
 # shellcheck source=bin/fm-marker-lib.sh
@@ -176,12 +246,6 @@ BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 mkdir -p "$DATA/$ID"
 
-shell_quote() {
-  printf "'"
-  printf '%s' "$1" | sed "s/'/'\\\\''/g"
-  printf "'"
-}
-
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 BRIEF_QUOTED=$(shell_quote "$BRIEF")
 
@@ -215,13 +279,10 @@ $SECONDMATE_CHARTER
 # Routing scope
 $SECONDMATE_SCOPE
 
-# Recovering this charter
-This charter is the authoritative statement of your standing job.
-It lives on disk in two places that outlive this conversation: your own home's \`data/charter.md\`, which is the copy you were launched from, and the scaffold it was generated from, readable with \`cat -- $BRIEF_QUOTED\`.
-Re-read whichever of those exists after any context reset or compaction, and whenever your standing job or a routed request's intent is uncertain.
-Then reconcile it with this home's durable records before you act again: your own \`data/\` and \`state/\` files and the crewmates recorded there.
-Resume from what those records do not already show as finished, and never restart work they show as done.
-
+EOF
+# shellcheck disable=SC2094
+render_secondmate_recovery "$BRIEF" >> "$BRIEF"
+cat >> "$BRIEF" <<EOF
 # Project clones
 $PROJECT_CLONES_BODY
 

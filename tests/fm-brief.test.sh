@@ -732,9 +732,6 @@ test_every_variant_is_self_locating() {
   brief="$home/data/selfloc-mate/brief.md"
   assert_grep "cat -- '$home/data/selfloc-mate/brief.md'" "$brief" \
     "secondmate charter did not name its own absolute path as a runnable re-read"
-  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
-  assert_grep 'your own home'\''s `data/charter.md`' "$brief" \
-    "secondmate charter did not name the seeded copy it is actually launched from"
   assert_grep "after any context reset or compaction" "$brief" \
     "secondmate charter did not trigger the re-read on a context reset or compaction"
   assert_grep "never restart work they show as done" "$brief" \
