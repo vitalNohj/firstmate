@@ -28,7 +28,7 @@ run() {
 	local root=$1 mode=$2
 	shift 2
 	FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" \
-		FM_CONFIG_OVERRIDE="$root/config" "$ROUTER" "$mode" "$@"
+		FM_STATE_OVERRIDE="$root/state" FM_CONFIG_OVERRIDE="$root/config" "$ROUTER" "$mode" "$@"
 }
 
 anchors_file() { printf '%s/state/captain-router/anchors.current' "$1"; }
@@ -269,7 +269,7 @@ test_gate_agent_is_inert() {
 	local root="$TMP_ROOT/gate-env" out status=0
 	make_primary "$root"
 	out=$(printf 'anything' | env NO_MISTAKES_GATE=1 FM_GATE_REFUSE_BYPASS=0 \
-		FM_ROOT_OVERRIDE="$root" FM_HOME="$root" "$ROUTER" --on-submit 2>&1) || status=$?
+		FM_ROOT_OVERRIDE="$root" FM_HOME="$root" FM_STATE_OVERRIDE="$root/state" "$ROUTER" --on-submit 2>&1) || status=$?
 	expect_code 0 "$status" "gate agent exit"
 	[ -z "$out" ] || fail "a no-mistakes gate agent must be silent, got: $out"
 	assert_absent "$root/state/captain-router" "gate agent must not create router state"
@@ -282,7 +282,7 @@ test_bad_usage_exits_two() {
 	printf '' | run "$root" --bogus >/dev/null 2>&1 || status=$?
 	expect_code 2 "$status" "invalid mode is a usage error"
 	status=0
-	printf '' | FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" \
+	printf '' | FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" FM_STATE_OVERRIDE="$root/state" \
 		"$ROUTER" >/dev/null 2>&1 || status=$?
 	expect_code 2 "$status" "missing mode is a usage error"
 	pass "router: invalid CLI usage exits 2 (only non-fail-open path)"

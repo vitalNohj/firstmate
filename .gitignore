@@ -17,6 +17,8 @@ config/calm
 config/x-mode.env
 config/cmux-socket-password
 config/wedge-alarm
+config/notion-token
+config/notion-continuity.env
 config/herdr-presentation-spaces
 
 # Local agent tooling - keep out of git.

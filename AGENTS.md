@@ -123,6 +123,7 @@ Its header is the single owner of composed commands, ordering, and digest conten
 `bin/fm-supervision-instructions.sh` renders the emitted supervision block from `docs/supervision-protocols/`.
 Do not reimplement it by separately running its lock, bootstrap, or initial wake-drain components.
 Tracked native session-open adapters only nudge this command; `docs/sessionstart-nudge.md` owns their enforcement mechanics and verification evidence.
+When Continuity/Notion is configured for this home, the session-start digest may print a `CONTINUITY` section; load skill `notion-continuity` before Context/Entry work (`docs/captain-message-router.md`).
 
 Read the complete digest once and trust it as this turn's startup and recovery input.
 Do not separately re-read the context, backlog, metadata, or bulk status inputs it just printed unless a source was reported absent or corrupt, older history is specifically needed, or a targeted workflow must inspect before writing.
@@ -472,6 +473,15 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the X-mode configuration blocker, and on any milestone or terminal wake for an X-mode-linked task before posting its completion follow-up; relevant only when X mode is on.
 - `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
+- `notion-continuity` - load before reading or writing Continuity Contexts or Entries, before syncing captain-router briefs from Notion, when a captain message should become an Entry, or when assigning Router session ids and slash semantics.
+
+## 13b. Continuity / Notion
+
+Notion Continuity is Firstmate-owned when this home is configured.
+Load skill `notion-continuity` before Context/Entry writes, brief sync from Notion, or Router-session assignment.
+Use `bin/fm-notion-continuity.sh` only (never ad-hoc curl with secrets on argv); token via `FM_NOTION_TOKEN` / `NOTION_TOKEN` or gitignored `config/notion-token`.
+Local captain-message routing and brief format: `docs/captain-message-router.md`.
+Buddy JSONL export remains optional air-gap sync through `bin/fm-captain-notion-sync.sh`.
 
 ## 14. X mode
 

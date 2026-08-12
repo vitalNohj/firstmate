@@ -386,6 +386,18 @@ else
   printf 'absent\n'
 fi
 
+# --- 5b. Notion Continuity availability (optional, fail-open) ----------
+if [ -n "${FM_NOTION_TOKEN:-${NOTION_TOKEN:-}}" ] || 	[ -s "$CONFIG/notion-token" ] || [ -s "$CONFIG/notion-continuity.env" ]; then
+	section "CONTINUITY"
+	cat <<'EOF'
+Notion Continuity is configured for this home.
+Use bin/fm-notion-continuity.sh (not ad-hoc curl with secrets in argv).
+Load skill notion-continuity for Contexts vs Entries, Router session ids, and
+slash semantics. Local brief sync: docs/captain-message-router.md.
+
+EOF
+fi
+
 # --- 6. closing reminder -----------------------------------------------
 section "NEXT STEP"
 if [ "$READ_ONLY" -eq 1 ]; then

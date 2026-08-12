@@ -29,6 +29,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-guard.sh`            | Warn on primary-checkout tangles, pending queued wakes, and stale watcher liveness   |
 | `fm-primary-scope-lib.sh` | Shared marker-or-plain-checkout primary-home predicate for tracked hooks             |
 | `fm-captain-message-router.sh` | Captain-message continuity router (anchors, briefs, det/model verdicts; docs/captain-message-router.md) |
+| `fm-captain-notion-sync.sh` | Sync buddy-exported Notion Context Router JSONL into local session briefs (no Notion API; docs/captain-message-router.md) |
+| `fm-notion-continuity.sh` | Notion Continuity Contexts/Entries shell surface (token local-only; docs/captain-message-router.md) |
 | `fm-turnend-guard.sh`    | Shared primary turn-end guard predicate so no turn ends blind (docs/turnend-guard.md) |
 | `fm-turnend-guard-grok.sh` | Grok Stop-hook adapter for the primary turn-end guard                              |
 | `fm-arm-pretool-check.sh` | Stable PreToolUse transport for the watcher-arm command policy (docs/arm-pretool-check.md) |

@@ -27,7 +27,8 @@ Local-only under `state/captain-router/` (gitignored with `state/`):
 | --- | --- |
 | `anchors.current` | Current session open-ask anchors |
 | `current.session` | Session id last settled on this home |
-| `sessions/<id>.brief` | Per-session topic head + anchors |
+| `sessions/<id>.brief` | Per-session topic head + optional Notion continuity headers + anchors |
+| `notion-contexts.jsonl` | Mirror of buddy-exported Notion Context Router JSONL |
 | `pending/<ts>-<digest>.route` | Staged reroute/new handoff for P2 |
 | `pending/LATEST` | Basename of the newest pending route |
 | `verdicts.log` | Append-only verdict rows |
@@ -46,10 +47,22 @@ Hooks should pass the harness session id when the event exposes one.
 session_id=<id>
 updated=<iso8601>
 topic=<single-line head summary>
+semantics=<optional slash-separated Notion semantics>
+notion_url=<optional>
+notion_name=<optional Contexts DB name>
+github=<optional>
+schema=<optional>
+herdr_session=<optional>
+herdr_target=<optional>
+herdr_workspace=<optional>
 ---
 <normalized anchor>
 ...
 ```
+
+Optional Notion continuity headers sit after `topic=` and before `---`.
+`bin/fm-captain-notion-sync.sh` upserts them from a buddy-exported JSONL mirror.
+`--on-settle` refreshes `topic` + anchors but preserves those optional headers when already present, and re-emits unique `semantics` path tokens as extra anchor lines so deterministic reroute can still match them.
 
 Session discovery enumerates `state/captain-router/sessions/*.brief` only.
 It does not scan unrelated fleet metadata.
@@ -124,11 +137,46 @@ No real model calls in unit tests.
 - Auto-spawn of a new primary session for `new` when a safe API exists.
 - Broader harness hook coverage beyond Pi.
 
+## Notion continuity
+
+Firstmate can own Continuity directly via `bin/fm-notion-continuity.sh` when a local token and data-source ids are configured.
+Buddy JSONL export remains an optional air-gap path.
+
+### Firstmate-owned (Notion API)
+
+```sh
+# Token: FM_NOTION_TOKEN / NOTION_TOKEN, or gitignored config/notion-token
+# Ids: config/notion-continuity.env (see docs/examples/notion-continuity.env.example)
+
+bin/fm-notion-continuity.sh contexts-export
+bin/fm-notion-continuity.sh context-upsert --router-session blender-axi --semantics blender/axi/cli
+bin/fm-notion-continuity.sh entry-add --router-session blender-axi --text 'captain message...'
+bin/fm-notion-continuity.sh sync-briefs   # export + local brief sync
+```
+
+- Never print or commit the token. Never invent DB/data-source ids.
+- Skill `notion-continuity` owns agent policy (Contexts vs Entries, slash semantics, Router session ids).
+- When configured, `--on-settle` best-effort runs `sync-briefs`, and submit `reroute`/`new` best-effort `entry-add` (always fail-open).
+
+### Buddy / air-gap JSONL
+
+```sh
+bin/fm-captain-notion-sync.sh --from-jsonl /path/to/contexts.jsonl
+```
+
+- Contexts DB field **Router session** maps to the brief id (`sessions/<router_session>.brief`).
+- Notion remains the continuity index; firstmate briefs are the local routing cache.
+- Optional `herdr_session` / `herdr_target` / `herdr_workspace` fields are stored when present.
+- Sync preserves prior settle anchors, updates Notion headers, sets `topic` from `schema` (else `name`), appends unique `semantics` tokens (split on `/`) as anchors, and mirrors the input to `state/captain-router/notion-contexts.jsonl`.
+- Primary-scope and fail-open match the captain-message router (inert outside a genuine primary).
+
+See `bin/fm-captain-notion-sync.sh --help` and `bin/fm-notion-continuity.sh --help` for flags.
+
 ## Verification
 
 ```sh
-bin/fm-test-run.sh tests/fm-captain-message-router.test.sh
-bin/fm-lint.sh bin/fm-captain-message-router.sh
+bin/fm-test-run.sh tests/fm-captain-message-router.test.sh tests/fm-captain-notion-sync.test.sh tests/fm-notion-continuity.test.sh
+bin/fm-lint.sh bin/fm-captain-message-router.sh bin/fm-captain-notion-sync.sh bin/fm-notion-continuity.sh
 ```
 
 The script header owns exact flags and state mechanics.

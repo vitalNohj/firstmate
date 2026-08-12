@@ -22,6 +22,9 @@ import { classifyFirstmateOperationalText } from "./lib/fm-operational-input.ts"
 // fire-and-forget. Fail-open: spawn/parse errors never block the captain.
 // Full cross-session compact+inject is P2; this hook does not spend primary
 // context on continuity and never asks the primary agent to run it.
+// Notion Continuity (sync-briefs on settle, entry-add on reroute/new) is
+// owned inside bin/fm-captain-message-router.sh when local token/config is
+// present — this extension stays a thin trigger.
 
 const extensionFile = fileURLToPath(import.meta.url);
 const root = resolve(dirname(extensionFile), "../..");

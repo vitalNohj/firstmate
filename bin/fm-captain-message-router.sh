@@ -46,7 +46,8 @@
 # State (all local-only, never committed), under $STATE/captain-router/:
 #   anchors.current       - one normalized open-ask anchor per line (settle)
 #   current.session       - session id for the live primary this home last settled
-#   sessions/<id>.brief   - per-session topic head + anchors
+#   sessions/<id>.brief   - per-session topic head + optional Notion continuity headers + anchors
+#   notion-contexts.jsonl - mirror of buddy-exported Notion Context Router JSONL
 #   pending/<ts>-<digest>.route - staged reroute/new handoff for P2
 #   pending/LATEST        - basename of the most recent pending route file
 #   verdicts.log          - append-only verdict rows
@@ -247,23 +248,70 @@ topic_head() {
 }
 
 write_session_brief() { # <session-id> <topic> ; anchors on stdin (or empty)
-	local sid=$1 topic=$2 brief tmp
+	# Preserve optional Notion continuity headers from an existing brief (if any)
+	# so settle refreshes topic+anchors without wiping buddy-synced metadata.
+	local sid=$1 topic=$2 brief tmp key val
+	local semantics="" notion_url="" notion_name="" github="" schema=""
+	local herdr_session="" herdr_target="" herdr_workspace=""
 	brief="$SESSIONS_DIR/$sid.brief"
 	tmp="$brief.tmp.$$"
 	mkdir -p "$SESSIONS_DIR" 2>/dev/null || return 0
+	if [ -f "$brief" ]; then
+		while IFS= read -r line || [ -n "$line" ]; do
+			case "$line" in
+			---) break ;;
+			semantics=* | notion_url=* | notion_name=* | github=* | schema=* | \
+			herdr_session=* | herdr_target=* | herdr_workspace=*)
+				key=${line%%=*}
+				val=${line#*=}
+				case "$key" in
+				semantics) semantics=$val ;;
+				notion_url) notion_url=$val ;;
+				notion_name) notion_name=$val ;;
+				github) github=$val ;;
+				schema) schema=$val ;;
+				herdr_session) herdr_session=$val ;;
+				herdr_target) herdr_target=$val ;;
+				herdr_workspace) herdr_workspace=$val ;;
+				esac
+				;;
+			esac
+		done <"$brief"
+	fi
 	{
 		printf 'session_id=%s\n' "$sid"
 		printf 'updated=%s\n' "$(iso_now)"
 		printf 'topic=%s\n' "$topic"
+		[ -n "$semantics" ] && printf 'semantics=%s\n' "$semantics"
+		[ -n "$notion_url" ] && printf 'notion_url=%s\n' "$notion_url"
+		[ -n "$notion_name" ] && printf 'notion_name=%s\n' "$notion_name"
+		[ -n "$github" ] && printf 'github=%s\n' "$github"
+		[ -n "$schema" ] && printf 'schema=%s\n' "$schema"
+		[ -n "$herdr_session" ] && printf 'herdr_session=%s\n' "$herdr_session"
+		[ -n "$herdr_target" ] && printf 'herdr_target=%s\n' "$herdr_target"
+		[ -n "$herdr_workspace" ] && printf 'herdr_workspace=%s\n' "$herdr_workspace"
 		printf -- '---\n'
+		# Refresh settle anchors, then keep unique Notion semantics tokens as
+		# extra anchors so deterministic reroute matching survives settle.
 		awk 'NF'
+		if [ -n "$semantics" ]; then
+			printf '%s\n' "$semantics" | tr '/' '\n' | awk 'NF'
+		fi
 	} >"$tmp" 2>/dev/null || {
 		rm -f "$tmp" 2>/dev/null || true
 		return 0
 	}
+	# Dedupe anchor lines after --- while preserving first-seen order.
+	if [ -f "$tmp" ]; then
+		awk '
+			BEGIN { p = 0 }
+			/^---$/ { print; p = 1; next }
+			!p { print; next }
+			NF && !seen[$0]++ { print }
+		' "$tmp" >"$tmp.dedupe" 2>/dev/null && mv -f "$tmp.dedupe" "$tmp" 2>/dev/null || rm -f "$tmp.dedupe" 2>/dev/null || true
+	fi
 	mv -f "$tmp" "$brief" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
-
 brief_anchors_file() { # <brief-path> -> writes temp anchors path on stdout
 	local brief=$1 tmp
 	tmp=$(mktemp "$ROUTER_DIR/anchors.XXXXXX" 2>/dev/null) || return 1
@@ -437,15 +485,55 @@ parse_verdict_line() { # <blob> -> sets PARSE_VERDICT PARSE_TARGET PARSE_CONF; r
 }
 
 emit_verdict() { # <verdict> <target> <confidence> ; message on stdin for logging/staging
-	local verdict=$1 target=$2 conf=$3 msg
+	local verdict=$1 target=$2 conf=$3 msg entry_sid
 	msg=$(cat)
 	printf '%s' "$msg" | record_verdict "$verdict" "$target" "$conf"
 	case "$verdict" in
 	reroute | new)
 		printf '%s' "$msg" | stage_pending_route "$verdict" "$target" "$conf"
+		# Best-effort Continuity Entry for the captain message (fail-open).
+		if [ "$verdict" = reroute ]; then
+			entry_sid=$target
+		else
+			entry_sid=pending
+		fi
+		printf '%s' "$msg" | notion_entry_add_best_effort "$entry_sid"
 		;;
 	esac
 	printf 'verdict=%s target=%s confidence=%s\n' "$verdict" "$target" "$conf"
+}
+
+
+# Best-effort Notion Continuity hooks (fail-open). Only run when the local
+# notion client exists and a token/config is present. Never blocks the captain.
+notion_continuity_available() {
+	[ -x "$SCRIPT_DIR/fm-notion-continuity.sh" ] || return 1
+	# Token via env or gitignored file — do not print.
+	if [ -n "${FM_NOTION_TOKEN:-${NOTION_TOKEN:-}}" ]; then
+		return 0
+	fi
+	[ -s "$CONFIG/notion-token" ] && return 0
+	[ -s "$CONFIG/notion-continuity.env" ] && return 0
+	return 1
+}
+
+notion_sync_briefs_best_effort() {
+	notion_continuity_available || return 0
+	"$SCRIPT_DIR/fm-notion-continuity.sh" sync-briefs >/dev/null 2>>"$FAILURES_LOG" || \
+		record_failure "notion sync-briefs failed (fail-open)"
+}
+
+notion_entry_add_best_effort() { # <router-session> ; message on stdin
+	local sid=$1 text
+	notion_continuity_available || return 0
+	text=$(cat)
+	[ -n "$sid" ] || sid=pending
+	case "$sid" in
+	-|'') sid=pending ;;
+	esac
+	"$SCRIPT_DIR/fm-notion-continuity.sh" entry-add \
+		--router-session "$sid" --text "$text" >/dev/null 2>>"$FAILURES_LOG" || \
+		record_failure "notion entry-add failed (fail-open)"
 }
 
 # --- CLI -------------------------------------------------------------------
@@ -512,6 +600,8 @@ if [ "$mode" = --on-settle ]; then
 		printf 'captain-router: multi-ask verification - %s question(s) asked but %s distinct anchor(s) recorded\n' \
 			"$raw_count" "$uniq_count" >&2
 	fi
+	# Optional Notion Continuity refresh (fail-open; no-op without token/config).
+	notion_sync_briefs_best_effort
 	exit 0
 fi
 
