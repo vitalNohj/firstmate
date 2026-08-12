@@ -733,7 +733,8 @@ crew_dispatch_validate() {
       end;
     def configured_profiles:
       ([(.rules // [])[]? | profiles(.use?)[]?]
-        + (if has("default") then [profiles(.default)[]?] else [] end));
+        + (if has("default") then [profiles(.default)[]?] else [] end)
+        + (if has("roles") then [(.roles // {})[]? | profiles(.)[]?] else [] end));
     def malformed_optional_fields($items):
       ($items | any(has("model") and (((.model | type) != "string") or (.model | length) == 0)))
       or ($items | any(has("effort") and (((.effort | type) != "string") or (.effort | length) == 0)));
@@ -745,6 +746,7 @@ crew_dispatch_validate() {
       | map(select(. as $p | effort_ok($p.h; $p.e) | not))
       | map("\(.h):\(.e)")
       | unique;
+    def known_roles: ["continuity", "router"];
     if type != "object" then "top-level value must be an object"
     elif has("rules") and (.rules | type) != "array" then "rules must be an array"
     elif [(.rules // [])[]? | select(type != "object")] | length > 0 then "each rule must be an object"
@@ -762,6 +764,14 @@ crew_dispatch_validate() {
     elif has("default") and ([profiles(.default)[]? | select(type != "object")] | length) > 0 then "each default profile must be an object"
     elif has("default") and ([profiles(.default)[]? | select((.harness? | type) != "string" or (.harness | length) == 0)] | length) > 0 then "each default profile needs harness"
     elif has("default") and malformed_optional_fields([profiles(.default)[]?]) then "default profile model and effort must be non-empty strings when present"
+    elif has("roles") and (.roles | type) != "object" then "roles must be an object"
+    elif [(.roles // {}) | keys[] | select(. as $k | known_roles | index($k) | not)] | length > 0 then
+      "unknown role: " + ([ (.roles // {}) | keys[] | select(. as $k | known_roles | index($k) | not) ] | unique | join(", "))
+    elif [(.roles // {})[]? | select((type != "object") and (type != "array"))] | length > 0 then "each role must be a profile object or non-empty profile array"
+    elif [(.roles // {})[]? | select((type == "array") and (length == 0))] | length > 0 then "each role needs at least one profile"
+    elif [(.roles // {})[]? | profiles(.)[]? | select(type != "object")] | length > 0 then "each role profile must be an object"
+    elif [(.roles // {})[]? | profiles(.)[]? | select((.harness? | type) != "string" or (.harness | length) == 0)] | length > 0 then "each role profile needs harness"
+    elif malformed_optional_fields([(.roles // {})[]? | profiles(.)[]?]) then "role profile model and effort must be non-empty strings when present"
     else
       (configured_profiles
         | map(.harness)
@@ -793,7 +803,8 @@ crew_dispatch_validate() {
       end;
     (["BOOTSTRAP_INFO: crew dispatch active config/crew-dispatch.json"]
       + [(.rules // [])[]? | "BOOTSTRAP_INFO: crew dispatch rule: " + (.when | tostring) + " -> " + profile_set(.use; .select?)]
-      + (if has("default") then ["BOOTSTRAP_INFO: crew dispatch default: " + profile_set(.default; null)] else [] end))
+      + (if has("default") then ["BOOTSTRAP_INFO: crew dispatch default: " + profile_set(.default; null)] else [] end)
+      + (if has("roles") then [(.roles | to_entries[]) | "BOOTSTRAP_INFO: crew dispatch role: " + .key + " -> " + profile_set(.value; null)] else [] end))
     | .[]
   ' "$file"
   fi
