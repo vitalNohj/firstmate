@@ -265,7 +265,14 @@ This section is the single owner of the canonical schema and its per-field seman
   ],
   "default": [
     { "harness": "<adapter>", "model": "<optional model>", "effort": "<optional effort>" }
-  ]
+  ],
+  "roles": {
+    "continuity": {
+      "harness": "pi",
+      "model": "cursor/grok-4.5",
+      "effort": "low"
+    }
+  }
 }
 ```
 
@@ -276,11 +283,16 @@ Profile `model` and `effort` fields and rule `why` are optional.
 An omitted model or effort means the selected harness uses its own default for that axis.
 Every profile array is an implicit quota-aware choice resolved through `quota-array-dispatch`.
 If no dispatch rule fits, firstmate resolves `default` through the same object-or-array path before falling back to `config/crew-harness`.
+Optional top-level `roles` is a named-profile map for non-crewmate spawners that still want config-driven harness selection.
+Known role keys are `continuity` and `router` (aliases for the captain-message continuity router); each value is one profile object or a non-empty profile array using the same harness/model/effort shape as `use`.
+`bin/fm-captain-message-router.sh` reads `roles.continuity` first, then `roles.router`, then its built-in Pi/`cursor/grok-4.5`/`low` default when the file or role is absent.
+Pi has no `slow` thinking level; use `low` (or another verified Pi effort) for that role.
 If a selected profile carries an effort value the chosen harness does not accept, `fm-spawn.sh` records the requested `effort=` in task meta for traceability but omits the launch flag, and bootstrap reports the invalid harness/effort pair as a `CREW_DISPATCH` diagnostic when it is visible in the file.
 See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a starting point to copy into local `config/crew-dispatch.json`.
+Captain-message continuity behavior is owned by [`docs/captain-message-router.md`](captain-message-router.md).
 When the file exists, bootstrap validates it with `jq`.
 Valid files stay silent by default; with `FM_BOOTSTRAP_VERBOSE_FACTS=1`, bootstrap emits `BOOTSTRAP_INFO: crew dispatch active config/crew-dispatch.json`, one `BOOTSTRAP_INFO:` fact per rule, and one fact for the optional default profile set.
-Malformed JSON, an empty or malformed rule/default array, an unverified harness, or an effort value unsupported by that harness is reported as `CREW_DISPATCH: invalid config/crew-dispatch.json - ...`; missing `jq` is reported through the normal `MISSING: jq` install-consent flow.
+Malformed JSON, an empty or malformed rule/default/role array, an unknown role key, an unverified harness, or an effort value unsupported by that harness is reported as `CREW_DISPATCH: invalid config/crew-dispatch.json - ...`; missing `jq` is reported through the normal `MISSING: jq` install-consent flow.
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 

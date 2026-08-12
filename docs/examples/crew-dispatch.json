@@ -22,5 +22,12 @@
   "default": [
     { "harness": "codex", "model": "gpt-5.5", "effort": "medium" },
     { "harness": "pi", "model": "anthropic/claude-sonnet-5", "effort": "medium" }
-  ]
+  ],
+  "roles": {
+    "continuity": {
+      "harness": "pi",
+      "model": "cursor/grok-4.5",
+      "effort": "low"
+    }
+  }
 }
