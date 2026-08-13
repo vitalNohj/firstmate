@@ -33,7 +33,9 @@
 # metadata inventory is unioned idempotently. A post-teardown visual review can
 # complete against the surviving report and holds without recreating task state.
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
-# source before this gate has succeeded.
+# source before this gate has succeeded. It accepts a resolved captain hold from
+# the configured tasks-axi archive only when that archived record is unique and
+# retains the complete structured fm-decision-hold resolution record.
 #
 # `resolve` and `decline` close active holds; `repair` attests a hold already closed
 # outside this script. All three paths require a non-empty captain decision file of
@@ -163,6 +165,88 @@ require_tasks_axi() {
 
 task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
+}
+
+markdown_config_value() {  # <key>
+  local key=$1 config="$FM_HOME/.tasks.toml"
+  [ -f "$config" ] || fail "tasks-axi configuration is absent: $config"
+  awk -v wanted="$key" '
+    /^[[:space:]]*\[/ { in_markdown = ($0 ~ /^[[:space:]]*\[markdown\][[:space:]]*$/) }
+    in_markdown && $0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" {
+      line = $0
+      sub(/^[^=]*=[[:space:]]*/, "", line)
+      if (substr(line, 1, 1) != "\"" || substr(line, length(line), 1) != "\"") exit 2
+      line = substr(line, 2, length(line) - 2)
+      if (line ~ /[\\\r\n]/) exit 2
+      print line
+      found++
+    }
+    END { if (found != 1) exit 2 }
+  ' "$config" || fail "tasks-axi markdown.$key must be one unescaped quoted path in $config"
+}
+
+markdown_path() {  # <key>
+  local value
+  value=$(markdown_config_value "$1")
+  case "$value" in
+    /*) printf '%s\n' "$value" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$value" ;;
+  esac
+}
+
+archive_task_record() {  # <id>
+  local id=$1 archive scan count
+  archive=$(markdown_path archive)
+  [ -f "$archive" ] || return 1
+  scan=$(awk -v id="$id" '
+    function starts_task(line) {
+      return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
+    }
+    /^- \[[ x]\] [A-Za-z0-9._-]+ - / {
+      if (starts_task($0)) { matches++; capture=1 }
+      else capture=0
+    }
+    /^## / { capture=0 }
+    capture { records = records $0 "\n" }
+    END { printf "%d\n%s", matches, records }
+  ' "$archive")
+  count=${scan%%$'\n'*}
+  [ "$count" = 1 ] || {
+    [ "$count" = 0 ] && return 1
+    fail "captain decision $id has $count matching records in configured archive $archive"
+  }
+  printf '%s' "${scan#*$'\n'}"
+}
+
+archive_has_task_identity() {  # <id>
+  local id=$1 archive
+  archive=$(markdown_path archive)
+  [ -f "$archive" ] || return 1
+  awk -v id="$id" '
+    index($0, "- [x] " id " - ") == 1 || index($0, "- [ ] " id " - ") == 1 { found=1 }
+    END { exit !found }
+  ' "$archive"
+}
+
+verify_archived_hold_resolved() {  # <id>
+  local id=$1 record header archive
+  archive=$(markdown_path archive)
+  record=$(archive_task_record "$id") || fail "captain decision $id is absent from the live backlog and configured archive $archive"
+  header=${record%%$'\n'*}
+  case "$header" in
+    "- [x] $id - "*" (kind: captain)"*" (done "*" (hold-kind: captain)"*) : ;;
+    *) fail "archived captain decision $id is not a done kind=captain hold" ;;
+  esac
+  [ "$(printf '%s\n' "$record" | grep -Fxc '  Resolution recorded by fm-decision-hold.' || true)" = 1 ] \
+    || fail "archived captain decision $id has no unique fm-decision-hold resolution marker"
+  [ "$(printf '%s\n' "$record" | grep -Ec '^  Decision digest: [0-9a-f]{64}$' || true)" = 1 ] \
+    || fail "archived captain decision $id has an invalid decision digest"
+  [ "$(printf '%s\n' "$record" | grep -Ec '^  Routed identities: [A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$' || true)" = 1 ] \
+    || fail "archived captain decision $id has invalid routed identities"
+  [ "$(printf '%s\n' "$record" | grep -Fxc '  Captain decision:' || true)" = 1 ] \
+    || fail "archived captain decision $id has no unique captain decision field"
+  [ "$(printf '%s\n' "$record" | grep -Ec '^  Routed work:' || true)" = 1 ] \
+    || fail "archived captain decision $id has no unique routed work field"
 }
 
 show_field() {  # <show-output> <field>
@@ -299,20 +383,25 @@ verify_hold_resolved() {  # <hold-id>
 }
 
 verify_hold_durable() {  # <hold-id>
-  local id=$1 show state held kind hold_kind body
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
-  state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
-  kind=$(show_field "$show" kind)
-  hold_kind=$(show_field "$show" hold_kind)
-  body=$(show_field "$show" body)
-  if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
-    return 0
+  local id=$1 show state held kind hold_kind body archive
+  archive=$(markdown_path archive)
+  if show=$(task_show "$id"); then
+    archive_has_task_identity "$id" \
+      && fail "captain decision $id is ambiguous across the live backlog and configured archive $archive"
+    state=$(show_field "$show" state)
+    held=$(show_field "$show" held)
+    kind=$(show_field "$show" kind)
+    hold_kind=$(show_field "$show" hold_kind)
+    body=$(show_field "$show" body)
+    if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
+      return 0
+    fi
+    if [ "$state" = "done" ] && [ "$kind" = captain ] && body_has_resolution_record "$body"; then
+      return 0
+    fi
+    fail "captain decision $id is neither actively held nor durably resolved"
   fi
-  if [ "$state" = "done" ] && [ "$kind" = captain ] && body_has_resolution_record "$body"; then
-    return 0
-  fi
-  fail "captain decision $id is neither actively held nor durably resolved"
+  verify_archived_hold_resolved "$id"
 }
 
 verify_resolution_identity() {
@@ -369,6 +458,8 @@ command_hold() {
     [ "$kind" = captain ] || fail "existing backlog identity $id is not kind captain"
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
   else
+    archive_has_task_identity "$id" \
+      && fail "captain decision $id already exists in the configured tasks-axi archive"
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
       repo=${repo%/}

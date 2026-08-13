@@ -770,12 +770,92 @@ test_unanswered_decision_still_blocks_completion_and_teardown() {
   pass "an unanswered decision still blocks completion and resists both unrouted close paths"
 }
 
+test_resolved_archived_hold_verification_is_strict() {
+  local home origin hold archive pristine record
+  home=$(make_home archived-resolved-hold)
+  origin=sample-archived-review
+  archive="$home/data/decisions/archive.md"
+  mkdir -p "$home/data/$origin" "$(dirname "$archive")"
+  sed 's#archive = "data/done-archive.md"#archive = "data/decisions/archive.md"#' \
+    "$ROOT/.tasks.toml" > "$home/.tasks.toml"
+  tasks_in "$home" add "$origin" "Review archived decision verification" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create archived decision origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Archived decision review\n' > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" route \
+    --title "Choose archived route" --reason "captain route pending" --repo sample) \
+    || fail "could not create hold for archive verification"
+  run_decisions "$home" complete "$origin" route >/dev/null \
+    || fail "could not record archived decision inventory"
+  tasks_in "$home" add sample-archived-route "Apply archived route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create archived route dependency"
+  printf 'Use archived route north.\n' > "$home/archived-decision.txt"
+  run_decisions "$home" resolve "$origin" route \
+    --decision-file "$home/archived-decision.txt" --routed-to sample-archived-route >/dev/null \
+    || fail "could not resolve hold before archive pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune resolved hold to configured archive"
+  assert_no_grep "- [x] $hold -" "$home/data/backlog.md" \
+    "resolved hold remained in the live backlog after pruning"
+  assert_grep "- [x] $hold -" "$archive" \
+    "resolved hold did not use the configured archive path"
+  run_decisions "$home" verify "$origin" >/dev/null \
+    || fail "configured archived resolved hold did not pass verification"
+  cp "$archive" "$home/archive.pristine"
+  pristine="$home/archive.pristine"
+
+  rm "$archive"
+  if run_decisions "$home" verify "$origin" > "$home/missing.out" 2> "$home/missing.err"; then
+    fail "verification accepted a missing archived hold"
+  fi
+  assert_grep "absent from the live backlog and configured archive" "$home/missing.err" \
+    "missing archive failure did not identify both authoritative locations"
+  cp "$pristine" "$archive"
+
+  sed "/^  Decision digest:/d" "$pristine" > "$archive"
+  if run_decisions "$home" verify "$origin" > "$home/malformed.out" 2> "$home/malformed.err"; then
+    fail "verification accepted a malformed archived resolution record"
+  fi
+  assert_grep "invalid decision digest" "$home/malformed.err" \
+    "malformed archive failure did not identify the invalid structured field"
+  cp "$pristine" "$archive"
+
+  record=$(awk -v id="$hold" '
+    index($0, "- [x] " id " - ") == 1 { capture=1 }
+    capture && /^## / { exit }
+    capture { print }
+  ' "$pristine")
+  printf '\n## Archived 2026-07-15\n%s\n' "$record" >> "$archive"
+  if run_decisions "$home" verify "$origin" > "$home/archive-duplicate.out" 2> "$home/archive-duplicate.err"; then
+    fail "verification accepted duplicate identities in the archive"
+  fi
+  assert_grep "2 matching records" "$home/archive-duplicate.err" \
+    "duplicate archive failure did not report ambiguity"
+  cp "$pristine" "$archive"
+
+  tasks_in "$home" add "$hold" "Conflicting live archived route" --kind captain --repo sample >/dev/null \
+    || fail "could not create live/archive ambiguity fixture"
+  tasks_in "$home" hold "$hold" --reason "captain conflicting route pending" --kind captain >/dev/null \
+    || fail "could not activate live/archive ambiguity fixture"
+  if run_decisions "$home" verify "$origin" > "$home/live-duplicate.out" 2> "$home/live-duplicate.err"; then
+    fail "verification accepted the same identity in live backlog and archive"
+  fi
+  assert_grep "ambiguous across the live backlog and configured archive" "$home/live-duplicate.err" \
+    "live/archive duplicate failure did not report ambiguity"
+
+  pass "resolved archived holds verify only with unique complete structured records"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
 test_declined_decision_closes_without_routed_work
 test_out_of_band_close_is_repairable_before_teardown
 test_unanswered_decision_still_blocks_completion_and_teardown
+test_resolved_archived_hold_verification_is_strict
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner
