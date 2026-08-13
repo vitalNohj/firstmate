@@ -235,7 +235,18 @@ Every profile array is an implicit quota-aware choice and does not need a select
 If no dispatch rule fits, firstmate resolves `default` through the same object-or-array selection path before falling back to `config/crew-harness`.
 Optional top-level `roles` is a named-profile map for non-crewmate spawners that still want config-driven harness selection.
 Known role keys are `continuity` and `router` (aliases for the captain-message continuity router); each value is one profile object or a non-empty profile array using the same harness/model/effort shape as `use`.
-`bin/fm-captain-message-router.sh` reads `roles.continuity` first, then `roles.router`, then its built-in Pi/`cursor/grok-4.5`/`low` default when the file or role is absent.
+
+```json
+{
+  "roles": {
+    "continuity": { "harness": "pi", "model": "cursor/grok-4.6", "effort": "low" }
+  }
+}
+```
+
+`bin/fm-captain-message-router.sh` reads `roles.continuity` first, then `roles.router`, then its built-in Pi/`cursor/grok-4.6`/`low` default when the file or role is absent.
+Each of `harness`, `model`, and `effort` falls back to that built-in default independently, so a partial profile stays valid and no caller has to restate the default model.
+This is the only place the continuity router's model, effort, and harness are chosen; changing them never requires a code change.
 Pi has no `slow` thinking level; use `low` (or another verified Pi effort) for that role.
 If a selected profile carries an effort value the chosen harness does not accept, `fm-spawn.sh` records the requested `effort=` in task meta for traceability but omits the launch flag, and bootstrap reports the invalid harness/effort pair as a `CREW_DISPATCH` diagnostic when it is visible in the file.
 Quota-aware selection is implemented by `bin/fm-dispatch-select.sh`, whose header owns provider and product mapping, relevant-window scoring, the stale-clear freshness margin, random tie-breaking, OS-backed random operational fallback, and safe selection-basis diagnostics.

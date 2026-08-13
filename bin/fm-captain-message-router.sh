@@ -9,12 +9,13 @@
 #
 # The Firstmate PRIMARY agent never runs this. A verified harness hook (Pi first)
 # calls it; bash owns the truth; the agent owns nothing. P0 was deterministic and
-# model-free (same vs unknown). P1 adds per-session briefs, deterministic
-# same/reroute/new, and an ephemeral Pi router agent for ambiguous cases.
+# model-free (same vs unknown). P1 added per-session briefs and an ephemeral Pi
+# router agent. Submit now ALWAYS spawns that router agent: the model decides the
+# verdict, and the deterministic layer survives only as the fail-open fallback.
 #
 # Modes (assistant message or captain message on stdin):
 #   fm-captain-message-router.sh --on-settle [--session-id <id>]
-#   fm-captain-message-router.sh --on-submit [--session-id <id>]
+#   fm-captain-message-router.sh --on-submit [--session-id <id>] [--chat-history-file <path>]
 #   fm-captain-message-router.sh --help
 #
 # --on-settle: extract question anchors (split on `?`, normalized, deduped) and
@@ -27,16 +28,26 @@
 # --on-submit: classify the message and print exactly one machine-readable
 #   verdict line to stdout:
 #     verdict=<same|reroute|new> target=<session-id|-> confidence=<det|model>
-#   Deterministic layer:
-#     - `same` when the message matches the current session's open anchors
-#     - `reroute` when it uniquely matches exactly one other session brief
-#     - `new` when no session briefs match and anchors are empty or unrelated
-#   Ambiguous cases spawn an ephemeral Pi router (config roles.continuity /
-#   roles.router, else built-in defaults). Spawn/parse failures fail open as
-#   `same` against the current session and append failures.log. Every verdict
-#   is appended to verdicts.log. Reroute/new also stage a durable pending route
-#   under state/captain-router/pending/ for P2 drop-in (P1 does not compact or
-#   inject across sessions).
+#   The ephemeral router agent (config roles.continuity / roles.router, else
+#   built-in defaults) is spawned on EVERY submit. Its prompt carries the role
+#   instructions, a bounded redacted recent-chat excerpt, every session brief,
+#   and the captain message. It must answer with a three-line block:
+#     verdict=<same|reroute|new>
+#     target=<session-id|->
+#     explanation=<up to 3 sentences>
+#   `explanation` is recorded (explanations.log + the staged pending route) and
+#   is NEVER forwarded into the routed/new session context. A model verdict is
+#   recorded with confidence=model. Spawn error, timeout, or unparseable output
+#   fails open to `same` against the current session with confidence=det and a
+#   failures.log row. Every verdict is appended to verdicts.log. Reroute/new also
+#   stage a durable pending route under state/captain-router/pending/ for P2
+#   drop-in (this phase does not compact or inject across sessions).
+#
+# --chat-history-file <path>: optional bounded recent-transcript excerpt for the
+#   submit prompt. The harness hook writes it; this owner re-bounds it
+#   (FM_CAPTAIN_ROUTER_HISTORY_CHARS, default 6000; last lines kept) and redacts
+#   Firstmate operational injections and secret-shaped values before the model
+#   ever sees it. Absent or empty means the model gets briefs + message only.
 #
 # Session id (assumption, labeled): prefer --session-id, else
 #   FM_CAPTAIN_ROUTER_SESSION_ID, else the prior current.session pointer, else
@@ -51,11 +62,16 @@
 #   pending/<ts>-<digest>.route - staged reroute/new handoff for P2
 #   pending/LATEST        - basename of the most recent pending route file
 #   verdicts.log          - append-only verdict rows
+#   explanations.log      - append-only model rationale rows, keyed by the same
+#                           message digest as verdicts.log (audit only, never
+#                           forwarded into any session prompt)
 #   failures.log          - append-only fail-open failure rows
 #
 # Router agent override (tests): FM_CAPTAIN_ROUTER_AGENT_CMD, when set, is
 # executed instead of Pi. The command receives the prompt on stdin and must
-# print a parseable verdict line on stdout. No real model calls in unit tests.
+# print a parseable verdict block on stdout. No real model calls in unit tests.
+# FM_CAPTAIN_ROUTER_TIMEOUT_SECS (default 90) bounds the spawn when a `timeout`
+# or `gtimeout` binary is available.
 #
 # Scope: a genuine firstmate PRIMARY home only (main home or a marked secondmate
 # home), exactly like bin/fm-sessionstart-nudge.sh. It is inert (silent exit 0) in
@@ -78,14 +94,25 @@ CURRENT_SESSION_FILE="$ROUTER_DIR/current.session"
 SESSIONS_DIR="$ROUTER_DIR/sessions"
 PENDING_DIR="$ROUTER_DIR/pending"
 VERDICTS_LOG="$ROUTER_DIR/verdicts.log"
+EXPLANATIONS_LOG="$ROUTER_DIR/explanations.log"
 FAILURES_LOG="$ROUTER_DIR/failures.log"
 
 # Built-in continuity role when config/crew-dispatch.json has no roles.continuity
 # / roles.router. Pi accepts --thinking low|medium|high|xhigh|max (not `slow`);
-# P1 uses low as the closest cheap classifier effort.
+# low is the closest cheap classifier effort.
 DEFAULT_ROUTER_HARNESS=pi
-DEFAULT_ROUTER_MODEL=cursor/grok-4.5
+DEFAULT_ROUTER_MODEL=cursor/grok-4.6
 DEFAULT_ROUTER_EFFORT=low
+
+# Bounds for the recent-chat excerpt handed to the router model.
+HISTORY_CHAR_CAP=${FM_CAPTAIN_ROUTER_HISTORY_CHARS:-6000}
+case "$HISTORY_CHAR_CAP" in
+'' | *[!0-9]*) HISTORY_CHAR_CAP=6000 ;;
+esac
+ROUTER_TIMEOUT_SECS=${FM_CAPTAIN_ROUTER_TIMEOUT_SECS:-90}
+case "$ROUTER_TIMEOUT_SECS" in
+'' | *[!0-9]*) ROUTER_TIMEOUT_SECS=90 ;;
+esac
 
 # shellcheck source=bin/fm-gate-refuse-lib.sh
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
@@ -117,84 +144,6 @@ extract_anchors() {
   '
 }
 
-# message_matches_anchor: return 0 when the message on stdin shares salient tokens
-# with any single open anchor in the anchors file. Salient = alphanumeric, length
-# >= 3, not a common stopword. A match needs two shared salient tokens, or at
-# least half of a short anchor's salient tokens.
-message_matches_anchor() {
-	local file=$1
-	awk -v anchorfile="$file" '
-    function norm(s) { s = tolower(s); gsub(/[^a-z0-9]+/, " ", s); return s }
-    BEGIN {
-      split("the a an and or is are was were be been being do does did done have has had you your yours i me my we us our it its to of in on at for with from by as this that these those be will would should could can may might must not no yes please let lets go get got so if then than too very just about into out up down over under how what when where why which who whom whose", swords, " ")
-      for (k in swords) stop[swords[k]] = 1
-      na = 0
-      while ((getline line < anchorfile) > 0) {
-        line = norm(line)
-        m = split(line, t, " ")
-        s = ""
-        for (j = 1; j <= m; j++) {
-          if (length(t[j]) >= 3 && !stop[t[j]]) s = s " " t[j]
-        }
-        if (s != "") { na++; atokens[na] = s }
-      }
-    }
-    { body = body " " $0 }
-    END {
-      body = norm(body)
-      m = split(body, bt, " ")
-      for (j = 1; j <= m; j++) {
-        if (length(bt[j]) >= 3 && !stop[bt[j]]) msg_has[bt[j]] = 1
-      }
-      found = 0
-      for (a = 1; a <= na; a++) {
-        c = split(atokens[a], t, " ")
-        total = 0; overlap = 0
-        for (j = 1; j <= c; j++) {
-          if (t[j] == "") continue
-          total++
-          if (msg_has[t[j]]) overlap++
-        }
-        if (total > 0 && (overlap >= 2 || overlap * 2 >= total)) found = 1
-      }
-      exit found ? 0 : 1
-    }
-  '
-}
-
-# Return 0 when the message looks like a short acknowledgement that should not
-# deterministically become `new` while the current session still has open asks.
-message_looks_short_reply() {
-	awk '
-    function norm(s) { s = tolower(s); gsub(/[^a-z0-9]+/, " ", s); return s }
-    BEGIN {
-      split("the a an and or is are was were be been being do does did done have has had you your yours i me my we us our it its to of in on at for with from by as this that these those will would should could can may might must not no yes please let lets go get got so if then than too very just about into out up down over under ok okay sure yeah yep yup thanks thank right correct proceed continue", swords, " ")
-      for (k in swords) stop[swords[k]] = 1
-      split("yes ok okay sure yeah yep yup thanks thank right correct proceed continue please", acks, " ")
-      for (k in acks) ack[acks[k]] = 1
-    }
-    { body = body " " $0 }
-    END {
-      body = norm(body)
-      m = split(body, bt, " ")
-      words = 0
-      salient = 0
-      has_ack = 0
-      for (j = 1; j <= m; j++) {
-        if (bt[j] == "") continue
-        words++
-        if (ack[bt[j]]) has_ack = 1
-        if (length(bt[j]) >= 3 && !stop[bt[j]]) salient++
-      }
-      # Acknowledgements and tiny replies stay ambiguous for the model.
-      # Short but contentful topic phrases (e.g. "blender export broken") are not.
-      if (has_ack && salient < 4) exit 0
-      if (words <= 3 && salient <= 1) exit 0
-      exit 1
-    }
-  '
-}
-
 digest_message() {
 	{ shasum -a 256 2>/dev/null || sha256sum 2>/dev/null; } | awk '{print substr($1,1,12)}'
 }
@@ -209,6 +158,17 @@ record_verdict() { # <verdict> <target> <confidence>; message on stdin
 	digest=$(digest_message)
 	[ -n "$digest" ] || digest=nodigest
 	printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$verdict" "$target" "$conf" "$digest" >>"$VERDICTS_LOG"
+}
+
+# record_explanation: audit-only rationale row, keyed by the same message digest
+# as verdicts.log. This file is never read back into any session prompt.
+record_explanation() { # <verdict> <target> <digest> <explanation>
+	local verdict=$1 target=$2 digest=$3 text=$4 ts
+	[ -n "$text" ] || return 0
+	ts=$(iso_now)
+	text=$(printf '%s' "$text" | tr '\n\t' '  ')
+	printf '%s\t%s\t%s\t%s\t%s\n' "$ts" "$verdict" "$target" "$digest" "$text" \
+		>>"$EXPLANATIONS_LOG" 2>/dev/null || true
 }
 
 record_failure() { # <note>
@@ -292,7 +252,8 @@ write_session_brief() { # <session-id> <topic> ; anchors on stdin (or empty)
 		[ -n "$herdr_workspace" ] && printf 'herdr_workspace=%s\n' "$herdr_workspace"
 		printf -- '---\n'
 		# Refresh settle anchors, then keep unique Notion semantics tokens as
-		# extra anchors so deterministic reroute matching survives settle.
+		# extra anchors so the router model still sees a session's semantics
+		# after settle overwrites the question anchors.
 		awk 'NF'
 		if [ -n "$semantics" ]; then
 			printf '%s\n' "$semantics" | tr '/' '\n' | awk 'NF'
@@ -312,29 +273,9 @@ write_session_brief() { # <session-id> <topic> ; anchors on stdin (or empty)
 	fi
 	mv -f "$tmp" "$brief" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
-brief_anchors_file() { # <brief-path> -> writes temp anchors path on stdout
-	local brief=$1 tmp
-	tmp=$(mktemp "$ROUTER_DIR/anchors.XXXXXX" 2>/dev/null) || return 1
-	awk 'BEGIN{p=0} /^---$/{p=1; next} p && NF{print}' "$brief" >"$tmp" 2>/dev/null || {
-		rm -f "$tmp" 2>/dev/null || true
-		return 1
-	}
-	printf '%s\n' "$tmp"
-}
 
-list_other_session_ids() { # <current-id>
-	local cur=$1 f base
-	[ -d "$SESSIONS_DIR" ] || return 0
-	for f in "$SESSIONS_DIR"/*.brief; do
-		[ -f "$f" ] || continue
-		base=$(basename "$f" .brief)
-		[ "$base" = "$cur" ] && continue
-		printf '%s\n' "$base"
-	done
-}
-
-stage_pending_route() { # <verdict> <target> <confidence> ; message on stdin
-	local verdict=$1 target=$2 conf=$3 ts digest path rel msg
+stage_pending_route() { # <verdict> <target> <confidence> <explanation> ; message on stdin
+	local verdict=$1 target=$2 conf=$3 explanation=${4-} ts digest path rel msg
 	msg=$(cat)
 	ts=$(iso_now | tr -d ':-')
 	digest=$(printf '%s' "$msg" | digest_message)
@@ -349,6 +290,10 @@ stage_pending_route() { # <verdict> <target> <confidence> ; message on stdin
 		printf 'session_from=%s\n' "$(resolve_session_id)"
 		printf 'created=%s\n' "$(iso_now)"
 		printf 'message_digest=%s\n' "$digest"
+		# Audit-only rationale. Header side of the file, never the message body
+		# that a P2 drop-in would carry into the target session.
+		[ -n "$explanation" ] &&
+			printf 'explanation=%s\n' "$(printf '%s' "$explanation" | tr '\n' ' ')"
 		printf -- '---\n'
 		printf '%s\n' "$msg"
 	} >"$path" 2>/dev/null || return 0
@@ -366,7 +311,10 @@ resolve_continuity_profile() {
 		# Prefer roles.continuity, then roles.router. First profile object wins
 		# when an array is configured.
 		local parsed
-		parsed=$(jq -r '
+		parsed=$(jq -r \
+			--arg dh "$DEFAULT_ROUTER_HARNESS" \
+			--arg dm "$DEFAULT_ROUTER_MODEL" \
+			--arg de "$DEFAULT_ROUTER_EFFORT" '
       def first_profile($v):
         if ($v | type) == "array" then $v[0]
         elif ($v | type) == "object" then $v
@@ -375,9 +323,9 @@ resolve_continuity_profile() {
       | first_profile($role) as $p
       | if $p == null then empty
         else
-          (($p.harness // "pi") | tostring) + "\t" +
-          (($p.model // "cursor/grok-4.5") | tostring) + "\t" +
-          (($p.effort // "low") | tostring)
+          (($p.harness // $dh) | tostring) + "\t" +
+          (($p.model // $dm) | tostring) + "\t" +
+          (($p.effort // $de) | tostring)
         end
     ' "$file" 2>/dev/null || true)
 		if [ -n "$parsed" ]; then
@@ -391,17 +339,72 @@ resolve_continuity_profile() {
 	printf '%s\t%s\t%s\n' "$harness" "$model" "$effort"
 }
 
-build_router_prompt() { # <current-id> <message-file>
-	local cur=$1 msgfile=$2 sid brief
+# redact_history: read a raw transcript excerpt on stdin, print a bounded,
+# privacy-safe version. Drops any line carrying a Firstmate operational
+# injection (the FIRSTMATE_OP carrier, the from-firstmate label, or a legacy
+# wake/turn-end payload) and masks secret-shaped tokens before the excerpt
+# reaches the model.
+redact_history() {
+	awk '
+    index($0, "FIRSTMATE_OP:") { next }
+    index($0, "[fm-from-firstmate]") { next }
+    index($0, "FIRSTMATE WATCHER WAKE:") { next }
+    index($0, "TURN WOULD END BLIND") { next }
+    {
+      n = split($0, w, / /)
+      out = ""
+      prev = ""
+      for (i = 1; i <= n; i++) {
+        t = tolower(w[i])
+        if (t ~ /(token|secret|password|passwd|api_?key|access_?key|authorization)[^a-z0-9]*[:=]/) {
+          sub(/[:=].*/, "=[redacted]", w[i])
+        } else if (t ~ /^(sk|pk|ghp|gho|ghu|ghs|ghr|github_pat|ntn)[-_]/ || t ~ /^xox[abposr]-/) {
+          w[i] = "[redacted]"
+        } else if (prev ~ /^(bearer|token|secret|password|passwd|api_?key|access_?key)$/) {
+          w[i] = "[redacted]"
+        }
+        # Keep only the bare keyword so `password:` still guards the next word.
+        prev = t
+        gsub(/[^a-z0-9_]/, "", prev)
+        out = (i == 1 ? w[i] : out " " w[i])
+      }
+      print out
+    }
+  ' | tail -c "$HISTORY_CHAR_CAP"
+}
+
+build_router_prompt() { # <current-id> <message-file> [history-file]
+	local cur=$1 msgfile=$2 histfile=${3-} sid brief history=
 	printf 'You are the Firstmate captain-message continuity router.\n'
-	printf 'Classify the captain message relative to the session briefs.\n'
-	printf 'Reply with EXACTLY one line and nothing else:\n'
-	printf 'verdict=<same|reroute|new> target=<session-id|-> confidence=model\n'
-	printf 'Use target=- for verdict=new. For reroute, target must be an existing session id.\n'
-	printf 'Current session id: %s\n\n' "$cur"
-	printf '=== CAPTAIN MESSAGE ===\n'
-	cat "$msgfile"
-	printf '\n=== SESSION BRIEFS ===\n'
+	printf 'Firstmate runs several long-lived work sessions for one captain, and each\n'
+	printf 'session has a brief describing what it is about. Your job is to decide where\n'
+	printf 'THIS captain message belongs, using the live conversation and every brief.\n\n'
+	printf 'Verdicts:\n'
+	printf '  same    - the message continues the current session conversation\n'
+	printf '  reroute - the message belongs to a different existing session\n'
+	printf '  new     - the message starts work that fits no existing session\n\n'
+	printf 'Prefer "same" for ordinary in-conversation replies, follow-ups, corrections,\n'
+	printf 'objections, and acknowledgements, even when they share no literal words with\n'
+	printf 'the last assistant turn. Choose "reroute" only when the message clearly\n'
+	printf 'belongs to a different named session below. Choose "new" only when it starts\n'
+	printf 'work that fits no listed session.\n\n'
+	printf 'Reply with EXACTLY these three lines and nothing else:\n'
+	printf 'verdict=<same|reroute|new>\n'
+	printf 'target=<session-id|->\n'
+	printf 'explanation=<up to 3 sentences on one line: why this verdict, what context this belongs to>\n\n'
+	printf 'Use target=- for verdict=new. For verdict=same use the current session id.\n'
+	printf 'For verdict=reroute, target must be one of the session ids listed below.\n'
+	printf 'Current session id: %s\n' "$cur"
+	if [ -n "$histfile" ] && [ -s "$histfile" ]; then
+		history=$(redact_history <"$histfile" 2>/dev/null || true)
+	fi
+	printf '\n=== RECENT CHAT HISTORY (current session, bounded and redacted) ===\n'
+	if [ -n "$history" ]; then
+		printf '%s\n' "$history"
+	else
+		printf '(none available)\n'
+	fi
+	printf '\n=== SESSION BRIEFS (what each known session is about) ===\n'
 	if [ -d "$SESSIONS_DIR" ]; then
 		for brief in "$SESSIONS_DIR"/*.brief; do
 			[ -f "$brief" ] || continue
@@ -413,21 +416,31 @@ build_router_prompt() { # <current-id> <message-file>
 	else
 		printf '(none)\n'
 	fi
+	printf '\n=== CAPTAIN MESSAGE (classify this) ===\n'
+	cat "$msgfile"
+	printf '\n'
 }
 
 # Spawn the ephemeral router agent. Prompt on stdin of the agent command.
 # Prints agent stdout. Returns 0 on spawn success (even if verdict is bad).
+# Bounded by FM_CAPTAIN_ROUTER_TIMEOUT_SECS when a timeout binary exists, so a
+# hung model cannot stall the captain's turn; a timeout is a fail-open failure.
 spawn_router_agent() { # prompt on stdin
-	local harness model effort prompt_file out status=0 cmd
+	local harness model effort prompt_file out status=0 cmd bound=
 	prompt_file=$(mktemp "$ROUTER_DIR/prompt.XXXXXX" 2>/dev/null) || return 1
 	cat >"$prompt_file" || {
 		rm -f "$prompt_file"
 		return 1
 	}
 	IFS=$'\t' read -r harness model effort < <(resolve_continuity_profile) || true
+	if command -v timeout >/dev/null 2>&1; then
+		bound=timeout
+	elif command -v gtimeout >/dev/null 2>&1; then
+		bound=gtimeout
+	fi
 	if [ -n "${FM_CAPTAIN_ROUTER_AGENT_CMD-}" ]; then
 		# shellcheck disable=SC2086 # intentional word-split of override command
-		out=$(cat "$prompt_file" | eval "$FM_CAPTAIN_ROUTER_AGENT_CMD" 2>/dev/null) || status=$?
+		out=$(eval "$FM_CAPTAIN_ROUTER_AGENT_CMD" <"$prompt_file" 2>/dev/null) || status=$?
 	else
 		cmd=$(command -v "$harness" 2>/dev/null || true)
 		if [ -z "$cmd" ]; then
@@ -436,45 +449,61 @@ spawn_router_agent() { # prompt on stdin
 			return 1
 		fi
 		# Ephemeral print-mode Pi: no session, no extensions, no tools, no context files.
-		out=$("$cmd" -p --no-session --no-extensions --no-context-files --no-tools \
-			--model "$model" --thinking "$effort" \
-			"$(cat "$prompt_file")" 2>/dev/null) || status=$?
+		if [ -n "$bound" ]; then
+			out=$("$bound" "$ROUTER_TIMEOUT_SECS" "$cmd" -p --no-session --no-extensions \
+				--no-context-files --no-tools --model "$model" --thinking "$effort" \
+				"$(cat "$prompt_file")" 2>/dev/null) || status=$?
+		else
+			out=$("$cmd" -p --no-session --no-extensions --no-context-files --no-tools \
+				--model "$model" --thinking "$effort" \
+				"$(cat "$prompt_file")" 2>/dev/null) || status=$?
+		fi
 	fi
 	rm -f "$prompt_file"
 	if [ "$status" -ne 0 ]; then
-		record_failure "router agent exited $status"
+		if [ "$status" -eq 124 ]; then
+			record_failure "router agent timed out after ${ROUTER_TIMEOUT_SECS}s"
+		else
+			record_failure "router agent exited $status"
+		fi
 		return 1
 	fi
 	printf '%s\n' "$out"
 	return 0
 }
 
-parse_verdict_line() { # <blob> -> sets PARSE_VERDICT PARSE_TARGET PARSE_CONF; return 0 if ok
-	local blob=$1 line
+# parse_verdict_block: read the model's reply and set PARSE_VERDICT,
+# PARSE_TARGET, PARSE_EXPLANATION. Accepts the three-line block and, for
+# resilience, a single `verdict=... target=...` line. Returns 0 when a valid,
+# validated verdict was recovered; every other case is a fail-open failure.
+parse_verdict_block() { # <blob>
+	local blob=$1
 	PARSE_VERDICT=
 	PARSE_TARGET=
-	PARSE_CONF=
-	line=$(printf '%s\n' "$blob" | awk '
-    /^verdict=(same|reroute|new)[ \t]+target=[^ \t]+[ \t]+confidence=(det|model)[ \t]*$/ { print; exit }
-    /^verdict=(same|reroute|new) target=[^ ]+ confidence=(det|model)$/ { print; exit }
-  ')
-	[ -n "$line" ] || return 1
-	PARSE_VERDICT=$(printf '%s\n' "$line" | sed -n 's/^verdict=\([^ ]*\).*/\1/p')
-	PARSE_TARGET=$(printf '%s\n' "$line" | sed -n 's/.*target=\([^ ]*\).*/\1/p')
-	PARSE_CONF=$(printf '%s\n' "$line" | sed -n 's/.*confidence=\([^ ]*\).*/\1/p')
+	PARSE_EXPLANATION=
+	PARSE_VERDICT=$(printf '%s\n' "$blob" |
+		sed -n 's/^[[:space:]]*verdict=\([A-Za-z]*\).*/\1/p' | head -n 1)
+	PARSE_TARGET=$(printf '%s\n' "$blob" |
+		sed -n 's/^[[:space:]]*verdict=[A-Za-z]*[[:space:]][[:space:]]*target=\([^[:space:]]*\).*/\1/p' | head -n 1)
+	if [ -z "$PARSE_TARGET" ]; then
+		PARSE_TARGET=$(printf '%s\n' "$blob" |
+			sed -n 's/^[[:space:]]*target=\([^[:space:]]*\).*/\1/p' | head -n 1)
+	fi
+	PARSE_EXPLANATION=$(printf '%s\n' "$blob" |
+		sed -n 's/^[[:space:]]*explanation=//p' | head -n 3 | tr '\n' ' ')
+	PARSE_EXPLANATION=${PARSE_EXPLANATION%"${PARSE_EXPLANATION##*[![:space:]]}"}
 	case "$PARSE_VERDICT" in
 	same | reroute | new) ;;
 	*) return 1 ;;
 	esac
-	case "$PARSE_CONF" in
-	det | model) ;;
-	*) return 1 ;;
-	esac
 	[ -n "$PARSE_TARGET" ] || return 1
+	case "$PARSE_TARGET" in
+	*[!A-Za-z0-9._-]*) [ "$PARSE_TARGET" = - ] || return 1 ;;
+	esac
 	if [ "$PARSE_VERDICT" = new ]; then
 		PARSE_TARGET=-
 	fi
-	if [ "$PARSE_VERDICT" = same ] && [ "$PARSE_TARGET" = - ]; then
+	if [ "$PARSE_VERDICT" = same ]; then
 		PARSE_TARGET=$(resolve_session_id)
 	fi
 	if [ "$PARSE_VERDICT" = reroute ]; then
@@ -484,13 +513,21 @@ parse_verdict_line() { # <blob> -> sets PARSE_VERDICT PARSE_TARGET PARSE_CONF; r
 	return 0
 }
 
-emit_verdict() { # <verdict> <target> <confidence> ; message on stdin for logging/staging
-	local verdict=$1 target=$2 conf=$3 msg entry_sid
+# emit_verdict: record, stage, and print one verdict. The optional explanation is
+# audit-only: it lands in explanations.log and the pending route header, and is
+# never printed on the wire line or forwarded into any routed session context.
+emit_verdict() { # <verdict> <target> <confidence> [explanation] ; message on stdin
+	local verdict=$1 target=$2 conf=$3 explanation=${4-} msg entry_sid digest
 	msg=$(cat)
 	printf '%s' "$msg" | record_verdict "$verdict" "$target" "$conf"
+	if [ -n "$explanation" ]; then
+		digest=$(printf '%s' "$msg" | digest_message)
+		[ -n "$digest" ] || digest=nodigest
+		record_explanation "$verdict" "$target" "$digest" "$explanation"
+	fi
 	case "$verdict" in
 	reroute | new)
-		printf '%s' "$msg" | stage_pending_route "$verdict" "$target" "$conf"
+		printf '%s' "$msg" | stage_pending_route "$verdict" "$target" "$conf" "$explanation"
 		# Best-effort Continuity Entry for the captain message (fail-open).
 		if [ "$verdict" = reroute ]; then
 			entry_sid=$target
@@ -539,6 +576,7 @@ notion_entry_add_best_effort() { # <router-session> ; message on stdin
 # --- CLI -------------------------------------------------------------------
 
 SESSION_ID_ARG=
+CHAT_HISTORY_FILE=
 mode=
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -562,6 +600,23 @@ while [ "$#" -gt 0 ]; do
 	--session-id=*)
 		SESSION_ID_ARG=${1#--session-id=}
 		[ -n "$SESSION_ID_ARG" ] || {
+			usage >&2
+			exit 2
+		}
+		shift
+		;;
+	--chat-history-file)
+		shift
+		CHAT_HISTORY_FILE=${1-}
+		[ -n "$CHAT_HISTORY_FILE" ] || {
+			usage >&2
+			exit 2
+		}
+		shift
+		;;
+	--chat-history-file=*)
+		CHAT_HISTORY_FILE=${1#--chat-history-file=}
+		[ -n "$CHAT_HISTORY_FILE" ] || {
 			usage >&2
 			exit 2
 		}
@@ -605,57 +660,11 @@ if [ "$mode" = --on-settle ]; then
 	exit 0
 fi
 
-# --on-submit
+# --on-submit: the model always decides. The deterministic layer below survives
+# only as the fail-open fallback when the spawn errors, times out, or returns
+# something unparseable, so a broken router never locks the captain out.
 msg=$(cat)
-verdict=
-target=
-conf=det
 
-# 1) Cheap same against current anchors.
-if [ -s "$ANCHORS_FILE" ] && printf '%s' "$msg" | message_matches_anchor "$ANCHORS_FILE"; then
-	printf '%s' "$msg" | emit_verdict same "$session_id" det
-	exit 0
-fi
-
-# 2) Unique deterministic reroute against other session briefs.
-reroute_hits=
-reroute_count=0
-while IFS= read -r other; do
-	[ -n "$other" ] || continue
-	brief="$SESSIONS_DIR/$other.brief"
-	[ -f "$brief" ] || continue
-	af=
-	af=$(brief_anchors_file "$brief") || continue
-	if [ -s "$af" ] && printf '%s' "$msg" | message_matches_anchor "$af"; then
-		reroute_hits="$reroute_hits$other"$'\n'
-		reroute_count=$((reroute_count + 1))
-	fi
-	rm -f "$af" 2>/dev/null || true
-done < <(list_other_session_ids "$session_id")
-
-if [ "$reroute_count" -eq 1 ]; then
-	target=$(printf '%s' "$reroute_hits" | awk 'NF{print; exit}')
-	printf '%s' "$msg" | emit_verdict reroute "$target" det
-	exit 0
-fi
-
-if [ "$reroute_count" -gt 1 ]; then
-	# Ambiguous multi-match -> model.
-	:
-elif ! [ -s "$ANCHORS_FILE" ]; then
-	# No current anchors and no other unique match -> clear new.
-	printf '%s' "$msg" | emit_verdict new - det
-	exit 0
-elif printf '%s' "$msg" | message_looks_short_reply; then
-	# Open asks remain, message looks like a short answer -> model.
-	:
-else
-	# Substantial unrelated message with no brief matches -> clear new.
-	printf '%s' "$msg" | emit_verdict new - det
-	exit 0
-fi
-
-# 3) Ambiguous: ephemeral router agent.
 tmpmsg=$(mktemp "$ROUTER_DIR/msg.XXXXXX" 2>/dev/null) || {
 	record_failure "could not create temp message file"
 	printf '%s' "$msg" | emit_verdict same "$session_id" det
@@ -667,18 +676,19 @@ printf '%s' "$msg" >"$tmpmsg" 2>/dev/null || {
 	printf '%s' "$msg" | emit_verdict same "$session_id" det
 	exit 0
 }
+
 agent_out=
-if agent_out=$(build_router_prompt "$session_id" "$tmpmsg" | spawn_router_agent); then
+if agent_out=$(build_router_prompt "$session_id" "$tmpmsg" "$CHAT_HISTORY_FILE" | spawn_router_agent); then
 	rm -f "$tmpmsg"
-	if parse_verdict_line "$agent_out"; then
-		# Force model confidence label even if the agent echoed det.
-		printf '%s' "$msg" | emit_verdict "$PARSE_VERDICT" "$PARSE_TARGET" model
+	if parse_verdict_block "$agent_out"; then
+		printf '%s' "$msg" |
+			emit_verdict "$PARSE_VERDICT" "$PARSE_TARGET" model "$PARSE_EXPLANATION"
 		exit 0
 	fi
 	record_failure "router agent returned unparseable verdict"
 else
 	rm -f "$tmpmsg"
-	# spawn_router_agent already recorded failure when possible
+	# spawn_router_agent already recorded the failure when it could.
 fi
 
 # Fail-open: allow into the current primary.

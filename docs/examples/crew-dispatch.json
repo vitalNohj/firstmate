@@ -26,7 +26,7 @@
   "roles": {
     "continuity": {
       "harness": "pi",
-      "model": "cursor/grok-4.5",
+      "model": "cursor/grok-4.6",
       "effort": "low"
     }
   }

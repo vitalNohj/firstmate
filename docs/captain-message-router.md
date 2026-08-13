@@ -32,8 +32,9 @@ Local-only under `state/captain-router/` (gitignored with `state/`):
 | `pending/<ts>-<digest>.route` | Staged reroute/new handoff for P2 |
 | `pending/LATEST` | Basename of the newest pending route |
 | `verdicts.log` | Append-only verdict rows |
+| `explanations.log` | Append-only model rationale rows (audit only) |
 | `failures.log` | Append-only fail-open failure rows |
-| `last-handoff.txt` | Hook-side pointer after reroute/new (P1) |
+| `last-handoff.txt` | Hook-side pointer after reroute/new |
 | `hook.log` | Hook bookkeeping notes |
 
 ### Session id assumption
@@ -85,17 +86,50 @@ verdict=<same|reroute|new> target=<session-id|-> confidence=<det|model>
 
 Conceptual form `reroute:<session-id>` is the `verdict=reroute target=<session-id>` wire line.
 
-Deterministic layer:
-
-1. `same` when the message matches the current session anchors.
-2. `reroute` when it uniquely matches exactly one other session brief.
-3. `new` when no session briefs match and anchors are empty or the message is substantial and unrelated.
-4. Otherwise ambiguous (including short acknowledgements while asks remain, or multi-brief collisions): spawn the ephemeral router agent.
+**The model decides every submit.**
+There is no deterministic classification shortcut: each `--on-submit` spawns the configured router agent and honors its verdict, recorded as `confidence=model`.
+The deterministic layer survives only as the fail-open fallback described below, which is what `confidence=det` now means.
 
 `reroute` and `new` also stage `pending/*.route` for P2 drop-in.
-P1 does **not** auto-spawn a new primary session and does **not** compact/inject across sessions.
+This phase does **not** auto-spawn a new primary session and does **not** compact/inject across sessions.
 
 ## Ephemeral router agent
+
+### What the model sees
+
+The prompt carries four framed parts:
+
+1. Its role and the verdict semantics, including the instruction to prefer `same` for ordinary in-conversation replies that share no literal words with the last assistant turn.
+2. A bounded, redacted excerpt of the recent chat history for the current session, supplied by the harness hook through `--chat-history-file`.
+3. Every session brief under `sessions/*.brief`, so the model can reason about what each session is about.
+4. The captain message to classify.
+
+The hook caps the excerpt at the newest 12 user/assistant turns and 6000 characters, and the owner re-bounds it (`FM_CAPTAIN_ROUTER_HISTORY_CHARS`, default 6000) and redacts before the model sees anything.
+Redaction drops any line carrying a Firstmate operational injection and masks secret-shaped tokens and `token`/`secret`/`password`/`api_key` values.
+With no history file the model still gets the briefs and the message.
+
+### What the model returns
+
+```text
+verdict=<same|reroute|new>
+target=<session-id|->
+explanation=<up to 3 sentences: why this verdict / what context this belongs to>
+```
+
+`verdict` and `target` drive routing.
+Targets are normalized and validated by the owner, never trusted raw: `new` forces `target=-`, `same` resolves to the current session id, and `reroute` must name a session that has a brief on disk.
+
+`explanation` is **audit-only**.
+It is appended to `explanations.log` keyed by the same message digest as `verdicts.log`, and written as an `explanation=` header field in the staged `pending/*.route`.
+It is never printed on the wire line, never placed in the routed message body, and never forwarded into the routed or new session's prompt or drop-in.
+It exists so the captain can audit why a verdict was chosen and dial the prompt instructions over time.
+
+### Fail-open fallback
+
+A spawn error, a timeout (`FM_CAPTAIN_ROUTER_TIMEOUT_SECS`, default 90s when a `timeout`/`gtimeout` binary exists), an unparseable reply, or a `reroute` naming a session with no brief all fall back to `same` against the current session with `confidence=det` and a `failures.log` row.
+The captain is never locked out by a broken or slow router.
+
+### Configuration
 
 Config-driven via optional `config/crew-dispatch.json` roles:
 
@@ -103,28 +137,30 @@ Config-driven via optional `config/crew-dispatch.json` roles:
 "roles": {
   "continuity": {
     "harness": "pi",
-    "model": "cursor/grok-4.5",
+    "model": "cursor/grok-4.6",
     "effort": "low"
   }
 }
 ```
 
 `roles.continuity` wins over `roles.router`.
-When absent, the owner defaults to Pi / `cursor/grok-4.5` / `low`.
+When absent, the owner defaults to Pi / `cursor/grok-4.6` / `low`.
+Each field falls back independently, so a partial profile still inherits the built-in defaults.
 Pi thinking levels are `low|medium|high|xhigh|max` (no `slow`); `slow` maps to `low`.
 Launch is print-mode Pi with no session, extensions, tools, or context files.
-Unit tests mock the agent through `FM_CAPTAIN_ROUTER_AGENT_CMD` (prompt on stdin, verdict on stdout).
-No real model calls in unit tests.
+Unit tests mock the agent through `FM_CAPTAIN_ROUTER_AGENT_CMD` (prompt on stdin, verdict block on stdout), or put a recording fake harness on `PATH` to assert the real spawn argv.
+No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is the opt-in live proof.
 
-## Hook behavior (P1)
+## Hook behavior
 
 - Settle: fire-and-forget.
 - Submit: synchronous so bash can stage pending routes before the primary turn proceeds.
+- The hook captures a bounded transcript excerpt on `agent_end` and hands it to the owner on the next submit through `--chat-history-file`, dropping Firstmate's own operational injections first.
 - `same`: allow.
 - `reroute` / `new`: record hook-side `last-handoff.txt`; do not inject continuity into primary context.
 - Always fail-open.
 
-## Open assumptions (P1 defaults)
+## Open assumptions (current defaults)
 
 - Multi-ask mismatch: surface/warn only (not block).
 - `new`: stage under `pending/` for captain/next activation; do not auto-spawn a full new primary unless a safe Firstmate API exists later.
@@ -177,6 +213,17 @@ See `bin/fm-captain-notion-sync.sh --help` and `bin/fm-notion-continuity.sh --he
 ```sh
 bin/fm-test-run.sh tests/fm-captain-message-router.test.sh tests/fm-captain-notion-sync.test.sh tests/fm-notion-continuity.test.sh
 bin/fm-lint.sh bin/fm-captain-message-router.sh bin/fm-captain-notion-sync.sh bin/fm-notion-continuity.sh
+
+# Opt-in live proof that submit really reaches a model (pin a model you are authenticated for).
+FM_CAPTAIN_ROUTER_LIVE_E2E=1 FM_CAPTAIN_ROUTER_MODEL=<provider/model> bash tests/fm-captain-router-live-e2e.test.sh
+```
+
+Live run on 2026-08-13 with `FM_CAPTAIN_ROUTER_MODEL=codex-lb/free-low`, feeding the real captain message `I thought it was supposed to be classifying my messages to you.` (digest `69be34d349e4`), which the previous deterministic layer classified `new`/`det`:
+
+```text
+live verdict line: verdict=same target=sess-router confidence=model
+explanations.log:
+2026-08-13T01:09:56Z same sess-router 69be34d349e4 The user is responding to the assistant's question about rewriting the captain-message router, clarifying their understanding of its classification role - this continues the current conversation about the router.
 ```
 
 The script header owns exact flags and state mechanics.
