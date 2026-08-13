@@ -63,9 +63,9 @@ PROP_HERDR_TARGET_DEFAULT="Herdr target"
 PROP_HERDR_WORKSPACE_DEFAULT="Herdr workspace"
 
 # Property name defaults (Entries).
-PROP_ENTRY_NAME_DEFAULT=Name
+PROP_ENTRY_NAME_DEFAULT=Preview
 PROP_ENTRY_CONTEXT_DEFAULT=Context
-PROP_ENTRY_BODY_DEFAULT=Body
+PROP_ENTRY_BODY_DEFAULT=Content
 
 load_config() {
 	# Optional key=value file. Never print contents.
@@ -269,7 +269,7 @@ cmd_contexts_export() {
 			row=$(printf '%s' "$page_json" | page_to_context_json) || continue
 			[ -n "$row" ] || continue
 			# Require a non-empty router_session after mapping.
-			printf '%s\n' "$row" | jq -e -r 'select((.router_session // "") != "")' >>"$tmp" 2>/dev/null || true
+			printf '%s\n' "$row" | jq -c -e 'select((.router_session // "") != "")' >>"$tmp" 2>/dev/null || true
 		done
 		has_more=$(printf '%s' "$resp" | jq -r '.has_more // false')
 		cursor=$(printf '%s' "$resp" | jq -r '.next_cursor // empty')
