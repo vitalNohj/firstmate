@@ -834,6 +834,10 @@ test_resolved_archived_hold_verification_is_strict() {
   fi
   assert_grep "2 matching records" "$home/archive-duplicate.err" \
     "duplicate archive failure did not report ambiguity"
+  assert_no_grep "absent from the live backlog and configured archive" "$home/archive-duplicate.err" \
+    "duplicate archive ambiguity must not also claim the record is absent"
+  [ "$(grep -c '^fm-decision-hold:' "$home/archive-duplicate.err")" = 1 ] \
+    || fail "duplicate archive verification must emit exactly one accurate error: $(cat "$home/archive-duplicate.err")"
   cp "$pristine" "$archive"
 
   tasks_in "$home" add "$hold" "Conflicting live archived route" --kind captain --repo sample >/dev/null \
@@ -849,6 +853,40 @@ test_resolved_archived_hold_verification_is_strict() {
   pass "resolved archived holds verify only with unique complete structured records"
 }
 
+# markdown_config_value hard-fails via `fail` from inside a command substitution, so
+# a malformed or absent [markdown] archive key must still abort `verify` nonzero.
+# Before the propagation fix a live active captain hold made `verify` print the
+# config error yet exit 0 (the fail stayed in the subshell), silently disabling the
+# archive ambiguity and dedupe guards.
+test_malformed_archive_config_fails_verification() {
+  local home id
+  home=$(make_home malformed-archive-config)
+  id=sample-malformed-config-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Review malformed archive config" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create malformed-config origin"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Malformed archive config review\n' > "$home/data/$id/report.md"
+  run_decisions "$home" hold "$id" route \
+    --title "Choose malformed-config route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create live hold for malformed-config regression"
+  run_decisions "$home" complete "$id" route >/dev/null \
+    || fail "could not record inventory for malformed-config regression"
+  run_decisions "$home" verify "$id" >/dev/null \
+    || fail "live captain hold did not verify under valid archive config"
+
+  grep -v '^archive = ' "$home/.tasks.toml" > "$home/.tasks.toml.tmp"
+  mv "$home/.tasks.toml.tmp" "$home/.tasks.toml"
+  if run_decisions "$home" verify "$id" > "$home/malformed-config.out" 2> "$home/malformed-config.err"; then
+    fail "verify passed with a malformed markdown.archive config, silently disabling the archive guards"
+  fi
+  assert_grep "markdown.archive must be one unescaped quoted path" "$home/malformed-config.err" \
+    "malformed archive config must fail verify with the config error"
+  pass "malformed or absent archive config fails verify nonzero"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -856,6 +894,7 @@ test_declined_decision_closes_without_routed_work
 test_out_of_band_close_is_repairable_before_teardown
 test_unanswered_decision_still_blocks_completion_and_teardown
 test_resolved_archived_hold_verification_is_strict
+test_malformed_archive_config_fails_verification
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner

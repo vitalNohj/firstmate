@@ -187,16 +187,15 @@ markdown_config_value() {  # <key>
 
 markdown_path() {  # <key>
   local value
-  value=$(markdown_config_value "$1")
+  value=$(markdown_config_value "$1") || return 1
   case "$value" in
     /*) printf '%s\n' "$value" ;;
     *) printf '%s/%s\n' "$FM_HOME" "$value" ;;
   esac
 }
 
-archive_task_record() {  # <id>
-  local id=$1 archive scan count
-  archive=$(markdown_path archive)
+archive_task_record() {  # <id> <archive-path>
+  local id=$1 archive=$2 scan count
   [ -f "$archive" ] || return 1
   scan=$(awk -v id="$id" '
     function starts_task(line) {
@@ -211,16 +210,19 @@ archive_task_record() {  # <id>
     END { printf "%d\n%s", matches, records }
   ' "$archive")
   count=${scan%%$'\n'*}
-  [ "$count" = 1 ] || {
-    [ "$count" = 0 ] && return 1
-    fail "captain decision $id has $count matching records in configured archive $archive"
-  }
-  printf '%s' "${scan#*$'\n'}"
+  case "$count" in
+    1) printf '%s' "${scan#*$'\n'}" ;;
+    0) return 1 ;;
+    *)
+      printf '%s' "$count"
+      return 2
+      ;;
+  esac
 }
 
 archive_has_task_identity() {  # <id>
   local id=$1 archive
-  archive=$(markdown_path archive)
+  archive=$(markdown_path archive) || exit 1
   [ -f "$archive" ] || return 1
   awk -v id="$id" '
     index($0, "- [x] " id " - ") == 1 || index($0, "- [ ] " id " - ") == 1 { found=1 }
@@ -229,9 +231,14 @@ archive_has_task_identity() {  # <id>
 }
 
 verify_archived_hold_resolved() {  # <id>
-  local id=$1 record header archive
-  archive=$(markdown_path archive)
-  record=$(archive_task_record "$id") || fail "captain decision $id is absent from the live backlog and configured archive $archive"
+  local id=$1 record header archive rc=0
+  archive=$(markdown_path archive) || exit 1
+  record=$(archive_task_record "$id" "$archive") || rc=$?
+  case "$rc" in
+    0) : ;;
+    2) fail "captain decision $id has $record matching records in configured archive $archive" ;;
+    *) fail "captain decision $id is absent from the live backlog and configured archive $archive" ;;
+  esac
   header=${record%%$'\n'*}
   case "$header" in
     "- [x] $id - "*" (kind: captain)"*" (done "*" (hold-kind: captain)"*) : ;;
@@ -384,7 +391,7 @@ verify_hold_resolved() {  # <hold-id>
 
 verify_hold_durable() {  # <hold-id>
   local id=$1 show state held kind hold_kind body archive
-  archive=$(markdown_path archive)
+  archive=$(markdown_path archive) || exit 1
   if show=$(task_show "$id"); then
     archive_has_task_identity "$id" \
       && fail "captain decision $id is ambiguous across the live backlog and configured archive $archive"
