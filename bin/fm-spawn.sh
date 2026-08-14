@@ -158,6 +158,7 @@
 #                  written by this script; outside the worktree to avoid pi's trust gate)
 #     __PITURNEND__ absolute path to .pi/extensions/fm-primary-turnend-guard.ts in a pi secondmate home
 #     __PIWATCH__   absolute path to .pi/extensions/fm-primary-pi-watch.ts in a pi secondmate home
+#     __PIROUTER__  absolute path to .pi/extensions/fm-primary-captain-message-router.ts in a pi secondmate home
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 #     __WORKTREE__  absolute path to the task worktree
 #     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
@@ -169,12 +170,13 @@
 # muse installs no hook at all - its plugin engine is off in the default build - so
 # it writes state/<id>.muse-session to bind the pane to muse's own session event
 # log; muse is crewmate/scout only and is refused for --secondmate.
-# cursor likewise installs no hook: it writes state/<id>.cursor-session to bind
-# the pane to cursor's own conversation transcript (projects root, the exact
+# cursor installs no per-task hook either: it writes state/<id>.cursor-session to
+# bind the pane to cursor's own conversation transcript (projects root, the exact
 # workspace path cursor records in .workspace-trusted, and the conversations that
-# already existed for that workspace). cursor is crewmate/scout only and is
-# refused for --secondmate, and is launched through the verified binary resolver
-# because `cursor` is not the CLI name.
+# already existed for that workspace). It is launched through the verified binary
+# resolver because `cursor` is not the CLI name. A cursor SECONDMATE instead runs
+# the tracked project-scope .cursor/hooks.json in its own home, whose stop-hook
+# park owns that home's supervision (docs/supervision-protocols/cursor.md).
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
@@ -438,13 +440,7 @@ spawn_remote_secondmate() {
     harness=$("$FM_ROOT/bin/fm-harness.sh" secondmate)
   fi
   case "$harness" in
-    cursor)
-      fm_lock_release "$registry_lock" || true
-      fm_lock_release "$SPAWN_TASK_LOCK" || true
-      echo "error: cursor is a verified crewmate/scout adapter only and cannot run a remote secondmate; no primary supervision protocol has been verified for Cursor Agent CLI" >&2
-      return 1
-      ;;
-    claude|codex|opencode|pi|pi-signed|grok|kimi) ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor) ;;
     *)
       fm_lock_release "$registry_lock" || true
       fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -1128,7 +1124,7 @@ launch_template() {
     pi|pi-signed)
       printf '%s' '__PIBIN____PITUIMODE__'
       if [ "$kind" = secondmate ]; then
-        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ -e __PIROUTER__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PIEXT__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
@@ -1229,15 +1225,6 @@ esac
 # secondmate whose supervision cycle could never be armed.
 if [ "$KIND" = secondmate ] && [ "$HARNESS" = muse ]; then
   echo "error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
-  exit 1
-fi
-
-# Cursor is verified only for task workers.
-# Its CLI has no verified primary turn-end or watcher supervision integration,
-# so a Cursor secondmate would start successfully but could never satisfy the
-# persistent primary-session contract.
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = cursor ]; then
-  echo "error: cursor is a verified crewmate/scout adapter only and cannot run a secondmate; no primary supervision protocol has been verified for Cursor Agent CLI" >&2
   exit 1
 fi
 
@@ -2724,6 +2711,7 @@ sq_turnend=$(shell_quote "$TURNEND")
 sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 sq_piturnend=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-turnend-guard.ts")
 sq_piwatch=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-pi-watch.ts")
+sq_pirouter=$(shell_quote "$PROJ_ABS/.pi/extensions/fm-primary-captain-message-router.ts")
 sq_opinput=$(shell_quote "$FM_ROOT/bin/fm-operational-input.sh")
 sq_worktree=$(shell_quote "$WT")
 MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL")
@@ -2735,6 +2723,7 @@ LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
+LAUNCH=${LAUNCH//__PIROUTER__/$sq_pirouter}
 LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
 case "$HARNESS" in
   pi|pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
@@ -2759,8 +2748,11 @@ fi
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   sq_primary_home=$(shell_quote "$FM_HOME")
+  # Keep this in step with fm_supervision_model (bin/fm-wake-lib.sh): Claude's
+  # Stop auto-arm and Cursor's stop-hook park both run the watcher only BETWEEN
+  # turns, so a fresh beacon with no live watcher is their healthy mid-turn state.
   case "$HARNESS" in
-    claude) supervision_model=autoarm ;;
+    claude|cursor) supervision_model=autoarm ;;
     *) supervision_model=persistent ;;
   esac
   # Deliver the primary's EFFECTIVE trace-context decision as a normalized on/off

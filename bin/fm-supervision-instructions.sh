@@ -81,7 +81,7 @@ if [ -z "$HARNESS" ]; then
 fi
 
 case "$HARNESS" in
-  claude|codex|opencode|pi|grok) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
+  claude|codex|opencode|pi|grok|cursor) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
   pi-signed) SNIPPET="$DOC_DIR/pi.md" ;;
   *) HARNESS=unknown; SNIPPET="$DOC_DIR/unknown.md" ;;
 esac
@@ -90,6 +90,7 @@ esac
 checkpoint_seconds=${FM_CODEX_WATCH_CHECKPOINT:-180}
 pi_ext="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 pi_turnend_ext="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
+pi_router_ext="$FM_ROOT/.pi/extensions/fm-primary-captain-message-router.ts"
 x_mode_env="$CONFIG/x-mode.env"
 
 shell_quote() {
@@ -109,6 +110,7 @@ render_snippet() {
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line//__FM_PI_EXT__/$pi_ext}
     line=${line//__FM_PI_TURNEND_EXT__/$pi_turnend_ext}
+    line=${line//__FM_PI_ROUTER_EXT__/$pi_router_ext}
     line=${line//__FM_X_MODE_ENV_SH__/$x_mode_env_sh}
     line=${line//__FM_X_MODE_ENV__/$x_mode_env}
     printf '%s\n' "$line"
@@ -141,13 +143,16 @@ repair_line() {
       printf '%s%s%s%s\n' "$prefix" 'repair missing watcher supervision with a foreground checkpoint: bin/fm-watch-checkpoint.sh --seconds ' "$checkpoint_seconds" '.'
       ;;
     pi|pi-signed)
-      printf '%s%s%s%s%s%s\n' "$prefix" 'repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e ' "$pi_turnend_ext" ' -e ' "$pi_ext" ' if the extensions are not loaded.'
+      printf '%s%s%s%s%s%s%s%s\n' "$prefix" 'repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e ' "$pi_turnend_ext" ' -e ' "$pi_ext" ' -e ' "$pi_router_ext" ' if the extensions are not loaded.'
       ;;
     opencode)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision by letting the OpenCode TUI plugin arm after idle; use bin/fm-watch-arm.sh only as a manual recovery probe if the plugin reports failure.'
       ;;
     grok)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision with bin/fm-watch-arm.sh as its own Grok tracked background task, never shell &.'
+      ;;
+    cursor)
+      printf '%s%s\n' "$prefix" 'watcher supervision is owned by the stop-hook park; inspect the hook registration and watcher startup path before ending the turn.'
       ;;
     *)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision according to the session-start block for this harness; do not use shell &.'
@@ -171,6 +176,9 @@ ordinary_wake_line() {
       ;;
     grok)
       printf '%s\n' '- Ordinary wake: re-arm exactly one bin/fm-watch-arm.sh Grok tracked background task as directed below.'
+      ;;
+    cursor)
+      printf '%s\n' '- Ordinary wake: the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
       ;;
     *)
       printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'

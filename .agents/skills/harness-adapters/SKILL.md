@@ -59,22 +59,23 @@ Use that value for interrupt, exit, resume, and skill-invocation facts.
 
 ## Primary turn-end guard
 
-The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, and `grok` have empirically validated hook paths for the "no turn ends blind" guard.
+The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, and `cursor` have empirically validated hook paths for the "no turn ends blind" guard.
 `claude` and `codex` block directly through Stop hooks that preserve exit status 2 and stderr from `bin/fm-turnend-guard.sh`.
 `opencode`, `pi`, and `pi-signed` expose passive lifecycle callbacks and force one bounded follow-up when the shared predicate blocks.
 Grok selects native blocking or its pre-native bounded resume fallback from the exact running Stop payload; [`docs/turnend-guard.md`](../../../docs/turnend-guard.md) owns that contract.
 Kimi is outside the primary turn-end guard scope, while `docs/turnend-guard.md` owns its separate guarded global hook for crew wake signals.
 muse is CREWMATE/SCOUT ONLY and has no primary integration at all: its plugin engine (its only hook surface) is disabled in the default build, and its Claude-compatible hook dialect names `asyncRewake` and model reawakening as explicitly unsupported, which is exactly what a firstmate primary's turn-end supervision needs.
 `bin/fm-spawn.sh` refuses a `--secondmate` launch on muse for that reason.
-cursor is CREWMATE/SCOUT ONLY and has no verified primary turn-end or watcher supervision integration.
-`bin/fm-spawn.sh` refuses local and remote `--secondmate` launches on cursor for that reason.
+cursor HAS a full hooks system: 20 lifecycle events configurable at project scope in `.cursor/hooks.json`, plus a Claude-Code compatibility name map that also loads `<project>/.claude/settings.json`.
+Its `stop` step cannot block - exit 2 there is a silent no-op - so `bin/fm-turnend-guard-cursor.sh` parks the turn boundary on the watcher and returns one bounded `followup_message` instead.
+Because Cursor loads the tracked Claude settings too, every Claude-shaped entrypoint whose event Cursor covers stands down on a Cursor-delivered payload.
 The exact hook files, commands, scoping rules, and fail-open tradeoffs are owned by `docs/turnend-guard.md`.
 `docs/verification/supervision.md` "Turn-end guard" owns active validation evidence.
 When changing any primary turn-end hook, validate the real harness behavior in a scratch project or throwaway home before trusting it, then update that doc and the relevant concise fact below.
 
 ## Primary pre-arm (PreToolUse) seatbelt
 
-The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, and `grok` also have wired PreToolUse-equivalent hooks that deny a watcher-arm anti-pattern (shell `&`, truncating pipe, bundling, broad `pkill -f fm-watch`) before it runs.
+The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, and `cursor` also have wired PreToolUse-equivalent hooks that deny a watcher-arm anti-pattern (shell `&`, truncating pipe, bundling, broad `pkill -f fm-watch`) before it runs.
 `claude` and `codex` block directly through PreToolUse hooks; `grok` blocks the same way but requires every `$VAR` reference in its hook `command` string to carry an inline `:-default` or it fails to launch the hook entirely.
 `opencode`, `pi`, and `pi-signed` block by throwing from `tool.execute.before` / returning `{block: true}` from `tool_call`.
 The exact hook files, commands, output-shaping quirks (Claude Code only honors the deny when stdout is empty), and validation transcripts are owned by `docs/arm-pretool-check.md`.
@@ -104,7 +105,8 @@ Do not substitute another harness's wait shape when resuming supervision.
 Claude's Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) owns tokenless re-arm around `bin/fm-watch-arm.sh`, and Grok uses tracked background-notify cycles around `bin/fm-watch-arm.sh`.
 Codex uses bounded foreground checkpoints through `bin/fm-watch-checkpoint.sh` because Codex cannot reason while a foreground tool call is running.
 OpenCode uses `.opencode/plugins/fm-primary-watch-arm.js`, which coordinates with the turn-end guard plugin and wakes the TUI with `client.session.promptAsync`.
-Pi and pi-signed use the tracked `.pi/extensions/fm-primary-turnend-guard.ts` plus the tracked `.pi/extensions/fm-primary-pi-watch.ts`, both project-local extensions the Pi engine auto-discovers once trusted.
+Pi and pi-signed use the tracked `.pi/extensions/fm-primary-turnend-guard.ts` and `.pi/extensions/fm-primary-pi-watch.ts` for watcher supervision.
+The separately owned captain-message router is covered by [`docs/captain-message-router.md`](../../../docs/captain-message-router.md).
 When changing any primary watcher adapter, update `docs/supervision-protocols/`, `docs/turnend-guard.md` if a shared idle or turn-end hook changed, and the relevant concise fact below.
 
 ## Launch profile axes
@@ -130,7 +132,7 @@ The supported launch-profile flags below are verified locally; each row records 
 | pi / pi-signed | `--model <model>` | `--thinking <low\|medium\|high\|xhigh\|max>` | Verified 2026-07-27 on Pi and pi-signed 0.82.0. Both expose the same accepted thinking levels and completed the same model-qualified max-thinking smoke. |
 | opencode | `--model <provider/model>` | none for firstmate's interactive launch | Verified on opencode 1.17.6. `opencode run` has `--variant`, but firstmate launches the interactive `opencode --prompt` path, which has no verified effort flag. |
 | kimi | `--model <model>` | none | Verified 2026-07-25 on Kimi Code CLI 0.29.1. |
-| cursor | `--model <model>` | none | Verified 2026-08-11 on Cursor Agent CLI 2026.08.11-e8db854. No effort flag exists, so firstmate records the requested effort in task metadata and omits it from the launch. Validate ids against `cursor-agent --list-models` rather than assuming a low/medium/high family: the live catalog carries only `-high` Grok ids. |
+| cursor | `--model <model>` | none | Verified 2026-08-11 on Cursor Agent CLI 2026.08.11-e8db854; no effort flag exists, so firstmate records the requested effort in task metadata and omits it from the launch, and model availability follows [account-specific discovery](#model-support-discovery). |
 | muse | `--model <model>` | `--reasoning-effort <low\|medium\|high\|xhigh>`, and `ultra` only for an explicit `max` | Verified 2026-08-05 on Muse Code 0.1.0-R708.1. The flag accepts `none\|minimal\|low\|medium\|high\|xhigh\|ultra` and defaults to `high`. `ultra` is muse's max-class level, so it is reachable only through an explicit captain `max`, never from the generic fallback; `none` and `minimal` sit below the shared vocabulary and stay unreachable. |
 
 The concrete `harness` field owns adapter identity independently of the model provider: `harness=pi` with `model=xai/grok-*` is Pi using xAI, not `harness=grok`, and does not require Grok CLI login; `harness=grok` remains the standalone Grok Build CLI adapter.
@@ -309,8 +311,8 @@ The firstmate PRIMARY's own `.pi/extensions/fm-primary-turnend-guard.ts` listens
 Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still processing.
 Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-primary-pi-watch.ts` extension, same trust-once discovery as the turn-end guard.
 The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
-`bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both the turn-end guard and watcher extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
-When a secondmate is launched on Pi or pi-signed, `fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
+`bin/fm-session-start.sh` reports when the live Pi-family session has not loaded the turn-end guard, watcher, and captain-message router extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
+When a secondmate is launched on Pi or pi-signed, `fm-spawn.sh --secondmate` explicitly loads those three extensions from the secondmate home's git worktree.
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit re-verified 2026-07-03 on 0.2.82; reasoning-effort ceiling re-verified 2026-07-13 on 0.2.99; exit paths re-verified 2026-07-19 on grok 0.2.103)
 
@@ -368,17 +370,17 @@ The tracked Claude hook entries whose event Grok already covers through its own 
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol remains background-notify around `bin/fm-watch-arm.sh`; native Stop continuation does not provide Pi-like extension ownership.
 
-## cursor (VERIFIED CREWMATE/SCOUT 2026-08-11 on tmux and 2026-08-12 on Herdr, Cursor Agent CLI 2026.08.11-e8db854)
+## cursor (VERIFIED CREWMATE/SCOUT 2026-08-11 on tmux and 2026-08-12 on Herdr, and SECONDMATE/PRIMARY 2026-08-13, Cursor Agent CLI 2026.08.11-e8db854)
 
-Cursor Agent CLI is a CREWMATE and SCOUT adapter only.
-`bin/fm-spawn.sh` refuses local and remote `--secondmate` launches, and `bin/fm-control-lib.sh` refuses a secondmate relaunch, because no primary turn-end or watcher supervision protocol has been verified for Cursor.
+Cursor Agent CLI runs crewmate, scout, secondmate, and primary work.
+Its primary supervision is the stop-hook park in [`docs/supervision-protocols/cursor.md`](../../../docs/supervision-protocols/cursor.md), registered in tracked `.cursor/hooks.json`; a Cursor primary or secondmate must be launched with `--trust` or no project hook loads at all.
 Do not confuse `harness=cursor` using a `cursor-grok-4.5-*` model with `harness=grok`, which is the separate xAI Grok Build CLI and credential surface.
 
 | Fact | Value |
 |---|---|
 | Binary | Resolved through `fm_cursor_resolve_binary` (bin/fm-cursor-lib.sh). `cursor` is NOT the CLI: the installed names are `cursor-agent` and the legacy alias `agent`, both symlinked into `~/.local/share/cursor-agent/versions/<version>/cursor-agent`. The STABLE launcher is used, never the versioned target, which the CLI replaces on its own auto-update. |
 | Launch | A positional prompt with `--trust`, `--yolo`, `--model <model>` when selected, and `--workspace <absolute-task-worktree>`, behind `env -u` of the foreign primary markers. |
-| Models | Validate against `cursor-agent --list-models` for the current account rather than a fixed list; that list has already drifted once. The live catalog contains only `-high` Grok ids (`cursor-grok-4.5-high`, `cursor-grok-4.5-high-fast`) and several `xhigh` ids, so an assumed low/medium Grok id is invalid. |
+| Models | Validate against `cursor-agent --list-models` for the current account rather than a fixed list; available ids vary by account and have already drifted. |
 | Busy state | Its own per-conversation transcript, folded on demand by `bin/fm-busy-lib.sh` (source `cursor-transcript`). Each turn is bracketed by a `role:user` open and a typed `turn_ended` close covering `success` and `aborted`, so unlike Claude's `Stop` hook this source covers manual interruption. Nothing is armed and no record is ever seeded. Backend-agnostic, and confirmed identical on tmux and Herdr. |
 | Exit command | `/exit` |
 | Interrupt | Single Escape. The composer returns to its placeholder rather than the cancelled prompt, so NO clear key is needed (unlike muse). `bin/fm-control-lib.sh` claims no cancellation acknowledgement: the aborted transcript close appeared within seconds in some runs and not within twenty in others. |
@@ -388,7 +390,9 @@ Do not confuse `harness=cursor` using a `cursor-grok-4.5-*` model with `harness=
 | Trust dialog | `--trust` suppresses it. `--yolo` does NOT, and every task gets a fresh worktree path, so without `--trust` every spawn would block on it. |
 | Environment marker | `CURSOR_INVOKED_AS=cursor-agent` on the agent process and its children, plus `CURSOR_AGENT=1` on child/tool processes. Other `CURSOR_*` endpoint and credential variables are not identity markers. |
 | Effort | No effort flag exists. The requested axis is recorded in task metadata and never reaches the launch command. |
-| Composer | A BARE row whose prompt glyph is `→` (U+2192); no border. Idle placeholders are `Plan, search, build anything` fresh and `Add a follow-up` after a turn. |
+| Composer | A BARE row whose prompt glyph is `→` (U+2192); no border. Idle placeholders are `Plan, search, build anything` fresh and `Add a follow-up` after a turn, drawn de-emphasised so a styled capture separates them from real typed text. |
+| Primary hooks | Tracked project-scope `.cursor/hooks.json` registers `stop`, `sessionStart`, and two `preToolUse` seatbelts, all anchored through `$CURSOR_PROJECT_DIR`. Cursor ALSO loads `<project>/.claude/settings.json`, so the tracked Claude entries stand down on a Cursor-delivered payload; `docs/turnend-guard.md` owns that predicate. |
+| Primary limits | `stop` does not fire in headless `cursor-agent -p`. `preCompact` is deliberately unregistered because it cannot inject context, so a Cursor primary does not re-emit its digest after a compaction; that surface is deferred to a follow-up. Project hooks need `--trust`. |
 
 **Detection ordering is load-bearing.**
 Cursor does NOT clear an inherited `CLAUDECODE`, so a cursor worker under a claude primary carries both markers and whichever is tested first wins.
@@ -402,9 +406,11 @@ An unrelated `node` or `agent` is deliberately left `other`, which the liveness 
 Because the versioned install path is what identifies the alias, an auto-update changes the resolved target but not the identity rule.
 
 **Cursor parks its terminal cursor outside its composer.**
-`#{cursor_y}` pointed below the footer both when idle and with real text typed, and `#{cursor_flag}` was 0.
-The tmux composer verdict for a cursor pane is therefore `unknown` in EVERY state; this is expected, not a defect to chase.
-Submission is acknowledged from the idle-to-busy transition instead, which is why cursor's `ctrl+c to stop` token is part of the delivery busy union in `bin/fm-composer-lib.sh`.
+`#{cursor_y}` pointed below the footer both when idle and with real text typed, and `#{cursor_flag}` was 0, so tmux's cursor row is not a composer locator for a Cursor pane and the cursor-ANCHORED read answers `unknown` in every state.
+`bin/fm-tmux-lib.sh` therefore reclassifies a pane it can prove is Cursor the way every cursorless backend already classifies it, letting the bottom-most shape win, so the composite `fm_tmux_composer_state` now reports a real `empty` or `pending` for a Cursor pane on tmux (verified 2026-08-13).
+That gate is Cursor's own structural process identity from `bin/fm-cursor-lib.sh`, never the verdict alone, so the strict blank-cursor-row posture stays in force for every other harness and a dead shell still never reads `empty`.
+This is what makes away-mode escalation delivery work against a Cursor primary: `bin/fm-supervise-daemon.sh` needs an affirmatively-empty composer before it types, and it needed no Cursor-specific branch once the reader was correct.
+Submission is additionally acknowledged from the idle-to-busy transition, which is why cursor's `ctrl+c to stop` token is part of the delivery busy union in `bin/fm-composer-lib.sh`.
 Match that TOKEN and never the spinner verb: the same version rendered `Working` in one turn and `Running` in the next.
 
 **Delivery confirmation is verified on tmux and Herdr only.**
