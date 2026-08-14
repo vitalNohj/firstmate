@@ -35,6 +35,27 @@ Errors allow the message into the current primary, and router failures are recor
 The captain is never locked out by a broken router.
 Only invalid CLI usage exits non-zero.
 
+**No verdict ever destroys a captain message.**
+Cross-session delivery does not exist, so a `reroute` or `new` message has nowhere else to go.
+The hook stages the handoff *and* delivers the message into the current session.
+Staging records where a message belonged; it is never the reason a message was not read.
+
+## Toggle
+
+`config/captain-router` is the captain's kill switch (local-only; `config/` is gitignored).
+
+```sh
+printf 'off\n' > config/captain-router   # every message passes straight through
+printf 'on\n'  > config/captain-router   # classification resumes
+```
+
+`off`, `0`, and `false` disable classification. Absent, `on`, or any other value means on: a router that silently disables itself is the same outage as one that silently drops messages.
+`FM_CAPTAIN_ROUTER_ENABLED` overrides the file for a single invocation.
+
+The value is read per message, so toggling takes effect on the very next send with no Pi restart.
+A disabled submit still records its `same` verdict, so `verdicts.log` stays a complete audit.
+`--on-settle` keeps refreshing briefs while off, so re-enabling is immediate.
+
 ## State
 
 Local-only under `state/captain-router/` (gitignored with `state/`):
@@ -64,8 +85,9 @@ The Pi hook reads the harness session id from the callback context session manag
 
 ### Brief format
 
-```
+```text
 session_id=<id>
+kind=session
 updated=<iso8601>
 topic=<single-line head summary>
 ---
@@ -75,6 +97,12 @@ topic=<single-line head summary>
 
 Session discovery enumerates `state/captain-router/sessions/*.brief` only.
 It does not scan unrelated fleet metadata.
+
+`kind=session` is written by `--on-settle` and marks a **live conversation**, which is the only kind of brief a message can be routed to.
+
+A brief without that marker is a hand-written **project brief**: background that helps the model understand what the captain is talking about.
+A project describes a body of work, not a conversation, so it is never a reroute target: routing there would hand the message to something no session can ever receive.
+The prompt lists the two in separate sections, and the owner rejects a reroute naming a project brief.
 
 ## Modes
 
@@ -94,12 +122,23 @@ verdict=<same|reroute|new> target=<session-id|-> confidence=<det|model>
 
 Conceptual form `reroute:<session-id>` is the `verdict=reroute target=<session-id>` wire line.
 
-**The model decides every submit.**
-There is no deterministic classification shortcut: each `--on-submit` spawns the configured router agent and honors its verdict, recorded as `confidence=model`.
+**The model decides every submit**, with two exceptions that cannot have an answer worth a spawn:
+
+- the router is toggled off;
+- the current session has no `kind=session` brief yet, so this is its **first message**, and there is no prior conversation to continue or route away from.
+
+Both emit `same` against the current session with `confidence=det`, and both are still recorded in `verdicts.log`.
+
+The first-message skip is not an optimization; it closes a starvation loop.
+A model asked to classify a message in an empty session reads the missing history as "wrong session" and reroutes.
+That stops the turn, so the turn never settles, so the brief is never written, and every later message hits the same empty state forever.
+
+Otherwise each `--on-submit` spawns the configured router agent and honors its verdict, recorded as `confidence=model`.
 The deterministic layer survives only as the fail-open fallback described below, which is what `confidence=det` now means.
 
 `reroute` and `new` also stage `pending/*.route` for later delivery.
 The current implementation classifies and stages only: it does **not** auto-spawn a new primary session or compact/inject across sessions.
+Because of that, the staged message is **also delivered into the current session**, so no captain message is lost while cross-session delivery is unimplemented.
 
 ## Ephemeral router agent
 
@@ -109,8 +148,9 @@ The prompt carries four framed parts:
 
 1. Its role and the verdict semantics, including the instruction to prefer `same` for ordinary in-conversation replies that share no literal words with the last assistant turn.
 2. A bounded, redacted excerpt of the recent chat history for the current session, supplied by the harness hook through `--chat-history-file`.
-3. Every session brief under `sessions/*.brief`, so the model can reason about what each session is about.
-4. The captain message to classify.
+3. `OTHER LIVE SESSIONS`: every other `kind=session` brief, which are the only valid reroute targets. The current session is not listed, because a message cannot be routed to where it already is. When none exist, the prompt says so and reroute is not offered at all.
+4. `PROJECT CONTEXT`: every project brief, explicitly marked as background and never a destination.
+5. The captain message to classify.
 
 The hook caps the excerpt at the newest 12 user/assistant turns and 6000 characters, and the owner re-bounds it (`FM_CAPTAIN_ROUTER_HISTORY_CHARS`, default 6000) and redacts before the model sees anything.
 Redaction drops any line carrying a Firstmate operational injection and masks secret-shaped tokens and `token`/`secret`/`password`/`api_key` values.
@@ -129,8 +169,9 @@ explanation=<up to 3 sentences: why this verdict / what context this belongs to>
 ```
 
 `verdict` and `target` drive routing.
-Targets are normalized and validated by the owner, never trusted raw: `new` forces `target=-`, `same` resolves to the current session id, and `reroute` must name a different session that has a brief on disk.
+Targets are normalized and validated by the owner, never trusted raw: `new` forces `target=-`, `same` resolves to the current session id, and `reroute` must name a different session with a `kind=session` brief on disk.
 A model self-reroute is recorded and normalized to deterministic `same` without publishing a pending route.
+A reroute naming a project brief is rejected the same way and recorded in `failures.log`.
 
 `explanation` is **audit-only**.
 It is appended to `explanations.log` keyed by the same message digest as `verdicts.log`, and written as an `explanation=` header field in the staged `pending/*.route`.
@@ -173,14 +214,14 @@ No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is
 - `agent_end` retains only a candidate response and bounded transcript; `agent_settled` publishes them only when that same session and run saw captain input and no Firstmate operational input.
 - A mixed captain and operational run publishes no anchors or recent history, including when operational input arrives after an earlier `agent_end`.
 - `same`: allow.
-- `reroute` / `new`: record hook-side `last-handoff.txt` only after bash emits a successfully staged decision; normalized self-reroutes and publication failures continue as `same` without claiming a handoff.
-- Always fail-open.
+- `reroute` / `new`: record hook-side `last-handoff.txt` only after bash emits a successfully staged decision, then deliver the message into the current session anyway; normalized self-reroutes and publication failures continue as `same` without claiming a handoff.
+- Always fail-open, and always deliver: a held send is never dropped, whatever the verdict.
 
 ## Current limits
 
 - Multi-ask mismatch warns and never blocks.
 - `new` stages under `pending/`; it does not auto-spawn a new primary session.
-- Cross-session compact and inject is not implemented.
+- Cross-session compact and inject is not implemented, so a `reroute`/`new` message is staged for the record and still delivered into the current session. Until delivery exists, a verdict is an annotation, not a transfer.
 - The primary hook is available for Pi only.
 - No free classifier model is pinned; the warm child uses Pi's configured model until a measured free id can return a parseable verdict.
 

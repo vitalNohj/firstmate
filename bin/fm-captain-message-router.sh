@@ -42,7 +42,22 @@
 #   session with confidence=det and a failures.log row. Every surfaced verdict is
 #   appended to verdicts.log. Reroute/new also stage a durable pending route under
 #   state/captain-router/pending/. Cross-session delivery is not implemented, so
-#   this owner does not compact or inject sessions.
+#   this owner does not compact or inject sessions, and the hook still delivers
+#   the staged message into the current session rather than dropping it.
+#
+#   Two submits never reach the model at all, because neither can have an answer
+#   worth a spawn:
+#     - the router is toggled off (see the toggle below);
+#     - the current session has no session brief yet, so this is its first
+#       message and there is no prior conversation to route away from.
+#   Both emit `same` against the current session with confidence=det.
+#
+# Toggle: config/captain-router (or FM_CAPTAIN_ROUTER_ENABLED) holding `off`,
+#   `0`, or `false` disables classification. Absent or any other value means on.
+#   The value is read per invocation, so a toggle takes effect on the next
+#   captain message without restarting Pi. A disabled submit still records its
+#   `same` verdict, so verdicts.log stays a complete audit of every message.
+#   --on-settle keeps refreshing briefs while off, so re-enabling is immediate.
 #
 # --chat-history-file <path>: optional bounded recent-transcript excerpt for the
 #   submit prompt. The harness hook writes it; this owner re-bounds it
@@ -58,7 +73,12 @@
 # State (all local-only, never committed), under $STATE/captain-router/:
 #   anchors.current       - one normalized open-ask anchor per line (settle)
 #   current.session       - session id for the live primary this home last settled
-#   sessions/<id>.brief   - per-session topic head + anchors
+#   sessions/<id>.brief   - per-session topic head + anchors (kind=session), or a
+#                           hand-written project context brief (no kind=session).
+#                           Only a kind=session brief is a routable reroute
+#                           target: a project brief describes a body of work, not
+#                           a live conversation, so routing a message there would
+#                           send it somewhere no session can ever receive it.
 #   pending/<ts>-<digest>-<unique>.route - staged reroute/new handoff for later delivery
 #   pending/LATEST        - basename of the most recent pending route file
 #   verdicts.log          - append-only verdict rows
@@ -86,6 +106,8 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 ROUTER_DIR="$STATE/captain-router"
+CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+ROUTER_TOGGLE_FILE="$CONFIG_DIR/captain-router"
 ANCHORS_FILE="$ROUTER_DIR/anchors.current"
 CURRENT_SESSION_FILE="$ROUTER_DIR/current.session"
 SESSIONS_DIR="$ROUTER_DIR/sessions"
@@ -122,6 +144,34 @@ esac
 
 usage() {
 	awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
+}
+
+# router_enabled: the captain's kill switch. Read per invocation so toggling
+# takes effect on the next message with no restart. Anything unreadable or
+# unrecognized means on, because a router that silently disables itself is the
+# same outage as a router that silently drops messages.
+router_enabled() {
+	local stored=${FM_CAPTAIN_ROUTER_ENABLED-}
+	if [ -z "$stored" ] && [ -s "$ROUTER_TOGGLE_FILE" ]; then
+		IFS= read -r stored <"$ROUTER_TOGGLE_FILE" 2>/dev/null || stored=
+	fi
+	stored=${stored//[[:space:]]/}
+	case "$stored" in
+	off | 0 | false | OFF | FALSE) return 1 ;;
+	*) return 0 ;;
+	esac
+}
+
+# brief_is_session: true only for a live-conversation brief written by
+# --on-settle, which marks itself `kind=session`. A hand-written project brief
+# carries no such marker: it is context for the model and never a route target.
+brief_is_session() { # <brief-path>
+	[ -f "$1" ] || return 1
+	awk -F= '
+    /^---$/ { exit }
+    $1 == "kind" && $2 == "session" { found = 1; exit }
+    END { exit(found ? 0 : 1) }
+  ' "$1" 2>/dev/null
 }
 
 # extract_anchors: read text on stdin, print one normalized question anchor per
@@ -215,6 +265,8 @@ write_session_brief() { # <session-id> <topic> ; anchors on stdin (or empty)
 	mkdir -p "$SESSIONS_DIR" 2>/dev/null || return 0
 	{
 		printf 'session_id=%s\n' "$sid"
+		# The marker that makes this a routable target. Project briefs lack it.
+		printf 'kind=session\n'
 		printf 'updated=%s\n' "$(iso_now)"
 		printf 'topic=%s\n' "$topic"
 		printf -- '---\n'
@@ -311,26 +363,32 @@ redact_history() {
 }
 
 build_router_prompt() { # <current-id> <message-file> [history-file]
-	local cur=$1 msgfile=$2 histfile=${3-} sid brief history=
+	local cur=$1 msgfile=$2 histfile=${3-} sid brief history='' found=''
 	printf 'You are the Firstmate captain-message continuity router.\n'
 	printf 'Firstmate runs several long-lived work sessions for one captain, and each\n'
 	printf 'session has a brief describing what it is about. Your job is to decide where\n'
 	printf 'THIS captain message belongs, using the live conversation and every brief.\n\n'
 	printf 'Verdicts:\n'
 	printf '  same    - the message continues the current session conversation\n'
-	printf '  reroute - the message belongs to a different existing session\n'
+	printf '  reroute - the message belongs to a different LIVE SESSION listed below\n'
 	printf '  new     - the message starts work that fits no existing session\n\n'
 	printf 'Prefer "same" for ordinary in-conversation replies, follow-ups, corrections,\n'
 	printf 'objections, and acknowledgements, even when they share no literal words with\n'
-	printf 'the last assistant turn. Choose "reroute" only when the message clearly\n'
-	printf 'belongs to a different named session below. Choose "new" only when it starts\n'
-	printf 'work that fits no listed session.\n\n'
+	printf 'the last assistant turn. Choose "reroute" ONLY when the message clearly\n'
+	printf 'belongs to another live session listed under OTHER LIVE SESSIONS. Choose\n'
+	printf '"new" only when it starts work that fits no live session.\n\n'
+	printf 'A message about a project is NOT by itself a reason to reroute. Project\n'
+	printf 'context is background for understanding the message, never a destination.\n'
+	printf 'If no other live session is listed, reroute is impossible: answer "same" or\n'
+	printf '"new". An empty recent chat history means this session is only starting, so\n'
+	printf 'it is still a valid "same" target and not a reason to route the message away.\n\n'
 	printf 'Reply with EXACTLY these three lines and nothing else:\n'
 	printf 'verdict=<same|reroute|new>\n'
 	printf 'target=<session-id|->\n'
 	printf 'explanation=<up to 3 sentences on one line: why this verdict, what context this belongs to>\n\n'
 	printf 'Use target=- for verdict=new. For verdict=same use the current session id.\n'
-	printf 'For verdict=reroute, target must be one of the session ids listed below.\n'
+	printf 'For verdict=reroute, target must be a session id listed under OTHER LIVE\n'
+	printf 'SESSIONS. A project name from PROJECT CONTEXT is never a valid target.\n'
 	printf 'Current session id: %s\n' "$cur"
 	if [ -n "$histfile" ] && [ -s "$histfile" ]; then
 		history=$(redact_history <"$histfile" 2>/dev/null || true)
@@ -341,18 +399,39 @@ build_router_prompt() { # <current-id> <message-file> [history-file]
 	else
 		printf '(none available)\n'
 	fi
-	printf '\n=== SESSION BRIEFS (what each known session is about) ===\n'
+	# Two separate sections, because they answer different questions. Live
+	# sessions are the only places a message can actually be delivered; project
+	# briefs only help the model understand what the captain is talking about.
+	printf '\n=== OTHER LIVE SESSIONS (the ONLY valid reroute targets) ===\n'
+	found=
 	if [ -d "$SESSIONS_DIR" ]; then
 		for brief in "$SESSIONS_DIR"/*.brief; do
 			[ -f "$brief" ] || continue
+			brief_is_session "$brief" || continue
 			sid=$(basename "$brief" .brief)
+			[ "$sid" != "$cur" ] || continue
+			found=1
 			printf -- '--- session %s ---\n' "$sid"
 			cat "$brief"
 			printf '\n'
 		done
-	else
-		printf '(none)\n'
 	fi
+	[ -n "$found" ] ||
+		printf '(none - no other live session exists, so reroute is not available)\n'
+	printf '\n=== PROJECT CONTEXT (background only - NEVER a reroute target) ===\n'
+	found=
+	if [ -d "$SESSIONS_DIR" ]; then
+		for brief in "$SESSIONS_DIR"/*.brief; do
+			[ -f "$brief" ] || continue
+			brief_is_session "$brief" && continue
+			sid=$(basename "$brief" .brief)
+			found=1
+			printf -- '--- project %s ---\n' "$sid"
+			cat "$brief"
+			printf '\n'
+		done
+	fi
+	[ -n "$found" ] || printf '(none)\n'
 	printf '\n=== CAPTAIN MESSAGE (classify this) ===\n'
 	cat "$msgfile"
 	printf '\n'
@@ -466,7 +545,14 @@ parse_verdict_block() { # <blob>
 			PARSE_EXPLANATION="router returned the current session as a reroute target; continuing in the current session"
 			PARSE_CONFIDENCE=det
 		else
-			[ -f "$SESSIONS_DIR/$PARSE_TARGET.brief" ] || return 1
+			# A project brief is context, not a destination: routing there would
+			# hand the message to something that can never receive it.
+			if ! brief_is_session "$SESSIONS_DIR/$PARSE_TARGET.brief"; then
+				if [ -f "$SESSIONS_DIR/$PARSE_TARGET.brief" ]; then
+					record_failure "router targeted project brief $PARSE_TARGET, which is context and not a live session"
+				fi
+				return 1
+			fi
 		fi
 	fi
 	return 0
@@ -588,6 +674,23 @@ fi
 # only as the fail-open fallback when the spawn errors, times out, or returns
 # something unparseable, so a broken router never locks the captain out.
 msg=$(cat)
+
+# The captain's kill switch. Off means every message goes straight through, so a
+# router bug can never cost a message while it is being fixed.
+if ! router_enabled; then
+	printf '%s' "$msg" | emit_verdict same "$session_id" det
+	exit 0
+fi
+
+# First message of this session: no brief means no conversation has settled here
+# yet, so there is nothing to continue and nothing to route away from. Spawning
+# the model here is what starved this session in the first place - it read the
+# empty history as "wrong session" and rerouted, which stopped the turn, which
+# stopped the brief from ever being written.
+if ! brief_is_session "$SESSIONS_DIR/$session_id.brief"; then
+	printf '%s' "$msg" | emit_verdict same "$session_id" det
+	exit 0
+fi
 
 tmpmsg=$(mktemp "$ROUTER_DIR/msg.XXXXXX" 2>/dev/null) || {
 	record_failure "could not create temp message file"

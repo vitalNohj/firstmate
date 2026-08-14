@@ -125,10 +125,134 @@ test_settle_writes_session_brief() {
 	brief=$(brief_file "$root" sess-alpha)
 	assert_present "$brief" "session brief must be written on settle"
 	assert_grep "session_id=sess-alpha" "$brief" "brief records session id"
+	# The marker that separates a live conversation from a project context brief.
+	assert_grep "kind=session" "$brief" "a settled brief marks itself routable"
 	assert_grep "blender export fix" "$brief" "brief topic or anchors mention the ask"
 	assert_present "$root/state/captain-router/current.session" "current.session pointer written"
 	assert_grep "sess-alpha" "$root/state/captain-router/current.session" "current session recorded"
 	pass "router: settle writes/refreshes a per-session brief"
+}
+
+# A project brief is hand-written context, not a settled session: it carries no
+# kind=session marker, so it must never become a reroute destination.
+write_project_brief() { # <root> <name>
+	local root=$1 name=$2 dir="$1/state/captain-router/sessions"
+	mkdir -p "$dir"
+	cat >"$dir/$name.brief" <<EOF
+session_id=$name
+updated=2026-01-01T00:00:00Z
+topic=Project context for $name, background only.
+---
+$name
+EOF
+}
+
+test_submit_first_message_of_a_session_skips_the_model() {
+	local root="$TMP_ROOT/submit-first-message" out status=0 fakebin
+	make_primary "$root"
+	# Another live session exists, so reroute would be available if it ran. A
+	# model that answered here starved the session: it read the empty history as
+	# "wrong session", rerouted, and stopped the turn that would have written
+	# this session's brief, so every later message hit the same empty state.
+	printf 'Shall I continue the exporter?' |
+		run "$root" --on-settle --session-id sess-other >/dev/null
+	fakebin=$(cursor_fixture "$root" first-message 'verdict=reroute
+target=sess-other
+explanation=this session has no chat history.')
+	out=$(printf 'first thing I say here' |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id sess-fresh) || status=$?
+	expect_code 0 "$status" "first-message submit exit"
+	assert_contains "$out" "verdict=same target=sess-fresh confidence=det" \
+		"the first message of a session continues there without asking the model"
+	assert_absent "$(pending_dir "$root")/LATEST" \
+		"a first message never stages a handoff"
+	assert_grep "same" "$(verdicts_log "$root")" "the skipped verdict is still audited"
+	# Once that session has settled once, classification resumes normally.
+	status=0
+	printf 'Anything else to check?' | run "$root" --on-settle --session-id sess-fresh >/dev/null
+	out=$(printf 'back to the exporter' |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id sess-fresh) || status=$?
+	expect_code 0 "$status" "settled-session submit exit"
+	assert_contains "$out" "verdict=reroute target=sess-other confidence=model" \
+		"a session that has settled once is classified normally"
+	pass "router: the first message of a session is never classified"
+}
+
+test_submit_toggle_off_passes_every_message_through() {
+	local root="$TMP_ROOT/submit-toggle" out status=0 fakebin
+	make_primary "$root"
+	printf 'Shall I continue?' | run "$root" --on-settle --session-id primary >/dev/null
+	printf 'Shall I export?' | run "$root" --on-settle --session-id sess-other >/dev/null
+	fakebin=$(cursor_fixture "$root" toggled 'verdict=reroute
+target=sess-other
+explanation=x')
+	# Off: the message goes straight through and the model is never consulted.
+	printf 'off\n' >"$root/config/captain-router"
+	out=$(printf 'a message while the router is off' |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id primary) || status=$?
+	expect_code 0 "$status" "toggle-off submit exit"
+	assert_contains "$out" "verdict=same target=primary confidence=det" \
+		"a disabled router passes the message into the current session"
+	assert_absent "$(pending_dir "$root")/LATEST" "a disabled router stages nothing"
+	assert_grep "same" "$(verdicts_log "$root")" "a disabled submit is still audited"
+	# The environment override disables it without touching the config file.
+	status=0
+	printf 'on\n' >"$root/config/captain-router"
+	out=$(FM_CAPTAIN_ROUTER_ENABLED=0 printf 'env-disabled message' |
+		FM_CAPTAIN_ROUTER_ENABLED=0 run_with_probe "$root" "$fakebin" --on-submit --session-id primary) || status=$?
+	expect_code 0 "$status" "env toggle-off submit exit"
+	assert_contains "$out" "verdict=same target=primary confidence=det" \
+		"the environment override disables classification too"
+	# Back on, with no restart: the very next message is classified again.
+	status=0
+	out=$(printf 'a message while the router is on' |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id primary) || status=$?
+	expect_code 0 "$status" "toggle-on submit exit"
+	assert_contains "$out" "verdict=reroute target=sess-other confidence=model" \
+		"re-enabling takes effect on the next message with no restart"
+	# An unreadable or unknown value must mean on: a router that silently
+	# disables itself is the same outage as one that silently drops messages.
+	status=0
+	printf 'wobble\n' >"$root/config/captain-router"
+	out=$(printf 'unknown toggle value' |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id primary) || status=$?
+	expect_code 0 "$status" "unknown toggle submit exit"
+	assert_contains "$out" "confidence=model" "an unrecognized toggle value means on"
+	pass "router: the captain toggle disables and re-enables classification live"
+}
+
+test_submit_project_brief_is_never_a_reroute_target() {
+	local root="$TMP_ROOT/submit-project-brief" out status=0 fakebin prompt
+	make_primary "$root"
+	printf 'Shall I continue?' | run "$root" --on-settle --session-id primary >/dev/null
+	write_project_brief "$root" blender-axi
+	# A project brief describes a body of work, not a live conversation. Routing
+	# there hands the message to something that can never receive it.
+	fakebin=$(cursor_fixture "$root" project-target 'verdict=reroute
+target=blender-axi
+explanation=this is blender work.')
+	out=$(printf 'record the luna cell results' |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id primary) || status=$?
+	expect_code 0 "$status" "project-target submit exit"
+	assert_contains "$out" "verdict=same target=primary confidence=det" \
+		"a reroute naming a project brief fails open into the current session"
+	assert_absent "$(pending_dir "$root")/LATEST" \
+		"a project-brief reroute stages no handoff"
+	assert_grep "project brief blender-axi" "$(failures_log "$root")" \
+		"the project-brief reroute is recorded"
+	# The prompt must separate the two, so the model stops offering projects.
+	status=0
+	prompt="$root/project-brief-prompt.txt"
+	fakebin=$(cursor_fixture "$root" project-prompt 'verdict=same
+target=primary
+explanation=x' "$prompt")
+	printf 'Shall I export?' | run "$root" --on-settle --session-id sess-other >/dev/null
+	printf 'anything' | run_with_probe "$root" "$fakebin" --on-submit --session-id primary >/dev/null
+	assert_grep "OTHER LIVE SESSIONS" "$prompt" "the prompt names the routable sessions"
+	assert_grep "NEVER a reroute target" "$prompt" "the prompt marks project context unroutable"
+	assert_grep "--- session sess-other ---" "$prompt" "a live session is listed as routable"
+	assert_grep "--- project blender-axi ---" "$prompt" "a project brief is listed as context"
+	pass "router: project briefs are context and never reroute targets"
 }
 
 test_settle_multi_ask_verification_surfaces() {
@@ -200,6 +324,9 @@ test_warm_runner_serves_every_submit_from_one_process() {
 		return 0
 	fi
 	make_primary "$root"
+	# Settle once so this session has a brief: the first message of a session is
+	# deliberately never classified, and this test is about the warm path.
+	printf 'Shall I continue?' | run "$root" --on-settle --session-id primary >/dev/null
 	holder=$(serve_warm_runner "$root")
 	assert_grep ready "$root/runner.out" "the warm classifier reports itself ready"
 	# No cursor-agent is reachable here, so only the warm path can answer.
@@ -221,6 +348,9 @@ test_warm_runner_serves_every_submit_from_one_process() {
 test_warm_runner_absence_falls_back_to_the_ephemeral_spawn() {
 	local root="$TMP_ROOT/warm-runner-absent" out status=0 seen fakebin
 	make_primary "$root"
+	# Settle once: the first message of a session never reaches any model, and
+	# this test is about which model runner answers.
+	printf 'Shall I continue?' | run "$root" --on-settle --session-id primary >/dev/null
 	seen="$root/seen-fallback.txt"
 	fakebin=$(cursor_fixture "$root" fallback \
 		'verdict=same
@@ -259,9 +389,13 @@ explanation=Continues this session.' "$seen")
 	assert_grep "explanation=<up to 3 sentences" "$seen" "prompt asks for an explanation line"
 	assert_grep "RECENT CHAT HISTORY" "$seen" "prompt frames the chat history section"
 	assert_grep "can you look at the router again" "$seen" "prompt carries the recent chat history"
-	assert_grep "SESSION BRIEFS" "$seen" "prompt frames the session briefs section"
-	assert_grep "session primary ---" "$seen" "prompt includes the current session brief"
-	assert_grep "session sess-router ---" "$seen" "prompt includes every other session brief"
+	assert_grep "OTHER LIVE SESSIONS" "$seen" "prompt frames the routable sessions section"
+	assert_grep "PROJECT CONTEXT" "$seen" "prompt frames the unroutable context section"
+	assert_grep "session sess-router ---" "$seen" "prompt includes every other live session"
+	# The current session is not a place to route TO, so it is not offered as a
+	# target; the recent chat history is what describes it to the model.
+	assert_no_grep "session primary ---" "$seen" \
+		"the current session is not offered as a reroute target"
 	assert_grep "CAPTAIN MESSAGE" "$seen" "prompt frames the captain message"
 	assert_grep "the part that decides where my messages go" "$seen" "prompt carries the captain message"
 	assert_grep "Current session id: primary" "$seen" "prompt states the current session id"
@@ -296,7 +430,7 @@ explanation=Continues this session.' "$seen")
 	assert_no_grep "hunter2hunter2" "$seen" "password values are redacted"
 	assert_no_grep "hunter2separated" "$seen" "password values separated by equals are redacted"
 	assert_no_grep "keyseparated" "$seen" "api key values separated by colons are redacted"
-	bytes=$(awk '/RECENT CHAT HISTORY/{p=1;next} /SESSION BRIEFS/{p=0} p' "$seen" | wc -c | tr -d ' ')
+	bytes=$(awk '/RECENT CHAT HISTORY/{p=1;next} /OTHER LIVE SESSIONS/{p=0} p' "$seen" | wc -c | tr -d ' ')
 	[ "$bytes" -le 1600 ] || fail "history excerpt must honor the char cap, got $bytes bytes"
 	pass "router: the chat excerpt is bounded and redacts injections and secrets"
 }
@@ -497,8 +631,11 @@ test_builtin_default_uses_cursor_cli_read_only() {
 test_submit_prompt_rides_the_file_not_argv() {
 	local root="$TMP_ROOT/argv-privacy" out status=0 argv promptseen fakebin hist mode stdinseen
 	make_primary "$root"
+	printf 'Shall I continue here?' | run "$root" --on-settle --session-id primary >/dev/null
+	# The sentinel lives in ANOTHER session's brief, because only other live
+	# sessions are listed as routable targets in the prompt.
 	printf 'Do you want me to start the SENTINEL-BRIEF-TOPIC work now?' |
-		run "$root" --on-settle --session-id primary >/dev/null
+		run "$root" --on-settle --session-id sess-other >/dev/null
 	hist="$root/history.txt"
 	printf 'user: SENTINEL-HISTORY-LINE about the exporter\n' >"$hist"
 	argv="$root/probe-argv.txt"
@@ -549,6 +686,9 @@ test_submit_prompt_handoff_failures_fail_open() {
 	for kind in create mode write; do
 		root="$TMP_ROOT/prompt-handoff-$kind"
 		make_primary "$root"
+		# Settle once so the submit reaches the prompt handoff at all: a session's
+		# first message is answered without building a prompt.
+		printf 'Shall I continue?' | run "$root" --on-settle --session-id primary >/dev/null
 		fakebin=$(cursor_fixture "$root" "prompt-handoff-$kind" 'verdict=same
 target=-
 explanation=unused')
@@ -718,6 +858,9 @@ test_repeated_route_staging_preserves_published_latest() {
 	local root="$TMP_ROOT/repeated-route-staging" out status=0 pending fakebin
 	local first_latest latest_after first_route route_count real_mv
 	make_primary "$root"
+	# Both sessions must have settled: the submitting session needs a brief to be
+	# classified at all, and the target needs one to be routable.
+	printf 'Shall I continue here?' | run "$root" --on-settle --session-id primary >/dev/null
 	printf 'Should I continue the existing shader review?' |
 		run "$root" --on-settle --session-id sess-shader >/dev/null
 	fakebin=$(cursor_fixture "$root" repeated-route 'verdict=reroute
@@ -1131,9 +1274,10 @@ await send({
 await send({ text: "broken router message" });
 await send({ text: "\u2063FIRSTMATE_OP: v1 watcher", source: "extension" });
 
-// Three of the five submits are held and land on `same` or fail-open; the
-// slash send passed through, and the `new` verdict stays staged.
-await harness.waitFor(() => injected.length >= 3, "the held sends to be injected");
+// Four of the five submits are held and delivered; the slash send passed
+// through. The `new` verdict is staged AND delivered, because no cross-session
+// delivery exists, so staging alone would destroy a captain message.
+await harness.waitFor(() => injected.length >= 4, "the held sends to be injected");
 // The injected copies come back through `input` as extension-sourced traffic
 // and must not be classified a second time.
 for (const entry of injected) {
@@ -1184,8 +1328,11 @@ JS
 		"the held send keeps its images"
 	assert_contains "$out" '{"text":"broken router message","images":0}' \
 		"an unparseable verdict fails open and still delivers the message"
-	assert_not_contains "$out" '{"text":"unrelated blender work","images":0}' \
-		"a new verdict stays staged instead of entering the current session"
+	# A staged handoff records where a message belonged; it is never a reason to
+	# destroy it. Cross-session delivery does not exist, so dropping here lost a
+	# captain message with no turn, no error, and no echo anywhere.
+	assert_contains "$out" '{"text":"unrelated blender work","images":0}' \
+		"a staged non-same verdict is still delivered, so no captain message is lost"
 	pass "router: the Pi input handler holds the send and never waits on the router child"
 }
 
@@ -1629,6 +1776,9 @@ test_submit_model_spawn_failure_fail_open
 test_submit_model_timeout_fail_open
 test_submit_garbage_verdict_fail_open
 test_submit_reroute_target_is_validated
+test_submit_project_brief_is_never_a_reroute_target
+test_submit_first_message_of_a_session_skips_the_model
+test_submit_toggle_off_passes_every_message_through
 test_submit_new_and_same_targets_are_normalized
 test_model_override_keeps_cursor_cli_read_only
 test_builtin_default_uses_cursor_cli_read_only

@@ -297,6 +297,8 @@ function parseVerdict(stdout: string): {
 
 // Surface a durable hook-side pointer for later cross-session delivery without
 // injecting into the primary prompt (bash already stages pending/*.route).
+// The message itself is still delivered by the caller: staging records where a
+// message belonged, and must never be the reason it was never seen.
 function surfaceHandoff(
 	verdict: string,
 	target: string,
@@ -311,7 +313,7 @@ function surfaceHandoff(
 				`target=${target}`,
 				`confidence=${confidence}`,
 				`staged_at=${new Date().toISOString()}`,
-				"note=classification staged; cross-session delivery is not implemented",
+				"note=classification staged; cross-session delivery is not implemented, so the message was also delivered into the current session",
 				"",
 			].join("\n"),
 		);
@@ -519,6 +521,12 @@ export default function (pi: ExtensionAPI) {
 
 	// Classify one held send, then act on its verdict. Fail-open: an empty or
 	// unparseable verdict delivers the message into the current session.
+	//
+	// A held send is ALWAYS delivered, whatever the verdict. Until cross-session
+	// delivery exists there is nowhere else for a reroute/new message to go, and
+	// a staged-only handoff means the captain's message is silently destroyed:
+	// no turn, no error, no echo. Staging records where the message belonged;
+	// delivery makes sure it was still read somewhere.
 	async function resolveSubmit(submit: PendingSubmit): Promise<void> {
 		let parsed: ReturnType<typeof parseVerdict> = null;
 		try {
@@ -538,7 +546,6 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (parsed && parsed.verdict !== "same") {
 			surfaceHandoff(parsed.verdict, parsed.target, parsed.confidence);
-			return;
 		}
 		if (submit.deliver) injectHeldSubmit(submit);
 	}
