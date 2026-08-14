@@ -174,6 +174,68 @@ explanation=The captain is questioning how routing works, which continues this s
 	pass "router: every submit consults the model, not a literal-token shortcut"
 }
 
+# serve_warm_runner <root>: start the warm classifier against tests/fake-pi-rpc.sh
+# and echo the pid of the holder whose exit retires it. The runner announces
+# readiness on stdout, which is the only startup signal a caller may rely on.
+serve_warm_runner() {
+	local root=$1 pid waited=0
+	mkdir -p "$root/state/captain-router"
+	printf '"verdict=same\\ntarget=primary\\nexplanation=Warm reply."' >"$root/reply.json"
+	# The runner exits with its stdin, so a sleeper holds that pipe open.
+	pid=$(FM_FAKE_PI_LOG="$root" FM_FAKE_PI_REPLY="$root/reply.json" \
+		FM_CAPTAIN_ROUTER_PI="$ROOT/tests/fake-pi-rpc.sh" \
+		sh -c "sleep 60 | node '$ROOT/bin/fm-captain-router-runner.mjs' serve --state '$root/state' \
+			>'$root/runner.out' 2>'$root/runner.err' & echo \$!")
+	while ! grep -q ready "$root/runner.out" 2>/dev/null && [ "$waited" -lt 100 ]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	printf '%s\n' "$pid"
+}
+
+test_warm_runner_serves_every_submit_from_one_process() {
+	local root="$TMP_ROOT/warm-runner" out status=0 holder launches prompts
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the warm classifier test"
+		return 0
+	fi
+	make_primary "$root"
+	holder=$(serve_warm_runner "$root")
+	assert_grep ready "$root/runner.out" "the warm classifier reports itself ready"
+	# No cursor-agent is reachable here, so only the warm path can answer.
+	out=$(printf 'first captain message' | run "$root" --on-submit --session-id primary) || status=$?
+	expect_code 0 "$status" "warm submit exit"
+	assert_contains "$out" "verdict=same" "the warm classifier verdict is honored"
+	assert_contains "$out" "confidence=model" "a warm verdict is a real model verdict"
+	printf 'second captain message' | run "$root" --on-submit --session-id primary >/dev/null
+	printf 'third captain message' | run "$root" --on-submit --session-id primary >/dev/null
+	kill "$holder" 2>/dev/null || true
+	launches=$(awk 'END{print NR+0}' "$root/pi-launches.txt")
+	prompts=$(awk 'END{print NR+0}' "$root/pi-prompts.txt")
+	[ "$launches" -eq 1 ] ||
+		fail "three submits must share one warm process, saw $launches launches"
+	[ "$prompts" -eq 3 ] || fail "every submit must reach the warm classifier, saw $prompts"
+	pass "router: one warm classifier process serves every submit"
+}
+
+test_warm_runner_absence_falls_back_to_the_ephemeral_spawn() {
+	local root="$TMP_ROOT/warm-runner-absent" out status=0 seen fakebin
+	make_primary "$root"
+	seen="$root/seen-fallback.txt"
+	fakebin=$(cursor_fixture "$root" fallback \
+		'verdict=same
+target=primary
+explanation=Ephemeral reply.' "$seen")
+	# No runner socket exists, so the ephemeral spawn must still answer.
+	out=$(printf 'captain message with no warm runner' |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id primary) || status=$?
+	expect_code 0 "$status" "warm-absent submit exit"
+	assert_present "$seen" "the ephemeral router model still answers without a warm runner"
+	assert_contains "$out" "verdict=same" "the fallback verdict is honored"
+	assert_contains "$out" "confidence=model" "the fallback verdict is a real model verdict"
+	pass "router: a missing warm classifier falls back to the ephemeral spawn"
+}
+
 test_submit_model_sees_briefs_history_and_message() {
 	local root="$TMP_ROOT/submit-prompt" status=0 seen fakebin hist
 	make_primary "$root"
@@ -1558,6 +1620,8 @@ test_settle_writes_session_brief
 test_settle_multi_ask_verification_surfaces
 test_settle_single_ask_is_silent
 test_submit_always_spawns_the_model
+test_warm_runner_serves_every_submit_from_one_process
+test_warm_runner_absence_falls_back_to_the_ephemeral_spawn
 test_submit_model_sees_briefs_history_and_message
 test_chat_history_is_bounded_and_redacted
 test_explanation_recorded_but_never_forwarded

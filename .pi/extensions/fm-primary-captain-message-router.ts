@@ -52,6 +52,8 @@ const sessionLockLib = `${root}/bin/fm-session-lock-lib.sh`;
 const hookLogDir = `${state}/captain-router`;
 const hookLog = `${hookLogDir}/hook.log`;
 const marker = `${state}/.pi-captain-router-extension-loaded`;
+const warmRunnerScript =
+	process.env.FM_CAPTAIN_ROUTER_RUNNER || `${root}/bin/fm-captain-router-runner.mjs`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 const HISTORY_MAX_TURNS = 12;
 const HISTORY_MAX_CHARS = 6000;
@@ -135,6 +137,48 @@ function sessionLockOwned(): boolean {
 		return result.status === 0;
 	} catch {
 		return false;
+	}
+}
+
+// The warm classifier: one Pi RPC child that survives across submits, so a
+// captain message no longer pays a vendor CLI cold start. Only the primary
+// holding the Firstmate session lock runs one, and it is retired on shutdown
+// and on session replacement. bin/fm-captain-router-runner.mjs owns the
+// process; the bash owner falls back to its ephemeral spawn without it, so
+// every failure here is silent.
+let warmRunner: ReturnType<typeof spawn> | undefined;
+
+function startWarmRunner(): void {
+	if (warmRunner) return;
+	if (!sessionLockOwned()) return;
+	try {
+		const child = spawn(
+			process.execPath,
+			[warmRunnerScript, "serve", "--state", state],
+			{ stdio: ["pipe", "ignore", "ignore"] },
+		);
+		child.on("error", () => {
+			warmRunner = undefined;
+		});
+		child.on("close", () => {
+			warmRunner = undefined;
+		});
+		// The runner exits when this pipe closes, so it cannot outlive this Pi.
+		child.unref();
+		warmRunner = child;
+	} catch {
+		warmRunner = undefined;
+	}
+}
+
+function retireWarmRunner(): void {
+	const child = warmRunner;
+	warmRunner = undefined;
+	try {
+		child?.stdin?.end();
+		child?.kill("SIGTERM");
+	} catch {
+		// Fail-open: a runner that cannot be signaled still dies with this Pi.
 	}
 }
 
@@ -393,6 +437,8 @@ export default function (pi: ExtensionAPI) {
 	): string | undefined {
 		const sessionId = contextSessionId(context);
 		if (!sessionBound || (allowReplacement && sessionId !== activeSessionId)) {
+			// A replaced session must not inherit the previous session's warm chat.
+			if (sessionBound) retireWarmRunner();
 			activeSessionId = sessionId;
 			currentRun = undefined;
 			recentChatHistory = "";
@@ -522,6 +568,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on?.("session_start", (_event, context) => {
 		bindSession(context, true);
 		markLoaded();
+		startWarmRunner();
+	});
+
+	pi.on?.("session_shutdown", () => {
+		retireWarmRunner();
 	});
 
 	pi.on("context", (event, context) => {

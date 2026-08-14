@@ -6,7 +6,8 @@ It routes an incoming captain chat message relative to primary-session open asks
 ## Ownership
 
 - Bash owner: `bin/fm-captain-message-router.sh` owns primary-home scope, state formats, classification, ephemeral router spawn, verdict normalization and logging, fail-open fallback, and pending handoffs.
-- Pi hook: `.pi/extensions/fm-primary-captain-message-router.ts` owns callback-context session ids, session-lock eligibility, logical-run isolation, operational-input exclusion, and bounded transcript handoff.
+- Warm runner: `bin/fm-captain-router-runner.mjs` owns the warm classifier process only - its lifetime, request framing, and per-request chat wipe. It never classifies.
+- Pi hook: `.pi/extensions/fm-primary-captain-message-router.ts` owns callback-context session ids, session-lock eligibility, logical-run isolation, operational-input exclusion, bounded transcript handoff, and the warm runner's lifetime.
 - The Firstmate primary agent never runs continuity.
 
 Primary homes only (main home or a marked secondmate home).
@@ -15,7 +16,16 @@ Read-only competing sessions, child crew/scout worktrees, and no-mistakes gate a
 
 ## Router model runner
 
-The built-in profile uses upstream Firstmate's verified Cursor Agent CLI resolver with the account-listed `cursor-grok-4.6-low` model.
+A submit is served by the warm classifier when one is listening, and by an ephemeral Cursor spawn otherwise.
+
+The warm classifier is one long-lived Pi RPC child owned by `bin/fm-captain-router-runner.mjs`.
+It exists because a per-message vendor CLI boot dominated classification latency.
+Only the Pi primary holding this home's Firstmate session lock starts one, and the hook retires it on session shutdown and on session replacement.
+The runner also exits when its starter's pipe closes, so it can never outlive the primary that started it.
+Each request begins with a fresh chat, so verdicts never accumulate and the Nth submit costs the same as the first.
+One request is served at a time; a busy, wedged, or silent runner loses the request and recycles its child.
+
+The ephemeral fallback uses upstream Firstmate's verified Cursor Agent CLI resolver with the account-listed `cursor-grok-4.6-low` model.
 It runs non-interactively in Cursor's read-only `ask` mode and never passes `--yolo` or `--force`.
 The router adds no fork-specific Cursor compatibility layer and no Pi provider extension.
 
@@ -129,13 +139,16 @@ It exists so the captain can audit why a verdict was chosen and dial the prompt 
 
 ### Fail-open fallback
 
-A private prompt-file creation, permission, or write error, a spawn error, a timeout (`FM_CAPTAIN_ROUTER_TIMEOUT_SECS`, default 90s, hard-bounded through `bin/fm-timeout-lib.sh` so the whole Cursor process group dies at the bound even on hosts with no `timeout` binary), an unparseable reply, a `reroute` naming the current session or a session with no brief, or a pending-route publication failure all fall back to `same` against the current session with `confidence=det` and a `failures.log` row.
+A warm classifier that is absent, busy, wedged, or unparseable simply loses the request, and the ephemeral spawn answers instead: the warm path can never cost the captain a verdict.
+Beyond that, a private prompt-file creation, permission, or write error, a spawn error, a timeout (`FM_CAPTAIN_ROUTER_TIMEOUT_SECS`, default 90s, hard-bounded through `bin/fm-timeout-lib.sh` so the whole Cursor process group dies at the bound even on hosts with no `timeout` binary), an unparseable reply, a `reroute` naming the current session or a session with no brief, or a pending-route publication failure all fall back to `same` against the current session with `confidence=det` and a `failures.log` row.
 The captain is never locked out by a broken or slow router.
 
 ### Configuration
 
-The owner always uses upstream Firstmate's Cursor Agent CLI resolver and defaults to `cursor-grok-4.6-low`.
+The ephemeral fallback always uses upstream Firstmate's Cursor Agent CLI resolver and defaults to `cursor-grok-4.6-low`.
 Set `FM_CAPTAIN_ROUTER_MODEL` to another model id exposed by the current Cursor account.
+The warm classifier hosts a Pi model id, which is a different catalog, so it takes its own `FM_CAPTAIN_ROUTER_RUNNER_MODEL` and otherwise uses Pi's configured model.
+`FM_CAPTAIN_ROUTER_PI` overrides the Pi executable the warm child runs, and `FM_CAPTAIN_ROUTER_RUNNER` overrides the runner script the hook starts.
 The Cursor model id carries the reasoning level because Cursor exposes no separate effort flag.
 Launch is non-interactive Cursor `--print --mode ask`, pinned to the Firstmate home as its workspace.
 Shell submit-path fixtures put a recording fake `cursor-agent` executable on `PATH`, so those regressions cross the verified resolver, shared timeout owner, private prompt-file handoff, and read-only Cursor argv boundary.
@@ -169,7 +182,7 @@ No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is
 
 ```sh
 bin/fm-test-run.sh tests/fm-captain-message-router.test.sh
-bin/fm-lint.sh bin/fm-captain-message-router.sh
+bin/fm-lint.sh bin/fm-captain-message-router.sh bin/fm-captain-router-runner.mjs
 
 # Opt-in live proof that submit really reaches a model (pin a model you are authenticated for).
 FM_CAPTAIN_ROUTER_LIVE_E2E=1 FM_CAPTAIN_ROUTER_MODEL=<cursor-model-id> bash tests/fm-captain-router-live-e2e.test.sh

@@ -358,8 +358,10 @@ build_router_prompt() { # <current-id> <message-file> [history-file]
 	printf '\n'
 }
 
-# Spawn the ephemeral router agent. The assembled prompt enters this function
-# on stdin and is handed to Cursor only through the private prompt file.
+# Run one classification. The assembled prompt enters this function on stdin
+# and is handed to the model only through the private prompt file: first to the
+# warm classifier (bin/fm-captain-router-runner.mjs) when one is listening, and
+# otherwise to an ephemeral Cursor spawn.
 # Prints agent stdout. Returns 0 on spawn success (even if verdict is bad).
 # The Cursor spawn is hard-bounded by FM_CAPTAIN_ROUTER_TIMEOUT_SECS through
 # fm_run_timed (whole process group, exit 124 on the bound), so a hung model
@@ -383,6 +385,16 @@ spawn_router_agent() { # prompt on stdin
 		record_failure "could not write private router prompt file"
 		return 1
 	}
+	# Prefer the warm classifier when the lock-holding primary has one running:
+	# it skips the vendor CLI cold start entirely. A runner that is absent,
+	# busy, wedged, or wrong loses the request and the ephemeral spawn below
+	# still answers, so the warm path can never cost the captain a verdict.
+	if out=$(fm_run_timed "$ROUTER_TIMEOUT_SECS" node "$SCRIPT_DIR/fm-captain-router-runner.mjs" \
+		classify --state "$STATE" --prompt-file "$prompt_file" 2>/dev/null); then
+		rm -f "$prompt_file"
+		printf '%s\n' "$out"
+		return 0
+	fi
 	# Reuse upstream's verified resolver instead of carrying another Cursor
 	# executable rule in the fork. Ask mode is read-only; --trust only skips
 	# the headless workspace prompt and grants no write-capable mode.
