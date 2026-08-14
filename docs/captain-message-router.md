@@ -150,6 +150,11 @@ Set `FM_CAPTAIN_ROUTER_MODEL` to another model id exposed by the current Cursor 
 The warm classifier hosts a Pi model id, which is a different catalog, so it takes its own `FM_CAPTAIN_ROUTER_RUNNER_MODEL` and otherwise uses Pi's configured model.
 `FM_CAPTAIN_ROUTER_PI` overrides the Pi executable the warm child runs, and `FM_CAPTAIN_ROUTER_RUNNER` overrides the runner script the hook starts.
 The Cursor model id carries the reasoning level because Cursor exposes no separate effort flag.
+
+Both defaults are deliberately unchanged.
+The warm runner can host a faster or free model later by pinning `FM_CAPTAIN_ROUTER_RUNNER_MODEL`, and that is the only change such a swap needs.
+The free ids available here were measured and none was usable: `opencode-zen/mimo-v2.5-free` refuses the classifier role or answers without a target, `opencode-zen/north-mini-code-free` returns an upstream-unavailable error, `oc/deepseek-v4-flash-free` and `oc/big-pickle` returned no text, and the OpenRouter `cohere/north-mini-code:free` id has no API key in this Pi.
+Re-measure before pinning one; a model that cannot return a parseable verdict costs a fail-open on every submit.
 Launch is non-interactive Cursor `--print --mode ask`, pinned to the Firstmate home as its workspace.
 Shell submit-path fixtures put a recording fake `cursor-agent` executable on `PATH`, so those regressions cross the verified resolver, shared timeout owner, private prompt-file handoff, and read-only Cursor argv boundary.
 No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is the opt-in live proof.
@@ -177,6 +182,7 @@ No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is
 - `new` stages under `pending/`; it does not auto-spawn a new primary session.
 - Cross-session compact and inject is not implemented.
 - The primary hook is available for Pi only.
+- No free classifier model is pinned; the warm child uses Pi's configured model until a measured free id can return a parseable verdict.
 
 ## Verification
 
