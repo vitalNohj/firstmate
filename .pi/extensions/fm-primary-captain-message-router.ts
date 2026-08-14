@@ -52,6 +52,10 @@ const marker = `${state}/.pi-captain-router-extension-loaded`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 const HISTORY_MAX_TURNS = 12;
 const HISTORY_MAX_CHARS = 6000;
+// Every scanned user message costs one classify subprocess, so bound the scan
+// itself: an operational message is skipped without collecting a line, and a
+// long fleet session is mostly operational wakes.
+const HISTORY_MAX_SCANNED = HISTORY_MAX_TURNS * 4;
 
 function rememberHookNote(note: string): void {
 	try {
@@ -280,12 +284,15 @@ function messageText(message: unknown): string {
 function recentTranscript(event: AgentEndEvent): string {
 	const messages = event.messages ?? [];
 	const lines: string[] = [];
+	let scanned = 0;
 	for (let i = messages.length - 1; i >= 0; i -= 1) {
 		if (lines.length >= HISTORY_MAX_TURNS) break;
 		const role = (messages[i] as { role?: unknown }).role;
 		if (role !== "user" && role !== "assistant") continue;
 		const text = messageText(messages[i]).trim();
 		if (!text) continue;
+		if (scanned >= HISTORY_MAX_SCANNED) break;
+		scanned += 1;
 		if (
 			role === "user" &&
 			classifyFirstmateOperationalText(text) !== undefined
@@ -507,7 +514,11 @@ export default function (pi: ExtensionAPI) {
 		if (!sessionLockOwned()) return;
 		if (activeSessionId !== sessionId || activeRunGeneration !== generation) return;
 		runRouterSettle(run.candidateAssistantText, sessionId);
-		recentChatHistory = run.candidateRecentChatHistory;
+		// An aborted turn never reaches agent_end, so the candidate stays empty:
+		// keep the prior transcript rather than blanking the router's context.
+		if (run.candidateRecentChatHistory) {
+			recentChatHistory = run.candidateRecentChatHistory;
+		}
 	});
 
 	markLoaded();
