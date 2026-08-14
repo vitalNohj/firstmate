@@ -21,6 +21,9 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 `bin/fm-classify-lib.sh` recognizes that transfer as closing the live status copy without claiming that the captain has answered it.
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
+The live backlog stays authoritative for mutable and open work, so an active decision must remain a structured active captain item.
+`verify` also accepts a resolved captain hold from the configured tasks-axi archive after ordinary Done retention pruning, but only when that archived record is unique and retains the complete structured fm-decision-hold resolution record.
+A malformed or missing archived record, or an ambiguous identity across the live backlog and the archive, fails verification.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` and `decline` subcommands close active holds, while `repair` attests a hold already closed outside the script.
@@ -60,6 +63,7 @@ The focused end-to-end regression uses only synthetic `sample` identities and de
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+The archive-aware `verify` acceptance and its malformed, missing, and ambiguous failure cases are covered by executable public-script regressions.
 
 Three further regressions cover the close paths that route no work.
 A declined decision closes with a recorded answer, satisfies `verify`, leaves Bearings' Captain's Call, and is refused while the hold still blocks routed work.
@@ -67,46 +71,5 @@ A hold closed by a direct `tasks-axi done` reproduces the shape that fails `veri
 An unanswered decision still blocks completion and teardown, and neither `decline` nor `repair` can close a hold that is still actively held or supply an answer with a missing or empty decision file.
 `repair` also refuses a closed captain-kind task that was never held for the captain.
 
-The final verification commands and their exact summarized outputs follow.
-
-```text
-$ bash tests/fm-decision-hold-lifecycle.test.sh
-ok - report-only unresolved decision is reproduced and completion refuses before loss
-ok - non-forced scout teardown always requires durable inventory verification
-ok - a declined decision closes with a recorded answer and no routed work
-ok - a decision closed outside the script is repairable and then clears teardown
-ok - an unanswered decision still blocks completion and resists both unrouted close paths
-ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
-ok - completion and verification validate origins before constructing paths
-ok - ended visual review follows the same decision-hold completion owner
-ok - resolved findings and decision-like prose do not create false holds
-ok - terminal single-owner stale status decisions do not block empty inventory
-ok - main-home and secondmate-home captain holds remain correctly routed
-ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
-
-$ bash tests/fm-fleet-snapshot-view.test.sh
-ok - backlog normalization preserves strict roles and resolves every blocker compatibly
-ok - durable captain-held transfer closes the duplicate live status decision
-ok - snapshot parses tasks-axi rows and respects operational overrides
-
-$ bash tests/fm-bearings-snapshot.test.sh
-ok - a completed scout with decision-like report prose is a pointer, not pending
-ok - an authoritative captain hold surfaces end-to-end
-ok - action-free items (working/done/queued/landed) do not leak into Captain's Call
-ok - main and secondmate captain actionability use the same blocker readiness
-
-$ bash tests/fm-brief.test.sh
-ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy
-
-$ bash tests/fm-teardown.test.sh
-ok - the run abort and the leaked-process reap both complete before the destructive worktree return
-
-$ bin/fm-lint.sh
-fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
-
-$ bin/fm-doc-audience-check.sh
-fm-doc-audience-check: ok surfaces=67 local_links=243
-
-$ git diff --check
-(no output)
-```
+The live executable suites are the authoritative evidence.
+Run `bash tests/fm-decision-hold-lifecycle.test.sh` and the sibling `tests/fm-fleet-snapshot-view.test.sh`, `tests/fm-bearings-snapshot.test.sh`, `tests/fm-brief.test.sh`, and `tests/fm-teardown.test.sh` scripts, followed by `bin/fm-lint.sh`, for the current pass state.
