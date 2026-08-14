@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	appendFileSync,
@@ -31,10 +31,13 @@ import { classifyFirstmateOperationalText } from "./lib/fm-operational-input.ts"
 // NOT watcher continuity: unrelated to fm-primary-pi-watch.ts, the turn-end
 // guard, or bin/fm-continuity-*. See docs/captain-message-router.md.
 //
-// Submit is synchronous so the hook can observe the verdict and so bash can
-// stage pending routes before the primary turn proceeds. Settle is synchronous
-// so session replacement cannot overtake its publication. Fail-open:
-// spawn/parse errors never block the captain.
+// Submit never occupies Pi's input path: the `input` handler holds the send,
+// returns immediately so the editor stays live, classifies off the event loop,
+// and re-injects the held message through pi.sendUserMessage only on `same`.
+// Slash traffic passes through instead of being held, because a re-injected
+// copy skips Pi's skill and template expansion. Settle is synchronous so
+// session replacement cannot overtake its publication. Fail-open: a spawn,
+// timeout, or parse failure injects into the current session anyway.
 // Submit always reaches the configured router model; bash owns the bound and
 // the fail-open fallback.
 // Cross-session compact+inject is not implemented; this hook does not spend
@@ -148,13 +151,15 @@ function runRouterSettle(text: string, sessionId?: string): void {
 	}
 }
 
-// Synchronous submit path: capture the one verdict line. Always fail-open.
+// Asynchronous submit path: capture the one verdict line without occupying the
+// harness event loop, so the editor stays live while the router classifies.
+// Always fail-open: every failure resolves to an empty verdict.
 function runRouterSubmit(
 	text: string,
 	sessionId: string | undefined,
 	recentChatHistory: string,
-): string {
-	if (!text.trim()) return "";
+): Promise<string> {
+	if (!text.trim()) return Promise.resolve("");
 	let historyDir = "";
 	let historyFile = "";
 	try {
@@ -169,35 +174,59 @@ function runRouterSubmit(
 	} catch {
 		historyFile = "";
 	}
-	try {
-		const result = spawnSync(
-			router,
-			[
-				"--on-submit",
-				...sessionArgs(sessionId),
-				...(historyFile ? ["--chat-history-file", historyFile] : []),
-			],
-			{ input: text, encoding: "utf8" },
-		);
-		if (result.error) {
-			rememberHookNote(`submit-spawn-error ${result.error.message}`);
-			return "";
+	const discardHistory = (): void => {
+		if (!historyDir) return;
+		try {
+			rmSync(historyDir, { force: true, recursive: true });
+		} catch {
+			// Fail-open.
 		}
-		return String(result.stdout ?? "").trim();
-	} catch (error) {
-		rememberHookNote(
-			`submit-exception ${error instanceof Error ? error.message : "unknown"}`,
-		);
-		return "";
-	} finally {
-		if (historyDir) {
-			try {
-				rmSync(historyDir, { force: true, recursive: true });
-			} catch {
-				// Fail-open.
-			}
+		historyDir = "";
+	};
+	return new Promise<string>((resolve) => {
+		let settled = false;
+		const finish = (verdictLine: string): void => {
+			if (settled) return;
+			settled = true;
+			discardHistory();
+			resolve(verdictLine);
+		};
+		let child: ReturnType<typeof spawn>;
+		try {
+			child = spawn(
+				router,
+				[
+					"--on-submit",
+					...sessionArgs(sessionId),
+					...(historyFile ? ["--chat-history-file", historyFile] : []),
+				],
+				{ stdio: ["pipe", "pipe", "ignore"] },
+			);
+		} catch (error) {
+			rememberHookNote(
+				`submit-exception ${error instanceof Error ? error.message : "unknown"}`,
+			);
+			finish("");
+			return;
 		}
-	}
+		let stdout = "";
+		child.stdout?.setEncoding?.("utf8");
+		child.stdout?.on("data", (chunk: unknown) => {
+			stdout += String(chunk);
+		});
+		child.on("error", (error: Error) => {
+			rememberHookNote(`submit-spawn-error ${error.message}`);
+			finish("");
+		});
+		child.on("close", () => finish(stdout.trim()));
+		// A router that exits before reading stdin must not raise EPIPE here.
+		child.stdin?.on("error", () => {});
+		try {
+			child.stdin?.end(text);
+		} catch {
+			// Fail-open: the close/error handlers still resolve the verdict.
+		}
+	});
 }
 
 function parseVerdict(stdout: string): {
@@ -393,25 +422,101 @@ export default function (pi: ExtensionAPI) {
 		run.candidateRecentChatHistory = "";
 	}
 
-	function classifyCaptainInput(
-		prompt: string,
-		sessionId: string | undefined,
-		run: RunState,
-	): void {
-		run.hasCaptainInput = true;
-		const stdout = runRouterSubmit(
-			prompt,
-			sessionId,
-			run.candidateRecentChatHistory || recentChatHistory,
-		);
-		const parsed = parseVerdict(stdout);
-		if (!parsed) {
-			if (stdout)
+	// A held captain send waiting on its verdict. `deliver` is false for input
+	// that already passed through to Pi (slash traffic and the fallback path):
+	// those are classified for their verdict only and never re-injected.
+	type PendingSubmit = {
+		prompt: string;
+		images: InputEvent["images"];
+		sessionId: string | undefined;
+		generation: number;
+		history: string;
+		deliver: boolean;
+		deliverAs: "steer" | "followUp" | undefined;
+	};
+
+	const pendingSubmits: PendingSubmit[] = [];
+	// Prompts this hook injected itself, so the copy Pi echoes back as
+	// `source === "extension"` is not classified a second time.
+	const injectedPrompts = new Map<string, number>();
+	let draining = false;
+
+	function rememberInjectedPrompt(prompt: string): void {
+		injectedPrompts.set(prompt, (injectedPrompts.get(prompt) ?? 0) + 1);
+	}
+
+	function consumeInjectedPrompt(prompt: string): boolean {
+		const count = injectedPrompts.get(prompt);
+		if (!count) return false;
+		if (count === 1) injectedPrompts.delete(prompt);
+		else injectedPrompts.set(prompt, count - 1);
+		return true;
+	}
+
+	function injectHeldSubmit(submit: PendingSubmit): void {
+		rememberInjectedPrompt(submit.prompt);
+		try {
+			const content = submit.images?.length
+				? [{ type: "text" as const, text: submit.prompt }, ...submit.images]
+				: submit.prompt;
+			pi.sendUserMessage(content, {
+				deliverAs: submit.deliverAs ?? "followUp",
+			});
+		} catch (error) {
+			consumeInjectedPrompt(submit.prompt);
+			rememberHookNote(
+				`inject-failed ${error instanceof Error ? error.message : "unknown"}`,
+			);
+		}
+	}
+
+	// Classify one held send, then act on its verdict. Fail-open: an empty or
+	// unparseable verdict delivers the message into the current session.
+	async function resolveSubmit(submit: PendingSubmit): Promise<void> {
+		let parsed: ReturnType<typeof parseVerdict> = null;
+		try {
+			const stdout = await runRouterSubmit(
+				submit.prompt,
+				submit.sessionId,
+				submit.history,
+			);
+			parsed = parseVerdict(stdout);
+			if (!parsed && stdout) {
 				rememberHookNote(`unparseable-verdict ${stdout.slice(0, 200)}`);
+			}
+		} catch (error) {
+			rememberHookNote(
+				`submit-exception ${error instanceof Error ? error.message : "unknown"}`,
+			);
+		}
+		if (parsed && parsed.verdict !== "same") {
+			surfaceHandoff(parsed.verdict, parsed.target, parsed.confidence);
 			return;
 		}
-		if (parsed.verdict === "same") return;
-		surfaceHandoff(parsed.verdict, parsed.target, parsed.confidence);
+		if (submit.deliver) injectHeldSubmit(submit);
+	}
+
+	// One held send at a time, in submit order, so a queued Enter press cannot
+	// overtake the send before it.
+	async function drainPendingSubmits(): Promise<void> {
+		if (draining) return;
+		draining = true;
+		try {
+			for (
+				let submit = pendingSubmits.shift();
+				submit;
+				submit = pendingSubmits.shift()
+			) {
+				await resolveSubmit(submit);
+			}
+		} finally {
+			draining = false;
+		}
+	}
+
+	function queueSubmit(submit: PendingSubmit): void {
+		pendingSubmits.push(submit);
+		void drainPendingSubmits();
 	}
 
 	pi.on?.("session_start", (_event, context) => {
@@ -446,12 +551,18 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// The handler never awaits the router: it holds the send, queues the
+	// classification, and returns at once so the editor keeps accepting input.
 	pi.on("input", (event, context) => {
 		const sessionId = bindSession(context);
 		if (sessionId !== activeSessionId) return { action: "continue" };
 		const input = event as InputEvent;
 		const prompt = String(input.text ?? "");
 		if (!prompt.trim()) return { action: "continue" };
+		// This hook's own re-injected copy: already classified, let it through.
+		if (input.source === "extension" && consumeInjectedPrompt(prompt)) {
+			return { action: "continue" };
+		}
 		if (!sessionLockOwned()) return { action: "continue" };
 		const run = runForInput(sessionId, input.streamingBehavior);
 		const operational = classifyFirstmateOperationalText(prompt) !== undefined;
@@ -465,8 +576,20 @@ export default function (pi: ExtensionAPI) {
 			markOperational(run);
 			return { action: "continue" };
 		}
-		classifyCaptainInput(prompt, sessionId, run);
-		return { action: "continue" };
+		run.hasCaptainInput = true;
+		// A re-injected copy skips Pi's skill and template expansion, so slash
+		// traffic passes through to expansion and is classified without a hold.
+		const deliver = !prompt.startsWith("/");
+		queueSubmit({
+			prompt,
+			images: input.images,
+			sessionId,
+			generation: run.generation,
+			history: run.candidateRecentChatHistory || recentChatHistory,
+			deliver,
+			deliverAs: input.streamingBehavior,
+		});
+		return deliver ? { action: "handled" } : { action: "continue" };
 	});
 
 	// Fallback for a genuine accepted prompt path that did not emit `input`.
@@ -477,16 +600,28 @@ export default function (pi: ExtensionAPI) {
 		const prompt = String((event as { prompt?: unknown }).prompt ?? "");
 		if (!prompt.trim()) return;
 		if (!sessionLockOwned()) return;
-		const run = currentRun?.sessionId === sessionId
-			? currentRun
-			: (currentRun = newRun(sessionId));
+		if (!currentRun || currentRun.sessionId !== sessionId) {
+			currentRun = newRun(sessionId);
+		}
+		const run: RunState = currentRun;
 		if (run.intakeRecords.length > 0 || run.fallbackPrompts.has(prompt)) return;
 		run.fallbackPrompts.add(prompt);
 		if (classifyFirstmateOperationalText(prompt) !== undefined) {
 			markOperational(run);
 			return;
 		}
-		classifyCaptainInput(prompt, sessionId, run);
+		run.hasCaptainInput = true;
+		// This prompt already reached the agent, so classify it for its verdict
+		// only: re-injecting it here would duplicate the captain's message.
+		queueSubmit({
+			prompt,
+			images: undefined,
+			sessionId,
+			generation: run.generation,
+			history: run.candidateRecentChatHistory || recentChatHistory,
+			deliver: false,
+			deliverAs: undefined,
+		});
 	});
 
 	pi.on("agent_end", (event, context) => {
@@ -512,7 +647,8 @@ export default function (pi: ExtensionAPI) {
 		currentRun = undefined;
 		if (!run.hasCaptainInput || run.hasOperationalInput) return;
 		if (!sessionLockOwned()) return;
-		if (activeSessionId !== sessionId || activeRunGeneration !== generation) return;
+		if (activeSessionId !== sessionId || activeRunGeneration !== generation)
+			return;
 		runRouterSettle(run.candidateAssistantText, sessionId);
 		// An aborted turn never reaches agent_end, so the candidate stays empty:
 		// keep the prior transcript rather than blanking the router's context.

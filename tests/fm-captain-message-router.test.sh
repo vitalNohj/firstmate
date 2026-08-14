@@ -713,32 +713,37 @@ test_pi_hook_uses_context_session_ids_without_outer_timeout() {
 	fi
 	fixture="$TMP_ROOT/hook-context"
 	mkdir -p "$fixture/state"
-	out=$(FM_STATE_OVERRIDE="$fixture/state" FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
-		node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
-		--input-type=module 2>&1 <<'JS'
-import { mock } from "node:test";
+	out=$(
+		FM_STATE_OVERRIDE="$fixture/state" FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
+			FM_HOOK_HARNESS="$ROOT/tests/pi-hook-harness.mjs" \
+			node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
+			--input-type=module 2>&1 <<'JS'
+const harness = await import(process.env.FM_HOOK_HARNESS);
 const ownerCalls = [];
 let lockOwned = true;
-mock.module("node:child_process", { namedExports: {
-  spawnSync(command, args, options) {
-    if (command === "bash" && args?.[3]?.endsWith("fm-session-lock-lib.sh")) {
-      return { status: lockOwned ? 0 : 1, stdout: "", stderr: "" };
-    }
-    if (String(command).endsWith("fm-operational-input.sh")) {
-      return { status: 1, stdout: "", stderr: "" };
-    }
-    const kind = args?.[0] === "--on-settle" ? "settle" : "submit";
-    ownerCalls.push({ kind, command, args, options });
-    return {
-      status: 0,
-      stdout: `verdict=same target=${args[2]} confidence=model\n`,
-      stderr: "",
-    };
+harness.installChildProcess({
+  real: { spawnSync: () => ({ status: 1, stdout: "", stderr: "" }), spawn: () => harness.fakeChild("") },
+  lockOwned: () => lockOwned,
+  operational: () => false,
+  onSpawnSync(command, args, options) {
+    ownerCalls.push({ kind: "settle", command, args, options });
+    return { status: 0, stdout: "", stderr: "" };
   },
-} });
+  onSpawn(command, args) {
+    const call = { kind: "submit", command, args, input: undefined };
+    ownerCalls.push(call);
+    return harness.fakeChild(`verdict=same target=${args[2]} confidence=model\n`, {
+      onInput: (text) => { call.input = text; },
+    });
+  },
+});
 const extension = await import(`./.pi/extensions/fm-primary-captain-message-router.ts?context-test=${Date.now()}`);
 const handlers = new Map();
-extension.default({ on: (event, handler) => handlers.set(event, handler) });
+const injected = [];
+extension.default({
+  on: (event, handler) => handlers.set(event, handler),
+  sendUserMessage: (content) => injected.push(content),
+});
 const context = (id) => ({ sessionManager: { getSessionId: () => id } });
 await handlers.get("input")(
   { type: "input", text: "first captain message", source: "interactive" },
@@ -813,7 +818,18 @@ await handlers.get("before_agent_start")(
   { type: "before_agent_start", prompt: "unowned captain message" },
   context("session-beta"),
 );
-const calls = ownerCalls.map(({ kind, args, options }) => ({ kind, args, input: options?.input, timeout: options?.timeout }));
+// Submits resolve off the input path, so wait for the queue to drain: the
+// four eligible captain prompts, and the unowned one that must never spawn.
+await harness.waitFor(
+  () => ownerCalls.filter((call) => call.kind === "submit" && call.input !== undefined).length === 4,
+  "every queued classification to reach the router",
+);
+const calls = ownerCalls.map(({ kind, args, options, input }) => ({
+  kind,
+  args,
+  input: input ?? options?.input,
+  timeout: options?.timeout,
+}));
 console.log(JSON.stringify(calls));
 JS
 	) || status=$?
@@ -846,39 +862,40 @@ test_pi_hook_classifies_queued_input_and_rejects_mixed_runs() {
 	fi
 	fixture="$TMP_ROOT/hook-queued-input"
 	mkdir -p "$fixture/state"
-	out=$(FM_STATE_OVERRIDE="$fixture/state" FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
-		node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
-		--input-type=module 2>&1 <<'JS'
-import { mock } from "node:test";
+	out=$(
+		FM_STATE_OVERRIDE="$fixture/state" FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
+			FM_HOOK_HARNESS="$ROOT/tests/pi-hook-harness.mjs" \
+			node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
+			--input-type=module 2>&1 <<'JS'
 import { readFileSync } from "node:fs";
+const harness = await import(process.env.FM_HOOK_HARNESS);
 const calls = [];
 let lockOwned = true;
-mock.module("node:child_process", { namedExports: {
-  spawnSync(command, args, options) {
-    if (command === "bash" && args?.[3]?.endsWith("fm-session-lock-lib.sh")) {
-      return { status: lockOwned ? 0 : 1, stdout: "", stderr: "" };
-    }
-    if (String(command).endsWith("fm-operational-input.sh")) {
-      const text = String(options?.input ?? "");
-      return text.includes("FIRSTMATE_OP:")
-        ? { status: 0, stdout: text, stderr: "" }
-        : { status: 1, stdout: "", stderr: "" };
-    }
-    const historyIndex = args.indexOf("--chat-history-file");
-    const history = historyIndex >= 0
-      ? readFileSync(args[historyIndex + 1], "utf8")
-      : "";
-    calls.push({ mode: args[0], args, input: options?.input, history });
-    return {
-      status: 0,
-      stdout: `verdict=same target=${args[2]} confidence=model\n`,
-      stderr: "",
-    };
+harness.installChildProcess({
+  real: { spawnSync: () => ({ status: 1, stdout: "", stderr: "" }), spawn: () => harness.fakeChild("") },
+  lockOwned: () => lockOwned,
+  operational: (text) => text.includes("FIRSTMATE_OP:"),
+  onSpawnSync(_command, args, options) {
+    calls.push({ mode: args[0], args, input: options?.input, history: "" });
+    return { status: 0, stdout: "", stderr: "" };
   },
-} });
+  onSpawn(_command, args) {
+    const historyIndex = args.indexOf("--chat-history-file");
+    const history = historyIndex >= 0 ? readFileSync(args[historyIndex + 1], "utf8") : "";
+    const call = { mode: args[0], args, input: undefined, history };
+    calls.push(call);
+    return harness.fakeChild(`verdict=same target=${args[2]} confidence=model\n`, {
+      onInput: (text) => { call.input = text; },
+    });
+  },
+});
 const extension = await import(`./.pi/extensions/fm-primary-captain-message-router.ts?queued-test=${Date.now()}`);
 const handlers = new Map();
-extension.default({ on: (event, handler) => handlers.set(event, handler) });
+const injected = [];
+extension.default({
+  on: (event, handler) => handlers.set(event, handler),
+  sendUserMessage: (content) => injected.push(content),
+});
 const context = (id) => ({ sessionManager: { getSessionId: () => id } });
 const end = (text) => handlers.get("agent_end")({
   type: "agent_end",
@@ -955,6 +972,10 @@ await handlers.get("agent_end")({
 lockOwned = false;
 await handlers.get("agent_settled")({}, context("session-beta"));
 
+await harness.waitFor(
+  () => calls.filter((call) => call.mode === "--on-submit" && call.input !== undefined).length === 8,
+  "every queued classification to reach the router",
+);
 console.log(JSON.stringify(calls));
 JS
 	) || status=$?
@@ -977,6 +998,135 @@ JS
 	pass "router: Pi input records classify queued captain messages and isolate mixed runs"
 }
 
+test_pi_hook_holds_the_send_without_blocking_the_input_path() {
+	local fixture out status=0
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the Pi hook unfreeze test"
+		return 0
+	fi
+	fixture="$TMP_ROOT/hook-unfreeze"
+	mkdir -p "$fixture/state"
+	out=$(
+		FM_STATE_OVERRIDE="$fixture/state" FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
+			FM_HOOK_HARNESS="$ROOT/tests/pi-hook-harness.mjs" \
+			node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
+			--input-type=module 2>&1 <<'JS'
+const harness = await import(process.env.FM_HOOK_HARNESS);
+const events = [];
+const submits = [];
+// A deliberately slow router: every classification answers well after the
+// `input` handler must already have returned.
+const ROUTER_MS = 250;
+const verdicts = new Map([
+  ["captain reply", "verdict=same target=session-alpha confidence=model\n"],
+  ["/bearings", "verdict=same target=session-alpha confidence=model\n"],
+  ["picture please", "verdict=same target=session-alpha confidence=model\n"],
+  ["unrelated blender work", "verdict=new target=- confidence=model\n"],
+  ["broken router message", "not a verdict at all\n"],
+]);
+harness.installChildProcess({
+  real: { spawnSync: () => ({ status: 1, stdout: "", stderr: "" }), spawn: () => harness.fakeChild("") },
+  lockOwned: () => true,
+  operational: (text) => text.includes("FIRSTMATE_OP:"),
+  onSpawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+  onSpawn(_command, args) {
+    const call = { args, input: undefined, stdout: "" };
+    // Answer for the message actually classified, not for call order.
+    return harness.fakeChild(() => call.stdout, {
+      delayMs: ROUTER_MS,
+      onInput: (text) => {
+        call.input = text;
+        call.stdout = verdicts.get(text) ?? "";
+        submits.push(call);
+      },
+    });
+  },
+});
+const extension = await import(`./.pi/extensions/fm-primary-captain-message-router.ts?unfreeze-test=${Date.now()}`);
+const handlers = new Map();
+const injected = [];
+extension.default({
+  on: (event, handler) => handlers.set(event, handler),
+  sendUserMessage: (content, options) => injected.push({ content, options }),
+});
+const context = { sessionManager: { getSessionId: () => "session-alpha" } };
+const send = async (event) => {
+  const startedAt = Date.now();
+  const result = await handlers.get("input")({ type: "input", source: "interactive", ...event }, context);
+  events.push({ text: event.text, action: result?.action, elapsed: Date.now() - startedAt });
+  return result;
+};
+
+await send({ text: "captain reply" });
+// The editor is still live here: a second Enter press lands while the first
+// classification is in flight, and must be accepted the same way.
+await send({ text: "unrelated blender work" });
+await send({ text: "/bearings" });
+await send({
+  text: "picture please",
+  images: [{ type: "image", source: { type: "base64", mediaType: "image/png", data: "AAAA" } }],
+});
+await send({ text: "broken router message" });
+await send({ text: "\u2063FIRSTMATE_OP: v1 watcher", source: "extension" });
+
+// Three of the five submits are held and land on `same` or fail-open; the
+// slash send passed through, and the `new` verdict stays staged.
+await harness.waitFor(() => injected.length >= 3, "the held sends to be injected");
+// The injected copies come back through `input` as extension-sourced traffic
+// and must not be classified a second time.
+for (const entry of injected) {
+  const text = typeof entry.content === "string" ? entry.content : entry.content[0].text;
+  await send({ text, source: "extension", images: undefined });
+}
+await new Promise((resolve) => setTimeout(resolve, ROUTER_MS * 2));
+
+console.log(JSON.stringify({
+  routerMs: ROUTER_MS,
+  events,
+  submits: submits.map((call) => call.input),
+  injected: injected.map((entry) => ({
+    text: typeof entry.content === "string" ? entry.content : entry.content[0].text,
+    images: typeof entry.content === "string" ? 0 : entry.content.filter((part) => part.type === "image").length,
+  })),
+}));
+JS
+	) || status=$?
+	expect_code 0 "$status" "hook unfreeze test exit ($out)"
+	local router_ms slowest
+	router_ms=$(printf '%s\n' "$out" | sed -n 's/.*"routerMs":\([0-9]*\).*/\1/p')
+	[ -n "$router_ms" ] || fail "unfreeze test did not report the router delay ($out)"
+	# The proof that the editor is free: no `input` handler call waited anywhere
+	# near the router child, which every classification needed to finish.
+	slowest=$(printf '%s\n' "$out" | grep -o '"elapsed":[0-9]*' | cut -d: -f2 | sort -n | tail -1)
+	[ -n "$slowest" ] || fail "unfreeze test recorded no input-handler timings ($out)"
+	[ "$slowest" -lt "$router_ms" ] ||
+		fail "an input handler waited ${slowest}ms on a ${router_ms}ms router child ($out)"
+	assert_contains "$out" '"text":"captain reply","action":"handled"' \
+		"an ordinary captain send is held instead of proceeding into the live turn"
+	assert_contains "$out" '"text":"unrelated blender work","action":"handled"' \
+		"a later Enter press while a classification is in flight is held too"
+	assert_contains "$out" '"text":"/bearings","action":"continue"' \
+		"slash traffic passes through so Pi still expands it"
+	# Every captain submit still reaches the router, exactly once each.
+	# The list is exhaustive, so it also proves the operational injection and
+	# every re-injected copy stayed out of the router.
+	assert_contains "$out" '"submits":["captain reply","unrelated blender work","/bearings","picture please","broken router message"]' \
+		"every captain submit reaches the router exactly once, in submit order"
+	assert_contains "$out" 'FIRSTMATE_OP: v1 watcher","action":"continue"' \
+		"an operational injection is passed through without a hold"
+	assert_contains "$out" '"text":"captain reply","action":"continue"' \
+		"the re-injected copy passes through instead of being held again"
+	assert_contains "$out" '{"text":"captain reply","images":0}' \
+		"a same verdict injects the held message into the current session"
+	assert_contains "$out" '{"text":"picture please","images":1}' \
+		"the held send keeps its images"
+	assert_contains "$out" '{"text":"broken router message","images":0}' \
+		"an unparseable verdict fails open and still delivers the message"
+	assert_not_contains "$out" '{"text":"unrelated blender work","images":0}' \
+		"a new verdict stays staged instead of entering the current session"
+	pass "router: the Pi input handler holds the send and never waits on the router child"
+}
+
 test_pi_hook_rejects_typed_session_start_context() {
 	local fixture out status=0
 	if ! command -v node >/dev/null 2>&1; then
@@ -985,32 +1135,36 @@ test_pi_hook_rejects_typed_session_start_context() {
 	fi
 	fixture="$TMP_ROOT/hook-session-start-context"
 	mkdir -p "$fixture/state"
-	out=$(FM_STATE_OVERRIDE="$fixture/state" FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
-		node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
-		--input-type=module 2>&1 <<'JS'
-import { mock } from "node:test";
+	out=$(
+		FM_STATE_OVERRIDE="$fixture/state" FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
+			FM_HOOK_HARNESS="$ROOT/tests/pi-hook-harness.mjs" \
+			node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
+			--input-type=module 2>&1 <<'JS'
+const harness = await import(process.env.FM_HOOK_HARNESS);
 const calls = [];
-mock.module("node:child_process", { namedExports: {
-  spawnSync(command, args, options) {
-    if (command === "bash" && args?.[3]?.endsWith("fm-session-lock-lib.sh")) {
-      return { status: 0, stdout: "", stderr: "" };
-    }
-    if (String(command).endsWith("fm-operational-input.sh")) {
-      return { status: 1, stdout: "", stderr: "" };
-    }
+harness.installChildProcess({
+  real: { spawnSync: () => ({ status: 1, stdout: "", stderr: "" }), spawn: () => harness.fakeChild("") },
+  lockOwned: () => true,
+  operational: () => false,
+  onSpawnSync(_command, args, options) {
     calls.push({ mode: args[0], input: options?.input });
-    return {
-      status: 0,
-      stdout: `verdict=same target=${args[2]} confidence=model\n`,
-      stderr: "",
-    };
+    return { status: 0, stdout: "", stderr: "" };
   },
-} });
+  onSpawn(_command, args) {
+    const call = { mode: args[0], input: undefined };
+    calls.push(call);
+    return harness.fakeChild(`verdict=same target=${args[2]} confidence=model\n`, {
+      onInput: (text) => { call.input = text; },
+    });
+  },
+});
 const extension = await import(`./.pi/extensions/fm-primary-captain-message-router.ts?session-start-context-test=${Date.now()}`);
 const handlers = new Map();
 const accumulatedMessages = [];
+const injected = [];
 const pi = {
   on: (event, handler) => handlers.set(event, handler),
+  sendUserMessage: (content) => injected.push(content),
   sendMessage(message) {
     accumulatedMessages.push({
       role: "custom",
@@ -1085,6 +1239,10 @@ await handlers.get("context")({
 }, context);
 await finish("ordinary captain response");
 
+await harness.waitFor(
+  () => calls.filter((call) => call.mode === "--on-submit" && call.input !== undefined).length === 2,
+  "every queued classification to reach the router",
+);
 console.log(JSON.stringify(calls));
 JS
 	) || status=$?
@@ -1159,28 +1317,40 @@ done
 printf 'verdict=same target=primary confidence=model\n'
 SH
 	chmod +x "$fixture/bin/fm-captain-message-router.sh"
-	out=$(EXT="$fixture/.pi/extensions/fm-primary-captain-message-router.ts" \
-		FM_HOME="$fixture" FM_STATE_OVERRIDE="$fixture/state" \
-		FM_ROOT_OVERRIDE="$fixture" \
-		FM_OPERATIONAL_INPUT_SCRIPT="$ROOT/bin/fm-operational-input.sh" \
-		node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
-		--input-type=module 2>&1 <<'JS'
-import { mock } from "node:test";
+	out=$(
+		EXT="$fixture/.pi/extensions/fm-primary-captain-message-router.ts" \
+			FM_HOME="$fixture" FM_STATE_OVERRIDE="$fixture/state" \
+			FM_ROOT_OVERRIDE="$fixture" \
+			FM_OPERATIONAL_INPUT_SCRIPT="$ROOT/bin/fm-operational-input.sh" \
+			FM_HOOK_HARNESS="$ROOT/tests/pi-hook-harness.mjs" \
+			node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
+			--input-type=module 2>&1 <<'JS'
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-const childProcess = await import("node:child_process");
-mock.module("node:child_process", { namedExports: {
-  spawnSync(command, args, options) {
-    if (command === "bash" && args?.[3]?.endsWith("fm-session-lock-lib.sh")) {
-      return { status: 0, stdout: "", stderr: "" };
-    }
-    return childProcess.spawnSync(command, args, options);
-  },
-} });
+const harness = await import(process.env.FM_HOOK_HARNESS);
+// Everything but the lock probe runs the real stub owner through a real spawn,
+// so this case still crosses the production child-process boundary.
+harness.installChildProcess({
+  real: await import("node:child_process"),
+  lockOwned: () => true,
+});
 const extensionUrl = pathToFileURL(process.env.EXT);
 extensionUrl.search = `history-test=${Date.now()}`;
 const extension = await import(extensionUrl.href);
 const handlers = new Map();
-extension.default({ on: (event, handler) => handlers.set(event, handler) });
+const injected = [];
+extension.default({
+  on: (event, handler) => handlers.set(event, handler),
+  sendUserMessage: (content) => injected.push(content),
+});
+const argvPath = `${process.env.FM_STATE_OVERRIDE}/hook-argv.txt`;
+const submitCount = () => {
+  try {
+    return readFileSync(argvPath, "utf8").split("\n").filter((line) => line === "--on-submit").length;
+  } catch {
+    return 0;
+  }
+};
 const say = (role, text) => ({ role, content: [{ type: "text", text }] });
 const context = (id) => ({ sessionManager: { getSessionId: () => id } });
 await handlers.get("input")(
@@ -1289,6 +1459,7 @@ await handlers.get("before_agent_start")(
   },
   context("session-beta"),
 );
+await harness.waitFor(() => submitCount() >= 4, "all four captain submits to reach the owner");
 console.log("hook-ok");
 JS
 	) || status=$?
@@ -1406,6 +1577,7 @@ test_reroute_publication_failure_falls_back_to_same
 test_repeated_route_staging_preserves_published_latest
 test_pi_hook_uses_context_session_ids_without_outer_timeout
 test_pi_hook_classifies_queued_input_and_rejects_mixed_runs
+test_pi_hook_holds_the_send_without_blocking_the_input_path
 test_pi_hook_rejects_typed_session_start_context
 test_verdict_is_logged
 test_pi_hook_threads_bounded_redacted_history

@@ -105,7 +105,7 @@ The prompt carries four framed parts:
 The hook caps the excerpt at the newest 12 user/assistant turns and 6000 characters, and the owner re-bounds it (`FM_CAPTAIN_ROUTER_HISTORY_CHARS`, default 6000) and redacts before the model sees anything.
 Redaction drops any line carrying a Firstmate operational injection and masks secret-shaped tokens and `token`/`secret`/`password`/`api_key` values.
 With no history file the model still gets the briefs and the message.
-The hook writes the transcript handoff through a newly created private temp directory and mode-0600 file, then removes the directory after synchronous submit returns.
+The hook writes the transcript handoff through a newly created private temp directory and mode-0600 file, then removes the directory once the submit child closes.
 
 The full prompt is handed to Cursor through a private (mode 0600) temp file under `state/captain-router/`; the spawn argv carries only a short instruction naming that file.
 No history, brief, or message text ever appears in the process list, and no kernel argument-size limit applies to large captain pastes.
@@ -144,7 +144,10 @@ No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is
 ## Hook behavior
 
 - Settle: synchronous at `agent_settled`, so session replacement cannot overtake publication.
-- Submit: synchronous so bash can stage pending routes before the primary turn proceeds.
+- Submit: never on Pi's input path. The `input` handler holds the captain's send with `handled` and returns immediately, so the editor keeps accepting input while classification runs. Held sends classify one at a time, in submit order.
+- A `same` verdict, and every fail-open fallback, re-injects the held send with `pi.sendUserMessage`, so the delivered copy arrives as `source=extension` and is not classified again.
+- A send starting with `/` passes through instead of being held, because a re-injected copy would skip Pi's skill and template expansion. It is still classified.
+- A held send keeps its images: the injected copy carries the original text block plus every image block.
 - Both paths run only while this Pi process owns the Firstmate session lock.
 - Every accepted Pi `input` is bound to its callback-context session and logical run before classification, including queued steering, follow-up, RPC, interactive, and extension-delivered input.
 - A queued follow-up or steer arriving after `agent_end` but before `agent_settled` is classified against that run's candidate transcript when present, rather than stale settled history.
