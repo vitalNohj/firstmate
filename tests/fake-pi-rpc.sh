@@ -15,17 +15,17 @@ reply_file=${FM_FAKE_PI_REPLY:?FM_FAKE_PI_REPLY is required}
 printf 'launch\n' >>"$log_dir/pi-launches.txt"
 
 while IFS= read -r line; do
-  case "$line" in
-    *'"new_session"'*)
-      id=${line#*\"id\":\"}
-      id=${id%%\"*}
-      printf '{"type":"response","command":"new_session","id":"%s","success":true}\n' "$id"
-      ;;
-    *'"prompt"'*)
-      printf 'prompt\n' >>"$log_dir/pi-prompts.txt"
-      printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":%s}]}}\n' \
-        "$(cat "$reply_file")"
-      printf '{"type":"agent_settled"}\n'
-      ;;
-  esac
+	case "$line" in
+	*'"new_session"'*)
+		id=${line#*\"id\":\"}
+		id=${id%%\"*}
+		printf '{"type":"response","command":"new_session","id":"%s","success":true}\n' "$id"
+		;;
+	*'"prompt"'*)
+		printf 'prompt\n' >>"$log_dir/pi-prompts.txt"
+		printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":%s}]}}\n' \
+			"$(cat "$reply_file")"
+		printf '{"type":"agent_settled"}\n'
+		;;
+	esac
 done

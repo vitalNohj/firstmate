@@ -35,7 +35,13 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createConnection, createServer } from "node:net";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -69,7 +75,8 @@ function parseArgs(argv) {
 	const args = { command: argv[0] };
 	for (let i = 1; i < argv.length; i += 1) {
 		const flag = argv[i];
-		if (!flag.startsWith("--")) return { error: `unexpected argument: ${flag}` };
+		if (!flag.startsWith("--"))
+			return { error: `unexpected argument: ${flag}` };
 		const value = argv[i + 1];
 		if (value === undefined) return { error: `${flag} requires a value` };
 		args[flag.slice(2)] = value;
@@ -85,7 +92,10 @@ function parseArgs(argv) {
 // host never collide.
 function runnerPaths(state) {
 	const dir = join(state, "captain-router");
-	const digest = createHash("sha256").update(resolve(state)).digest("hex").slice(0, 16);
+	const digest = createHash("sha256")
+		.update(resolve(state))
+		.digest("hex")
+		.slice(0, 16);
 	return {
 		dir,
 		socket: join(tmpdir(), `fm-captain-router-${digest}.sock`),
@@ -109,7 +119,11 @@ class WarmChild {
 		if (this.model) args.push("--model", this.model);
 		const child = spawn(this.pi, args, {
 			stdio: ["pipe", "pipe", "ignore"],
-			env: { ...process.env, PI_CODING_AGENT: undefined, FM_PI_HARNESS: undefined },
+			env: {
+				...process.env,
+				PI_CODING_AGENT: undefined,
+				FM_PI_HARNESS: undefined,
+			},
 		});
 		child.stdout.setEncoding("utf8");
 		child.stdout.on("data", (chunk) => this.consume(chunk));
@@ -151,7 +165,9 @@ class WarmChild {
 		}
 		if (event.type === "message_end" && event.message?.role === "assistant") {
 			const text = (event.message.content ?? [])
-				.filter((block) => block?.type === "text" && typeof block.text === "string")
+				.filter(
+					(block) => block?.type === "text" && typeof block.text === "string",
+				)
 				.map((block) => block.text)
 				.join("");
 			if (text.trim()) pending.text = text;
@@ -187,7 +203,8 @@ class WarmChild {
 	}
 
 	classify(prompt) {
-		if (this.pending) return Promise.resolve({ error: "warm classifier is busy" });
+		if (this.pending)
+			return Promise.resolve({ error: "warm classifier is busy" });
 		if (!this.child) this.start();
 		return new Promise((resolve) => {
 			const pending = {
@@ -196,7 +213,9 @@ class WarmChild {
 				wipeId: `wipe-${Date.now()}`,
 				onWiped: (ok) => {
 					if (!ok) {
-						this.settle({ error: "warm classifier could not start a fresh chat" });
+						this.settle({
+							error: "warm classifier could not start a fresh chat",
+						});
 						this.recycle();
 						return;
 					}
@@ -204,7 +223,9 @@ class WarmChild {
 				},
 				onSettled: () => {
 					const text = pending.text;
-					this.settle(text ? { text } : { error: "warm classifier returned no text" });
+					this.settle(
+						text ? { text } : { error: "warm classifier returned no text" },
+					);
 					if (!text) this.recycle();
 				},
 			};
@@ -258,7 +279,9 @@ function serve(args) {
 			try {
 				prompt = readFileSync(request.promptFile, "utf8");
 			} catch (error) {
-				socket.end(`${JSON.stringify({ error: `unreadable prompt file: ${error.message}` })}\n`);
+				socket.end(
+					`${JSON.stringify({ error: `unreadable prompt file: ${error.message}` })}\n`,
+				);
 				return;
 			}
 			const result = await warm.classify(prompt);
@@ -295,15 +318,20 @@ function classify(args) {
 	if (!state) return fatal("classify requires --state");
 	if (!promptFile) return fatal("classify requires --prompt-file");
 	const paths = runnerPaths(state);
-	if (!existsSync(paths.socket)) return fatal("no warm classifier is listening");
+	if (!existsSync(paths.socket))
+		return fatal("no warm classifier is listening");
 	const socket = createConnection(paths.socket);
 	socket.setEncoding("utf8");
 	let buffer = "";
-	socket.on("connect", () => socket.write(`${JSON.stringify({ promptFile })}\n`));
+	socket.on("connect", () =>
+		socket.write(`${JSON.stringify({ promptFile })}\n`),
+	);
 	socket.on("data", (chunk) => {
 		buffer += chunk;
 	});
-	socket.on("error", (error) => fatal(`warm classifier unreachable: ${error.message}`));
+	socket.on("error", (error) =>
+		fatal(`warm classifier unreachable: ${error.message}`),
+	);
 	socket.on("close", () => {
 		let reply;
 		try {
@@ -316,7 +344,9 @@ function classify(args) {
 			fatal(reply.error || "warm classifier returned no text");
 			return;
 		}
-		process.stdout.write(reply.text.endsWith("\n") ? reply.text : `${reply.text}\n`);
+		process.stdout.write(
+			reply.text.endsWith("\n") ? reply.text : `${reply.text}\n`,
+		);
 		process.exit(0);
 	});
 	return undefined;

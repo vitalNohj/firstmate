@@ -53,7 +53,8 @@ const hookLogDir = `${state}/captain-router`;
 const hookLog = `${hookLogDir}/hook.log`;
 const marker = `${state}/.pi-captain-router-extension-loaded`;
 const warmRunnerScript =
-	process.env.FM_CAPTAIN_ROUTER_RUNNER || `${root}/bin/fm-captain-router-runner.mjs`;
+	process.env.FM_CAPTAIN_ROUTER_RUNNER ||
+	`${root}/bin/fm-captain-router-runner.mjs`;
 const extensionVersion = `sha256:${createHash("sha256").update(readFileSync(extensionFile)).digest("hex")}`;
 const HISTORY_MAX_TURNS = 12;
 const HISTORY_MAX_CHARS = 6000;
