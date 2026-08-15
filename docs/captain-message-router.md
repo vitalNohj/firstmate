@@ -159,6 +159,10 @@ That is the acceptable end of the tradeoff, because the delivery's job is that t
 
 Live-fire verified (2026-08-14, herdr v0.7.1): a `new` route opened a visible tab that answered its seeded message, and a `reroute` route resumed a real prior session and answered from restored context that only that session held.
 
+A reroute target must still exist in Pi's own session store, checked separately from its brief.
+A brief outlives the session it describes, and `pi --session <id>` is create-if-missing, so resuming a dead id opens an empty session instead of failing.
+That would report a successful delivery while stranding the message in a pane holding none of the context it was routed for, which is why a target the store cannot load is refused as `dead-session` before any pane is created.
+
 Delivery is refused unless the whole visible path holds: the home's backend is herdr, and the launching process sits in a herdr pane whose workspace can be verified.
 Placement inherits the launching process's own workspace exactly as a crewmate or scout spawn does, because a label cannot tell two workspaces apart.
 The seed rides a private `600` file rather than argv, so a large captain paste never reaches the process list, and it carries the message plus a short frame but never the router's audit-only explanation.
@@ -168,7 +172,7 @@ That is deliberately not the warm classifier's `FM_CAPTAIN_ROUTER_PI`: pinning a
 It never runs session start, arms a watcher, or contends for this home's fleet lock, and the router extension stays inert in it because it never owns the session lock.
 
 A route is consumed only after a delivery is confirmed.
-Every refusal leaves it staged and names its own reason: `backend-not-herdr`, `herdr-unavailable`, `no-visible-workspace`, `tab-create-failed`, `launch-failed`, `no-session-brief`, `self-target`, `bad-target`, `empty-message`, `unknown-kind`, `no-route-file`, `seed-write-failed`.
+Every refusal leaves it staged and names its own reason: `backend-not-herdr`, `herdr-unavailable`, `no-visible-workspace`, `tab-create-failed`, `launch-failed`, `no-session-brief`, `dead-session`, `self-target`, `bad-target`, `empty-message`, `unknown-kind`, `no-route-file`, `seed-write-failed`.
 A failed launch closes its own dead tab.
 Unlike the classify modes, `--deliver` reports failure honestly with a non-zero exit, because its caller's fallback is to deliver the message into the current session and that only works if it is told the transfer did not happen.
 

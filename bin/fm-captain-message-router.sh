@@ -57,6 +57,10 @@
 #   Delivery is refused unless this home's backend is herdr and the launching
 #   process sits in a herdr pane, so the new tab lands in the captain's own
 #   visible workspace rather than an invisible background process.
+#   A reroute target must also still exist in Pi's session store: a brief
+#   outlives its session, and `pi --session` is create-if-missing, so a dead id
+#   would open an EMPTY pane and look like a successful delivery.
+#   FM_CAPTAIN_ROUTER_SESSION_STORE overrides where that store is read from.
 #   The staged route file is consumed (removed) only after a delivery is
 #   confirmed; every refusal leaves it staged so nothing is ever lost.
 #   Exit status is 0 for a confirmed delivery and non-zero otherwise, so a
@@ -638,6 +642,24 @@ route_body() { # <route-file>
 	awk '/^---$/ { body = 1; next } body' "$1" 2>/dev/null
 }
 
+# session_store_has: does Pi's own session store still hold this session id?
+# Pi stores one file per session under a directory named for the cwd it ran in,
+# with `/` replaced by `-` and wrapped in `--`, and the file named
+# <timestamp>_<session-id>.jsonl. Asking the store directly is the structural
+# question ("does this conversation still exist") rather than a process-liveness
+# guess: a resumable session is exactly one the store can still load, whether or
+# not any process currently holds it.
+session_store_has() { # <session-id>
+	local id=$1 dir match
+	[ -n "$id" ] || return 1
+	dir=${FM_CAPTAIN_ROUTER_SESSION_STORE:-$HOME/.pi/agent/sessions/--$(printf '%s' "${FM_HOME#/}" | tr '/' '-')--}
+	[ -d "$dir" ] || return 1
+	for match in "$dir"/*_"$id".jsonl; do
+		[ -f "$match" ] && return 0
+	done
+	return 1
+}
+
 # delivery_result: the one machine-readable delivery line, so every caller reads
 # the same contract instead of interpreting exit codes plus prose.
 delivery_result() { # <delivered|undelivered> <kind> <target> <reason>
@@ -698,11 +720,22 @@ deliver_route() { # <route-file>
 		fi
 		# Self-target is judged against the session the message was SENT FROM, not
 		# against whichever session settled most recently: a delivery can run well
-		# after its route was staged, and the pointer moves in between.
+		# after its route was staged, and the pointer moves in between. This is
+		# checked before liveness because the origin session is live by definition,
+		# so "you are already here" is the more precise refusal.
 		origin=$(route_field "$route" session_from)
 		[ -n "$origin" ] || origin=$(resolve_session_id)
 		if [ "$target" = "$origin" ]; then
 			delivery_result undelivered "$kind" "$target" self-target
+			return 1
+		fi
+		# A brief outlives the session it describes, so a brief alone cannot say the
+		# target still exists. `pi --session <id>` is create-if-missing: resuming a
+		# dead id silently opens an EMPTY session, which looks like a delivery and
+		# strands the message in a pane holding none of the context it was routed
+		# for. Require the session store to still hold that id.
+		if ! session_store_has "$target"; then
+			delivery_result undelivered "$kind" "$target" dead-session
 			return 1
 		fi
 	fi

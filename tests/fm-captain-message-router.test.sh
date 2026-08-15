@@ -1763,6 +1763,7 @@ deliver() {
 	env PATH="$fakebin:$PATH" FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" \
 		FM_HOME="$root" FM_STATE_OVERRIDE="$root/state" FM_CONFIG_OVERRIDE="$root/config" \
 		FM_HERDR_LOG="$root/herdr.log" FM_FAKE_HERDR_SOCKET="$root/herdr.sock" \
+		FM_CAPTAIN_ROUTER_SESSION_STORE="$root/pi-sessions" \
 		HERDR_ENV=1 HERDR_PANE_ID=w9:p1 HERDR_SESSION=default \
 		HERDR_SOCKET_PATH="$root/herdr.sock" "$@" \
 		"$ROUTER" --deliver "$route"
@@ -1779,6 +1780,10 @@ make_delivery_home() {
 		run "$root" --on-settle --session-id sess-shader >/dev/null
 	# The submitting session settles last, so it is the current one.
 	printf 'Shall I continue here?' | run "$root" --on-settle --session-id primary >/dev/null
+	# Pi's own session store, which is what makes a reroute target resumable. A
+	# brief outlives its session, so the store is the separate fact.
+	mkdir -p "$root/pi-sessions"
+	: >"$root/pi-sessions/2026-08-14T00-00-00-000Z_sess-shader.jsonl"
 }
 
 latest_route() {
@@ -1887,6 +1892,18 @@ test_every_delivery_refusal_keeps_the_message_staged() {
 	assert_contains "$out" "reason=launch-failed" "the refusal names the failed launch"
 	assert_grep "pane close" "$root/herdr.log" "a failed launch closes its own dead tab"
 	assert_present "$route" "the message survived the launch failure"
+	# The destination's conversation is gone from Pi's session store while its
+	# brief survives. `pi --session <id>` is create-if-missing, so delivering here
+	# would open an EMPTY session: it would report success while stranding the
+	# message in a pane holding none of the context it was routed for.
+	status=0
+	rm -f "$root/pi-sessions/"*_sess-shader.jsonl
+	: >"$root/herdr.log"
+	out=$(deliver "$root" "$fakebin" "$route") || status=$?
+	expect_code 1 "$status" "a target whose session no longer exists refuses"
+	assert_contains "$out" "reason=dead-session" "the refusal names the dead destination"
+	assert_present "$route" "the message survived the dead-destination refusal"
+	assert_no_grep "pane run" "$root/herdr.log" "a dead target never opens a pane at all"
 	# A destination that is no longer a routable live conversation.
 	status=0
 	rm -f "$(brief_file "$root" sess-shader)"
