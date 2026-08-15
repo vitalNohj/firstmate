@@ -1275,8 +1275,8 @@ await send({ text: "broken router message" });
 await send({ text: "\u2063FIRSTMATE_OP: v1 watcher", source: "extension" });
 
 // Four of the five submits are held and delivered; the slash send passed
-// through. The `new` verdict is staged AND delivered, because no cross-session
-// delivery exists, so staging alone would destroy a captain message.
+// through. The `new` verdict lands here too: no route was staged for this
+// fixture, so its transfer is refused and the message comes back.
 await harness.waitFor(() => injected.length >= 4, "the held sends to be injected");
 // The injected copies come back through `input` as extension-sourced traffic
 // and must not be classified a second time.
@@ -1328,11 +1328,11 @@ JS
 		"the held send keeps its images"
 	assert_contains "$out" '{"text":"broken router message","images":0}' \
 		"an unparseable verdict fails open and still delivers the message"
-	# A staged handoff records where a message belonged; it is never a reason to
-	# destroy it. Cross-session delivery does not exist, so dropping here lost a
-	# captain message with no turn, no error, and no echo anywhere.
+	# A verdict records where a message belonged; without a confirmed transfer it
+	# is never a reason to destroy it, which would lose a captain message with no
+	# turn, no error, and no echo anywhere.
 	assert_contains "$out" '{"text":"unrelated blender work","images":0}' \
-		"a staged non-same verdict is still delivered, so no captain message is lost"
+		"a non-same verdict whose transfer did not happen is still delivered"
 	pass "router: the Pi input handler holds the send and never waits on the router child"
 }
 
@@ -1700,6 +1700,318 @@ JS
 	pass "router: the Pi hook keeps bounded history within its context session"
 }
 
+# --- delivery (--deliver) ---------------------------------------------------
+
+# herdr_delivery_fake <root>: a fake `herdr` on PATH satisfying the whole
+# visible-pane path a delivery uses (protocol check, socket identity, launcher
+# pane/tab/workspace resolution, tab create, pane run), recording every call so
+# a test can assert what was actually launched. FM_FAKE_HERDR_FAIL selects one
+# subcommand to fail, so each refusal branch needs no second fixture.
+herdr_delivery_fake() { # <root>
+	local root=$1 fakebin
+	fakebin="$root/fakebin-herdr"
+	mkdir -p "$fakebin"
+	cat >"$fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >>"${FM_HERDR_LOG:?}"
+cmd=${1:-}
+sub=${2:-}
+case "${FM_FAKE_HERDR_FAIL:-}" in
+"$cmd $sub") exit 1 ;;
+esac
+ws=
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+	case "${args[$i]}" in
+	--workspace) ws=${args[$((i + 1))]:-} ;;
+	esac
+done
+case "$cmd $sub" in
+"status --json") printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n' ;;
+"session list") printf '{"sessions":[{"name":"%s","running":true,"socket_path":"%s"}]}\n' "${HERDR_SESSION:-default}" "${FM_FAKE_HERDR_SOCKET:?}" ;;
+"pane get") printf '{"result":{"pane":{"pane_id":"%s","tab_id":"w9:t1","workspace_id":"w9"}}}\n' "${3:-}" ;;
+"tab get") printf '{"result":{"tab":{"tab_id":"%s","workspace_id":"w9"}}}\n' "${3:-}" ;;
+"workspace list") printf '{"result":{"workspaces":[{"workspace_id":"w9","label":"home"}]}}\n' ;;
+"tab create") printf '{"result":{"tab":{"tab_id":"%s:t7"},"root_pane":{"pane_id":"%s:p7"}}}\n' "$ws" "$ws" ;;
+"pane run" | "pane close") : ;;
+*) exit 1 ;;
+esac
+exit 0
+SH
+	chmod +x "$fakebin/herdr"
+	printf '%s\n' "$fakebin"
+}
+
+# stage_route <root> <verdict> <target> <message>: stage one route through the
+# production classify path, so a delivery test consumes a real staged route
+# rather than a hand-written imitation of one.
+stage_route() {
+	local root=$1 verdict=$2 target=$3 message=$4 fakebin
+	fakebin=$(cursor_fixture "$root" "stage-$verdict" "verdict=$verdict
+target=$target
+explanation=router private reasoning about the captain")
+	printf '%s' "$message" |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id primary >/dev/null
+}
+
+# deliver <root> <fakebin> <route> [env...]: run --deliver with only the fake
+# herdr resolvable and a verifiable launcher pane identity in the environment.
+deliver() {
+	local root=$1 fakebin=$2 route=$3
+	shift 3
+	env PATH="$fakebin:$PATH" FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" \
+		FM_HOME="$root" FM_STATE_OVERRIDE="$root/state" FM_CONFIG_OVERRIDE="$root/config" \
+		FM_HERDR_LOG="$root/herdr.log" FM_FAKE_HERDR_SOCKET="$root/herdr.sock" \
+		HERDR_ENV=1 HERDR_PANE_ID=w9:p1 HERDR_SESSION=default \
+		HERDR_SOCKET_PATH="$root/herdr.sock" "$@" \
+		"$ROUTER" --deliver "$route"
+}
+
+# make_delivery_home <root>: a herdr-backed primary with a settled submitting
+# session and a settled, routable reroute destination.
+make_delivery_home() {
+	local root=$1
+	make_primary "$root"
+	printf 'herdr\n' >"$root/config/backend"
+	: >"$root/herdr.sock"
+	printf 'Should I continue the shader review?' |
+		run "$root" --on-settle --session-id sess-shader >/dev/null
+	# The submitting session settles last, so it is the current one.
+	printf 'Shall I continue here?' | run "$root" --on-settle --session-id primary >/dev/null
+}
+
+latest_route() {
+	local pending
+	pending=$(pending_dir "$1")
+	printf '%s/%s' "$pending" "$(cat "$pending/LATEST")"
+}
+
+seed_file() {
+	find "$1/state/captain-router" -maxdepth 1 -name 'seed.*' -type f 2>/dev/null | head -1
+}
+
+test_deliver_reroute_resumes_the_target_in_a_visible_pane() {
+	local root="$TMP_ROOT/deliver-reroute" fakebin route out status=0 log seed
+	make_delivery_home "$root"
+	stage_route "$root" reroute sess-shader 'the shader normals still look inverted'
+	route=$(latest_route "$root")
+	fakebin=$(herdr_delivery_fake "$root")
+	out=$(deliver "$root" "$fakebin" "$route") || status=$?
+	expect_code 0 "$status" "a satisfied delivery path exits 0"
+	assert_contains "$out" "delivery=delivered kind=reroute" "delivery reports itself machine-readably"
+	assert_contains "$out" "reason=ok" "a confirmed delivery carries no failure reason"
+	log="$root/herdr.log"
+	assert_grep "tab create" "$log" "a reroute opens a real tab"
+	assert_grep "captain-reroute-sess-shader" "$log" "the tab is labeled for its destination"
+	assert_grep "no-focus" "$log" "delivery never steals the captain's focus"
+	# What makes a reroute a reroute rather than a fresh chat: the target session
+	# is resumed, so its own prior context is what answers the message.
+	assert_grep "pi --session sess-shader" "$log" "the pane resumes the routed target session"
+	# The seed rides a file, so a large captain paste never enters the process list.
+	assert_grep " @$root/state/captain-router/seed." "$log" "the launch seeds from a file, not argv"
+	seed=$(seed_file "$root")
+	[ -n "$seed" ] || fail "delivery wrote no seed file"
+	assert_grep "the shader normals still look inverted" "$seed" "the seed carries the captain message verbatim"
+	assert_grep "/compact" "$seed" "a resumed session is told to compact itself first"
+	# The router's private reasoning about the captain is audit-only.
+	assert_no_grep "router private reasoning" "$seed" "the explanation never reaches the captain's own conversation"
+	assert_absent "$route" "a confirmed delivery consumes its staged route"
+	assert_absent "$(pending_dir "$root")/LATEST" "the consumed route is no longer the published latest"
+	pass "router: a delivered reroute resumes the target session in a visible pane"
+}
+
+test_deliver_new_opens_a_fresh_visible_pane() {
+	local root="$TMP_ROOT/deliver-new" fakebin route out status=0 log seed
+	make_delivery_home "$root"
+	stage_route "$root" new - 'unrelated: can you look at the blender exporter'
+	route=$(latest_route "$root")
+	fakebin=$(herdr_delivery_fake "$root")
+	out=$(deliver "$root" "$fakebin" "$route") || status=$?
+	expect_code 0 "$status" "a new-session delivery exits 0"
+	assert_contains "$out" "delivery=delivered kind=new" "the new delivery reports itself"
+	log="$root/herdr.log"
+	assert_grep "captain-new-" "$log" "a new session gets its own labeled tab"
+	# Every herdr call carries its own --session, so the resume marker to look for
+	# is the one on the launched Pi itself.
+	assert_no_grep "pi --session" "$log" "a new session never resumes an existing one"
+	seed=$(seed_file "$root")
+	[ -n "$seed" ] || fail "delivery wrote no seed file"
+	assert_grep "blender exporter" "$seed" "the seed carries the captain message"
+	assert_no_grep "/compact" "$seed" "a fresh session has nothing to compact"
+	pass "router: a delivered new verdict opens a fresh visible pane"
+}
+
+test_delivered_pane_is_not_a_second_firstmate() {
+	local root="$TMP_ROOT/deliver-inert" fakebin route log
+	make_delivery_home "$root"
+	stage_route "$root" reroute sess-shader 'back to the shader work'
+	route=$(latest_route "$root")
+	fakebin=$(herdr_delivery_fake "$root")
+	deliver "$root" "$fakebin" "$route" >/dev/null
+	log="$root/herdr.log"
+	# A delivered pane is an ordinary captain conversation: it must never take
+	# this home's fleet lock, arm a watcher, or run the session-start digest.
+	assert_grep "FM_CAPTAIN_ROUTER_DELIVERED=1" "$log" "a delivered pane marks itself as one"
+	assert_no_grep "fm-session-start" "$log" "a delivered pane never runs session start"
+	assert_no_grep "fm-watch-arm" "$log" "a delivered pane never arms a watcher"
+	pass "router: a delivered pane is a plain conversation, not a second Firstmate"
+}
+
+test_every_delivery_refusal_keeps_the_message_staged() {
+	local root="$TMP_ROOT/deliver-refuse" fakebin route out status
+	make_delivery_home "$root"
+	stage_route "$root" reroute sess-shader 'the message that must never be lost'
+	route=$(latest_route "$root")
+	fakebin=$(herdr_delivery_fake "$root")
+	# Every refusal runs against the SAME staged route, so each one also proves
+	# the message survived the refusal before it.
+	status=0
+	out=$(deliver "$root" "$fakebin" "$route" FM_BACKEND=tmux) || status=$?
+	expect_code 1 "$status" "a non-herdr backend refuses"
+	assert_contains "$out" "delivery=undelivered" "a refusal says so"
+	assert_contains "$out" "reason=backend-not-herdr" "the refusal names the missing half of the path"
+	assert_present "$route" "a refused delivery leaves the message staged"
+	# No verifiable launcher pane: nothing identifies which visible workspace the
+	# captain is looking at, and guessing one is worse than refusing.
+	status=0
+	out=$(deliver "$root" "$fakebin" "$route" HERDR_PANE_ID=) || status=$?
+	expect_code 1 "$status" "an unverifiable launcher identity refuses"
+	assert_contains "$out" "reason=no-visible-workspace" "the refusal names the missing workspace"
+	assert_present "$route" "the message survived the placement refusal"
+	# The pane exists but the launch never went in: the captain must not be left
+	# staring at a dead tab, and the message must stay staged.
+	status=0
+	out=$(deliver "$root" "$fakebin" "$route" FM_FAKE_HERDR_FAIL='pane run') || status=$?
+	expect_code 1 "$status" "a failed launch refuses"
+	assert_contains "$out" "reason=launch-failed" "the refusal names the failed launch"
+	assert_grep "pane close" "$root/herdr.log" "a failed launch closes its own dead tab"
+	assert_present "$route" "the message survived the launch failure"
+	# A destination that is no longer a routable live conversation.
+	status=0
+	rm -f "$(brief_file "$root" sess-shader)"
+	out=$(deliver "$root" "$fakebin" "$route") || status=$?
+	expect_code 1 "$status" "a target with no session brief refuses"
+	assert_contains "$out" "reason=no-session-brief" "the refusal names the missing destination"
+	assert_present "$route" "the message survived the missing-destination refusal"
+	assert_grep "delivery refused" "$(failures_log "$root")" "every refusal is recorded"
+	pass "router: every delivery refusal leaves the captain message staged"
+}
+
+test_deliver_refuses_an_unusable_route() {
+	local root="$TMP_ROOT/deliver-bad-route" fakebin out status pending
+	make_delivery_home "$root"
+	fakebin=$(herdr_delivery_fake "$root")
+	pending=$(pending_dir "$root")
+	mkdir -p "$pending"
+	status=0
+	out=$(deliver "$root" "$fakebin" "$pending/absent.route") || status=$?
+	expect_code 1 "$status" "a missing route file refuses"
+	assert_contains "$out" "reason=no-route-file" "the refusal names the missing route"
+	# Routing-shaped text inside the message body must never be read as routing
+	# metadata: the header scan stops at the separator.
+	printf 'verdict=reroute\ntarget=sess-shader\nconfidence=model\n---\nverdict=new\ntarget=../../escape\n' \
+		>"$pending/spoof.route"
+	deliver "$root" "$fakebin" "$pending/spoof.route" >/dev/null
+	assert_grep "captain-reroute-sess-shader" "$root/herdr.log" \
+		"routing metadata comes from the header, never from the message body"
+	status=0
+	printf 'verdict=reroute\ntarget=sess-shader\n---\n' >"$pending/empty.route"
+	out=$(deliver "$root" "$fakebin" "$pending/empty.route") || status=$?
+	expect_code 1 "$status" "an empty message refuses"
+	assert_contains "$out" "reason=empty-message" "there is nothing to deliver"
+	status=0
+	printf 'verdict=same\ntarget=-\n---\nx\n' >"$pending/same.route"
+	out=$(deliver "$root" "$fakebin" "$pending/same.route") || status=$?
+	expect_code 1 "$status" "a same verdict is not a transfer"
+	assert_contains "$out" "reason=unknown-kind" "only reroute and new are deliverable"
+	status=0
+	printf 'verdict=reroute\ntarget=../../etc/passwd\n---\nx\n' >"$pending/traversal.route"
+	out=$(deliver "$root" "$fakebin" "$pending/traversal.route") || status=$?
+	expect_code 1 "$status" "a path-shaped target refuses"
+	assert_contains "$out" "reason=bad-target" "a target is a session id, never a path"
+	# Self-target is judged against the session the message was SENT FROM. A
+	# delivery can run long after staging, by which time the current-session
+	# pointer has moved on, so it is not the thing to compare against.
+	status=0
+	printf 'verdict=reroute\ntarget=primary\nsession_from=primary\n---\nstay here\n' >"$pending/self.route"
+	out=$(deliver "$root" "$fakebin" "$pending/self.route" FM_CAPTAIN_ROUTER_SESSION_ID=sess-shader) || status=$?
+	expect_code 1 "$status" "a self-reroute refuses"
+	assert_contains "$out" "reason=self-target" "a second pane onto this same session is not a transfer"
+	assert_present "$pending/self.route" "the self-reroute message stays staged"
+	pass "router: an unusable staged route refuses instead of delivering somewhere wrong"
+}
+
+test_pi_hook_withholds_only_a_confirmed_transfer() {
+	local fixture out status=0
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the hook delivery test"
+		return 0
+	fi
+	fixture="$TMP_ROOT/hook-delivery"
+	mkdir -p "$fixture/state/captain-router/pending"
+	printf 'staged.route\n' >"$fixture/state/captain-router/pending/LATEST"
+	: >"$fixture/state/captain-router/pending/staged.route"
+	out=$(
+		FM_STATE_OVERRIDE="$fixture/state" FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
+			FM_HOOK_HARNESS="$ROOT/tests/pi-hook-harness.mjs" \
+			node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
+			--input-type=module 2>&1 <<'JS'
+const harness = await import(process.env.FM_HOOK_HARNESS);
+const injected = [];
+const delivers = [];
+// Two non-same verdicts that differ only in whether their transfer lands.
+const verdicts = new Map([
+  ["moves away", "verdict=reroute target=sess-shader confidence=model\n"],
+  ["cannot move", "verdict=new target=- confidence=model\n"],
+]);
+harness.installChildProcess({
+  real: { spawnSync: () => ({ status: 1, stdout: "", stderr: "" }), spawn: () => harness.fakeChild("") },
+  lockOwned: () => true,
+  operational: (text) => text.includes("FIRSTMATE_OP:"),
+  onSpawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
+  onSpawn(_command, args) {
+    if (args?.[0] === "--deliver") {
+      delivers.push(args[1]);
+      return delivers.length === 1
+        ? harness.fakeChild("delivery=delivered kind=reroute target=default:w9:p7 reason=ok\n")
+        : harness.fakeChild("delivery=undelivered kind=new target=- reason=backend-not-herdr\n");
+    }
+    const call = { stdout: "" };
+    return harness.fakeChild(() => call.stdout, {
+      onInput: (text) => { call.stdout = verdicts.get(text) ?? ""; },
+    });
+  },
+});
+const extension = await import(`./.pi/extensions/fm-primary-captain-message-router.ts?delivery-test=${Date.now()}`);
+const handlers = new Map();
+extension.default({
+  on: (event, handler) => handlers.set(event, handler),
+  sendUserMessage: (content) => injected.push(typeof content === "string" ? content : content[0].text),
+});
+const context = { sessionManager: { getSessionId: () => "session-alpha" } };
+const send = (text) => handlers.get("input")({ type: "input", text, source: "interactive" }, context);
+await send("moves away");
+await harness.waitFor(() => delivers.length >= 1, "the first transfer to be attempted");
+await send("cannot move");
+await harness.waitFor(() => delivers.length >= 2, "the second transfer to be attempted");
+await harness.waitFor(() => injected.length >= 1, "the refused message to come back");
+await new Promise((resolve) => setTimeout(resolve, 100));
+console.log(JSON.stringify({ injected, deliverCalls: delivers.length }));
+JS
+	) || status=$?
+	expect_code 0 "$status" "hook delivery test exit ($out)"
+	# The point of a verdict: a confirmed transfer means the captain reads the
+	# answer in the session it belonged to, so answering here too would duplicate it.
+	assert_contains "$out" '"deliverCalls":2' "every non-same verdict attempts a real transfer"
+	assert_not_contains "$out" '"moves away"' "a confirmed transfer is not also answered here"
+	# The invariant that outranks it: a refused transfer is never a lost message.
+	assert_contains "$out" '"cannot move"' "a refused transfer comes back to the current session"
+	assert_grep "delivered=no" "$fixture/state/captain-router/last-handoff.txt" \
+		"the handoff record never claims a transfer that did not happen"
+	pass "router: a verdict withholds the message only when the transfer is confirmed"
+}
+
 test_inert_in_child_worktree() {
 	local base="$TMP_ROOT/child-base" root="$TMP_ROOT/child-worktree" out status=0
 	fm_git_worktree "$base" "$root" fm/captain-router-child
@@ -1795,6 +2107,12 @@ test_pi_hook_holds_the_send_without_blocking_the_input_path
 test_pi_hook_rejects_typed_session_start_context
 test_verdict_is_logged
 test_pi_hook_threads_bounded_redacted_history
+test_deliver_reroute_resumes_the_target_in_a_visible_pane
+test_deliver_new_opens_a_fresh_visible_pane
+test_delivered_pane_is_not_a_second_firstmate
+test_every_delivery_refusal_keeps_the_message_staged
+test_deliver_refuses_an_unusable_route
+test_pi_hook_withholds_only_a_confirmed_transfer
 test_inert_in_child_worktree
 test_marked_secondmate_home_is_active
 test_gate_agent_is_inert

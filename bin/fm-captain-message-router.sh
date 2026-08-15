@@ -17,6 +17,7 @@
 # Modes (assistant message or captain message on stdin):
 #   fm-captain-message-router.sh --on-settle [--session-id <id>]
 #   fm-captain-message-router.sh --on-submit [--session-id <id>] [--chat-history-file <path>]
+#   fm-captain-message-router.sh --deliver <pending-route-file>
 #   fm-captain-message-router.sh --help
 #
 # --on-settle: extract question anchors (split on `?`, normalized, deduped) and
@@ -41,9 +42,25 @@
 #   pending-route publication failure fails open to `same` against the current
 #   session with confidence=det and a failures.log row. Every surfaced verdict is
 #   appended to verdicts.log. Reroute/new also stage a durable pending route under
-#   state/captain-router/pending/. Cross-session delivery is not implemented, so
-#   this owner does not compact or inject sessions, and the hook still delivers
-#   the staged message into the current session rather than dropping it.
+#   state/captain-router/pending/, which --deliver then consumes.
+#
+# --deliver <pending-route-file>: transfer one staged route to its destination
+#   and print one machine-readable line:
+#     delivery=<delivered|undelivered> kind=<reroute|new> target=<pane|-> reason=<token>
+#   A `reroute` resumes the target session in a NEW visible Herdr pane
+#   (`pi --session <target>`), because Pi compaction and injection are
+#   session-LOCAL: no API reaches into another live Pi process (see
+#   docs/captain-message-router.md "Cross-session delivery"). A `new` opens a
+#   fresh visible pane with no --session. Either way the captain gets a real tab
+#   they can see and type in, seeded with the message plus a small brief, and
+#   compaction is requested of the target session itself through its seed.
+#   Delivery is refused unless this home's backend is herdr and the launching
+#   process sits in a herdr pane, so the new tab lands in the captain's own
+#   visible workspace rather than an invisible background process.
+#   The staged route file is consumed (removed) only after a delivery is
+#   confirmed; every refusal leaves it staged so nothing is ever lost.
+#   Exit status is 0 for a confirmed delivery and non-zero otherwise, so a
+#   caller can fall back to delivering the message into the current session.
 #
 #   Two submits never reach the model at all, because neither can have an answer
 #   worth a spawn:
@@ -121,6 +138,12 @@ FAILURES_LOG="$ROUTER_DIR/failures.log"
 # harness configuration schema.
 ROUTER_MODEL=${FM_CAPTAIN_ROUTER_MODEL:-cursor-grok-4.6-low}
 
+# The Pi executable a delivered pane runs. Deliberately NOT the warm
+# classifier's FM_CAPTAIN_ROUTER_PI: that one hosts a headless RPC child, while
+# this is the captain's own visible conversation, so pinning a cheap classifier
+# executable must never silently change which Pi the captain ends up talking to.
+DELIVERY_PI=${FM_CAPTAIN_ROUTER_DELIVERY_PI:-pi}
+
 # Bounds for the recent-chat excerpt handed to the router model.
 HISTORY_CHAR_CAP=${FM_CAPTAIN_ROUTER_HISTORY_CHARS:-6000}
 case "$HISTORY_CHAR_CAP" in
@@ -141,6 +164,9 @@ esac
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
+# Delivery opens a real visible pane through the home's runtime backend.
+# shellcheck source=bin/fm-backend.sh
+. "$SCRIPT_DIR/fm-backend.sh"
 
 usage() {
 	awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
@@ -585,10 +611,189 @@ emit_verdict() { # <verdict> <target> <confidence> [explanation] ; message on st
 	printf 'verdict=%s target=%s confidence=%s\n' "$verdict" "$target" "$conf"
 }
 
+# --- cross-session delivery ------------------------------------------------
+#
+# Pi compaction and message injection are session-LOCAL: ctx.compact() and
+# pi.sendUserMessage() act on the session their own extension is loaded into,
+# and no API reaches a different live Pi process. So a router running in the
+# primary cannot compact-then-inject a target session from outside it.
+# What it CAN do is start the target session again in a visible pane
+# (`pi --session <id>` resumes that session's real prior context, verified) and
+# hand it the captain message plus an instruction to compact itself first. The
+# compaction stays where it has to be - inside the target - and the captain
+# gets a tab they can see and type in. docs/captain-message-router.md owns the
+# decision and its reasoning.
+
+# route_field: read one header field from a staged pending route. Header only:
+# the scan stops at the `---` separator so a message body line that happens to
+# look like `target=x` can never be read as routing metadata.
+route_field() { # <route-file> <key>
+	awk -F= -v key="$2" '
+    /^---$/ { exit }
+    $1 == key { sub(/^[^=]*=/, ""); print; exit }
+  ' "$1" 2>/dev/null
+}
+
+route_body() { # <route-file>
+	awk '/^---$/ { body = 1; next } body' "$1" 2>/dev/null
+}
+
+# delivery_result: the one machine-readable delivery line, so every caller reads
+# the same contract instead of interpreting exit codes plus prose.
+delivery_result() { # <delivered|undelivered> <kind> <target> <reason>
+	printf 'delivery=%s kind=%s target=%s reason=%s\n' "$1" "$2" "${3:--}" "$4"
+}
+
+# deliver_seed_text: what the freshly opened session is handed. It carries the
+# captain message verbatim, framed so the target knows the message arrived by
+# routing rather than by the captain typing into that window. The audit-only
+# explanation is deliberately NOT included: it is the router's reasoning about
+# the captain, and forwarding it would put a model's guess into the captain's
+# own conversation.
+deliver_seed_text() { # <kind> <route-file>
+	local kind=$1 route=$2
+	if [ "$kind" = reroute ]; then
+		printf 'You are resuming this session because the captain sent a message that belongs here rather than in the session they typed it into.\n\n'
+		printf 'Before answering, compact this conversation with /compact so the resumed context is small and current.\n'
+		printf 'Then answer the captain message below as the next turn of THIS conversation.\n\n'
+	else
+		printf 'This is a fresh session opened for a captain message that fit no existing conversation.\n\n'
+		printf 'Answer the captain message below as the first turn of this new conversation.\n\n'
+	fi
+	printf -- '--- CAPTAIN MESSAGE ---\n'
+	route_body "$route"
+}
+
+# deliver_route: open ONE visible herdr pane for a staged route and seed it.
+# Refuses (leaving the route staged) unless the whole visible path is available,
+# because an invisible background agent is not the product: the captain must be
+# able to see the tab appear, switch to it, and type in it.
+deliver_route() { # <route-file>
+	local route=$1 kind target origin session workspace label cwd seed tab_out tab_id pane_id cmd
+	kind=$(route_field "$route" verdict)
+	target=$(route_field "$route" target)
+	case "$kind" in
+	reroute | new) ;;
+	*)
+		delivery_result undelivered "${kind:--}" - unknown-kind
+		return 1
+		;;
+	esac
+	if [ -z "$(route_body "$route")" ]; then
+		delivery_result undelivered "$kind" - empty-message
+		return 1
+	fi
+	# A reroute names a session; it must still be a routable live-conversation
+	# brief at delivery time, not just at classification time.
+	if [ "$kind" = reroute ]; then
+		case "$target" in
+		'' | - | *[!A-Za-z0-9._-]*)
+			delivery_result undelivered "$kind" - bad-target
+			return 1
+			;;
+		esac
+		if ! brief_is_session "$SESSIONS_DIR/$target.brief"; then
+			delivery_result undelivered "$kind" "$target" no-session-brief
+			return 1
+		fi
+		# Self-target is judged against the session the message was SENT FROM, not
+		# against whichever session settled most recently: a delivery can run well
+		# after its route was staged, and the pointer moves in between.
+		origin=$(route_field "$route" session_from)
+		[ -n "$origin" ] || origin=$(resolve_session_id)
+		if [ "$target" = "$origin" ]; then
+			delivery_result undelivered "$kind" "$target" self-target
+			return 1
+		fi
+	fi
+	# Visible-pane preconditions. Each refusal is a distinct reason token so a
+	# failure says which half of the path was missing.
+	if [ "$(fm_backend_name)" != herdr ]; then
+		delivery_result undelivered "$kind" "$target" backend-not-herdr
+		return 1
+	fi
+	fm_backend_source herdr 2>/dev/null || {
+		delivery_result undelivered "$kind" "$target" herdr-unavailable
+		return 1
+	}
+	fm_backend_herdr_version_check 2>/dev/null || {
+		delivery_result undelivered "$kind" "$target" herdr-unavailable
+		return 1
+	}
+	session=$(fm_backend_herdr_session)
+	# Placement: inherit the launching process's OWN workspace, exactly like a
+	# herdr crewmate or scout (bin/fm-spawn.sh). A label cannot tell two
+	# workspaces apart, so an unverifiable parent identity refuses rather than
+	# guessing a destination workspace.
+	fm_backend_herdr_launcher_identity "$session" >/dev/null 2>&1 || {
+		delivery_result undelivered "$kind" "$target" no-visible-workspace
+		return 1
+	}
+	workspace=$FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID
+	[ -n "$workspace" ] || {
+		delivery_result undelivered "$kind" "$target" no-visible-workspace
+		return 1
+	}
+	# The seed rides a private file, never argv: a captain paste can be large and
+	# must not appear in the process list. The pane reads it asynchronously, so a
+	# delivered seed cannot be removed inline; sweep stale ones instead, because
+	# each one holds captain message text and would otherwise accumulate forever.
+	find "$ROUTER_DIR" -maxdepth 1 -name 'seed.*' -type f -mtime +1 -delete 2>/dev/null || true
+	seed=$(mktemp "$ROUTER_DIR/seed.XXXXXX" 2>/dev/null) || {
+		delivery_result undelivered "$kind" "$target" seed-write-failed
+		return 1
+	}
+	chmod 600 "$seed" 2>/dev/null || true
+	deliver_seed_text "$kind" "$route" >"$seed" 2>/dev/null || {
+		rm -f "$seed"
+		delivery_result undelivered "$kind" "$target" seed-write-failed
+		return 1
+	}
+	if [ "$kind" = reroute ]; then
+		label="captain-reroute-${target}"
+	else
+		label="captain-new-$(route_field "$route" message_digest)"
+	fi
+	cwd=$FM_HOME
+	tab_out=$(fm_backend_herdr_cli "$session" tab create --workspace "$workspace" \
+		--cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || {
+		rm -f "$seed"
+		delivery_result undelivered "$kind" "$target" tab-create-failed
+		return 1
+	}
+	tab_id=$(printf '%s' "$tab_out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+	pane_id=$(printf '%s' "$tab_out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+	if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
+		rm -f "$seed"
+		delivery_result undelivered "$kind" "$target" tab-create-failed
+		return 1
+	fi
+	# The delivered pane is a plain visible conversation, NOT a second Firstmate:
+	# it must never take this home's fleet lock, arm a watcher, or run the
+	# session-start digest. FM_CAPTAIN_ROUTER_DELIVERED marks it as one, and the
+	# router extension stays inert in it because it never owns the session lock.
+	cmd=$(printf 'FM_CAPTAIN_ROUTER_DELIVERED=1 %s' "$DELIVERY_PI")
+	if [ "$kind" = reroute ]; then
+		cmd=$(printf '%s --session %s' "$cmd" "$target")
+	fi
+	cmd=$(printf '%s @%s' "$cmd" "$seed")
+	if ! fm_backend_herdr_send_text_line "$session:$pane_id" "$cmd"; then
+		# The pane exists but the launch never went in: close it rather than
+		# leaving the captain a dead tab, and keep the route staged.
+		fm_backend_herdr_cli "$session" pane close "$pane_id" >/dev/null 2>&1 || true
+		rm -f "$seed"
+		delivery_result undelivered "$kind" "$target" launch-failed
+		return 1
+	fi
+	delivery_result delivered "$kind" "$session:$pane_id" ok
+	return 0
+}
+
 # --- CLI -------------------------------------------------------------------
 
 SESSION_ID_ARG=
 CHAT_HISTORY_FILE=
+DELIVER_ROUTE_FILE=
 mode=
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -598,6 +803,25 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--on-settle | --on-submit)
 		mode=$1
+		shift
+		;;
+	--deliver)
+		mode=$1
+		shift
+		DELIVER_ROUTE_FILE=${1-}
+		[ -n "$DELIVER_ROUTE_FILE" ] || {
+			usage >&2
+			exit 2
+		}
+		shift
+		;;
+	--deliver=*)
+		mode=--deliver
+		DELIVER_ROUTE_FILE=${1#--deliver=}
+		[ -n "$DELIVER_ROUTE_FILE" ] || {
+			usage >&2
+			exit 2
+		}
 		shift
 		;;
 	--session-id)
@@ -652,6 +876,28 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 mkdir -p "$ROUTER_DIR" 2>/dev/null || exit 0
 
 session_id=$(resolve_session_id)
+
+# --deliver: transfer one staged route to a real visible destination. Unlike the
+# classify modes this one reports failure honestly (non-zero) instead of failing
+# open, because its caller's fallback is to deliver the message into the current
+# session - which only works if it is told the transfer did not happen.
+if [ "$mode" = --deliver ]; then
+	if [ ! -f "$DELIVER_ROUTE_FILE" ]; then
+		delivery_result undelivered - - no-route-file
+		exit 1
+	fi
+	if deliver_route "$DELIVER_ROUTE_FILE"; then
+		# Consume the route only now: a staged route is the message's only other
+		# copy, so it is removed strictly after a delivery is confirmed.
+		rm -f "$DELIVER_ROUTE_FILE" 2>/dev/null || true
+		if [ "$(cat "$PENDING_DIR/LATEST" 2>/dev/null)" = "${DELIVER_ROUTE_FILE##*/}" ]; then
+			rm -f "$PENDING_DIR/LATEST" 2>/dev/null || true
+		fi
+		exit 0
+	fi
+	record_failure "delivery refused for ${DELIVER_ROUTE_FILE##*/}"
+	exit 1
+fi
 
 if [ "$mode" = --on-settle ]; then
 	msg=$(cat)

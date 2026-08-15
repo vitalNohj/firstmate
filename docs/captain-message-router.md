@@ -36,8 +36,7 @@ The captain is never locked out by a broken router.
 Only invalid CLI usage exits non-zero.
 
 **No verdict ever destroys a captain message.**
-Cross-session delivery does not exist, so a `reroute` or `new` message has nowhere else to go.
-The hook stages the handoff *and* delivers the message into the current session.
+A `reroute` or `new` verdict may withhold the message from the current chat only when the transfer is confirmed, and it comes straight back here on any refusal or failure.
 Staging records where a message belonged; it is never the reason a message was not read.
 
 ## Toggle
@@ -65,8 +64,9 @@ Local-only under `state/captain-router/` (gitignored with `state/`):
 | `anchors.current` | Current session open-ask anchors |
 | `current.session` | Session id last settled on this home |
 | `sessions/<id>.brief` | Per-session topic head + anchors |
-| `pending/<ts>-<digest>-<unique>.route` | Staged reroute/new handoff for later delivery |
+| `pending/<ts>-<digest>-<unique>.route` | Staged reroute/new handoff, consumed by `--deliver` |
 | `pending/LATEST` | Basename of the newest pending route |
+| `seed.<unique>` | Private seed handed to a delivered pane; swept after a day |
 | `verdicts.log` | Append-only verdict rows |
 | `explanations.log` | Append-only model rationale rows (audit only) |
 | `failures.log` | Append-only fail-open failure rows |
@@ -136,9 +136,41 @@ That stops the turn, so the turn never settles, so the brief is never written, a
 Otherwise each `--on-submit` spawns the configured router agent and honors its verdict, recorded as `confidence=model`.
 The deterministic layer survives only as the fail-open fallback described below, which is what `confidence=det` now means.
 
-`reroute` and `new` also stage `pending/*.route` for later delivery.
-The current implementation classifies and stages only: it does **not** auto-spawn a new primary session or compact/inject across sessions.
-Because of that, the staged message is **also delivered into the current session**, so no captain message is lost while cross-session delivery is unimplemented.
+`reroute` and `new` also stage `pending/*.route`, which `--deliver` then consumes.
+
+## Cross-session delivery
+
+`fm-captain-message-router.sh --deliver <route>` transfers one staged route and prints one line:
+
+```text
+delivery=<delivered|undelivered> kind=<reroute|new> target=<pane|-> reason=<token>
+```
+
+Pi compaction and message injection are **session-local**: `ctx.compact()` and `pi.sendUserMessage()` act on the session whose own extension calls them, and no API reaches a different live Pi process.
+A router running in the primary therefore cannot compact-then-inject a target session from outside it.
+
+What it can do is start the target session again in a visible pane.
+`pi --session <id>` resumes that session's real prior context, and the seed asks the resumed session to `/compact` itself before answering.
+The compaction stays where it has to be, inside the target, and the captain gets a tab they can see, switch to, and type in.
+A `new` verdict opens the same kind of pane with no `--session`.
+
+The compaction is a request, not a guarantee: it is an instruction to the resumed session, which may answer a short message directly instead.
+That is the acceptable end of the tradeoff, because the delivery's job is that the message is answered with the right context, not that a particular slash command ran.
+
+Live-fire verified (2026-08-14, herdr v0.7.1): a `new` route opened a visible tab that answered its seeded message, and a `reroute` route resumed a real prior session and answered from restored context that only that session held.
+
+Delivery is refused unless the whole visible path holds: the home's backend is herdr, and the launching process sits in a herdr pane whose workspace can be verified.
+Placement inherits the launching process's own workspace exactly as a crewmate or scout spawn does, because a label cannot tell two workspaces apart.
+The seed rides a private `600` file rather than argv, so a large captain paste never reaches the process list, and it carries the message plus a short frame but never the router's audit-only explanation.
+
+The delivered pane is a plain captain conversation, marked `FM_CAPTAIN_ROUTER_DELIVERED=1`, and it runs `FM_CAPTAIN_ROUTER_DELIVERY_PI` (default `pi`).
+That is deliberately not the warm classifier's `FM_CAPTAIN_ROUTER_PI`: pinning a cheap classifier executable must never silently change which Pi the captain ends up talking to.
+It never runs session start, arms a watcher, or contends for this home's fleet lock, and the router extension stays inert in it because it never owns the session lock.
+
+A route is consumed only after a delivery is confirmed.
+Every refusal leaves it staged and names its own reason: `backend-not-herdr`, `herdr-unavailable`, `no-visible-workspace`, `tab-create-failed`, `launch-failed`, `no-session-brief`, `self-target`, `bad-target`, `empty-message`, `unknown-kind`, `no-route-file`, `seed-write-failed`.
+A failed launch closes its own dead tab.
+Unlike the classify modes, `--deliver` reports failure honestly with a non-zero exit, because its caller's fallback is to deliver the message into the current session and that only works if it is told the transfer did not happen.
 
 ## Ephemeral router agent
 
@@ -214,14 +246,14 @@ No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is
 - `agent_end` retains only a candidate response and bounded transcript; `agent_settled` publishes them only when that same session and run saw captain input and no Firstmate operational input.
 - A mixed captain and operational run publishes no anchors or recent history, including when operational input arrives after an earlier `agent_end`.
 - `same`: allow.
-- `reroute` / `new`: record hook-side `last-handoff.txt` only after bash emits a successfully staged decision, then deliver the message into the current session anyway; normalized self-reroutes and publication failures continue as `same` without claiming a handoff.
-- Always fail-open, and always deliver: a held send is never dropped, whatever the verdict.
+- `reroute` / `new`: hand the newest staged route to `--deliver`, then record hook-side `last-handoff.txt` with whether the transfer happened; normalized self-reroutes and publication failures continue as `same` without claiming a handoff.
+- Withholding the held send from this chat is conditional on a confirmed transfer, never the default. Any refusal, failure, or unexpected delivery output injects it here.
+- Always fail-open: a held send is never dropped, whatever the verdict.
 
 ## Current limits
 
 - Multi-ask mismatch warns and never blocks.
-- `new` stages under `pending/`; it does not auto-spawn a new primary session.
-- Cross-session compact and inject is not implemented, so a `reroute`/`new` message is staged for the record and still delivered into the current session. Until delivery exists, a verdict is an annotation, not a transfer.
+- Delivery needs the herdr backend and a herdr-hosted launching process; every other runtime refuses and keeps answering in the current session.
 - The primary hook is available for Pi only.
 - No free classifier model is pinned; the warm child uses Pi's configured model until a measured free id can return a parseable verdict.
 

@@ -295,14 +295,14 @@ function parseVerdict(stdout: string): {
 	return { verdict, target, confidence };
 }
 
-// Surface a durable hook-side pointer for later cross-session delivery without
-// injecting into the primary prompt (bash already stages pending/*.route).
-// The message itself is still delivered by the caller: staging records where a
-// message belonged, and must never be the reason it was never seen.
+// Surface a durable hook-side pointer for the staged handoff. Whether the
+// message then transfers to another session or stays here is recorded too, so
+// last-handoff.txt never claims a transfer that did not happen.
 function surfaceHandoff(
 	verdict: string,
 	target: string,
 	confidence: string,
+	delivery: DeliveryOutcome,
 ): void {
 	try {
 		mkdirSync(hookLogDir, { recursive: true });
@@ -313,14 +313,79 @@ function surfaceHandoff(
 				`target=${target}`,
 				`confidence=${confidence}`,
 				`staged_at=${new Date().toISOString()}`,
-				"note=classification staged; cross-session delivery is not implemented, so the message was also delivered into the current session",
+				`delivered=${delivery.delivered ? "yes" : "no"}`,
+				`delivery_target=${delivery.target || "-"}`,
+				`delivery_reason=${delivery.reason || "-"}`,
+				delivery.delivered
+					? "note=the message was transferred to its own visible session; it was not answered here"
+					: "note=transfer did not happen, so the message was delivered into the current session instead",
 				"",
 			].join("\n"),
 		);
-		rememberHookNote(`handoff ${verdict} target=${target} conf=${confidence}`);
+		rememberHookNote(
+			`handoff ${verdict} target=${target} conf=${confidence} delivered=${delivery.delivered} reason=${delivery.reason}`,
+		);
 	} catch {
 		// Fail-open.
 	}
+}
+
+type DeliveryOutcome = {
+	delivered: boolean;
+	target: string;
+	reason: string;
+};
+
+// Hand the newest staged route to the bash owner for real delivery. Bash owns
+// what a destination is and whether one was reached; this only reports the
+// answer. Anything unexpected counts as NOT delivered, because the caller's
+// fallback (deliver into the current session) is the safe direction.
+function deliverStagedRoute(): Promise<DeliveryOutcome> {
+	const undelivered = (reason: string): DeliveryOutcome => ({
+		delivered: false,
+		target: "",
+		reason,
+	});
+	let routeFile = "";
+	try {
+		const latest = readFileSync(`${hookLogDir}/pending/LATEST`, "utf8").trim();
+		if (!latest || latest.includes("/")) {
+			return Promise.resolve(undelivered("no-staged-route"));
+		}
+		routeFile = `${hookLogDir}/pending/${latest}`;
+	} catch {
+		return Promise.resolve(undelivered("no-staged-route"));
+	}
+	return new Promise<DeliveryOutcome>((resolve) => {
+		let child: ReturnType<typeof spawn>;
+		try {
+			child = spawn(router, ["--deliver", routeFile], {
+				stdio: ["ignore", "pipe", "ignore"],
+			});
+		} catch {
+			resolve(undelivered("deliver-spawn-failed"));
+			return;
+		}
+		let stdout = "";
+		child.stdout?.setEncoding?.("utf8");
+		child.stdout?.on("data", (chunk: unknown) => {
+			stdout += String(chunk);
+		});
+		child.on("error", () => resolve(undelivered("deliver-spawn-failed")));
+		child.on("close", (code) => {
+			const line = stdout
+				.split(/\r?\n/)
+				.map((entry) => entry.trim())
+				.find((entry) => entry.startsWith("delivery="));
+			const target = line?.match(/\btarget=(\S+)/)?.[1] ?? "";
+			const reason = line?.match(/\breason=(\S+)/)?.[1] ?? "no-delivery-line";
+			if (code === 0 && line?.startsWith("delivery=delivered")) {
+				resolve({ delivered: true, target, reason });
+				return;
+			}
+			resolve(undelivered(reason));
+		});
+	});
 }
 
 function contextSessionId(context: unknown): string | undefined {
@@ -519,14 +584,17 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	// Classify one held send, then act on its verdict. Fail-open: an empty or
-	// unparseable verdict delivers the message into the current session.
+	// Classify one held send, then act on its verdict.
 	//
-	// A held send is ALWAYS delivered, whatever the verdict. Until cross-session
-	// delivery exists there is nowhere else for a reroute/new message to go, and
-	// a staged-only handoff means the captain's message is silently destroyed:
-	// no turn, no error, no echo. Staging records where the message belonged;
-	// delivery makes sure it was still read somewhere.
+	// A reroute/new verdict is only allowed to withhold the message from THIS
+	// chat when the message provably landed somewhere else. Delivery confirmed:
+	// the captain sees it answered in its own visible session, and answering it
+	// here too would duplicate the turn. Delivery refused or failed for any
+	// reason: it comes back here. Every other path - a classifier error, a
+	// timeout, an unparseable verdict - is a `same` and lands here as well.
+	//
+	// The invariant this enforces is that no verdict destroys a captain message.
+	// Withholding is conditional on a confirmed transfer; it is never the default.
 	async function resolveSubmit(submit: PendingSubmit): Promise<void> {
 		let parsed: ReturnType<typeof parseVerdict> = null;
 		try {
@@ -545,7 +613,25 @@ export default function (pi: ExtensionAPI) {
 			);
 		}
 		if (parsed && parsed.verdict !== "same") {
-			surfaceHandoff(parsed.verdict, parsed.target, parsed.confidence);
+			let delivery: DeliveryOutcome = {
+				delivered: false,
+				target: "",
+				reason: "deliver-exception",
+			};
+			try {
+				delivery = await deliverStagedRoute();
+			} catch (error) {
+				rememberHookNote(
+					`deliver-exception ${error instanceof Error ? error.message : "unknown"}`,
+				);
+			}
+			surfaceHandoff(
+				parsed.verdict,
+				parsed.target,
+				parsed.confidence,
+				delivery,
+			);
+			if (delivery.delivered) return;
 		}
 		if (submit.deliver) injectHeldSubmit(submit);
 	}
