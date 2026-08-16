@@ -37,6 +37,7 @@ This preference is local to each Firstmate home and is not part of secondmate in
 
 The tracked `.tasks.toml` pins the default `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
 The live backlog remains authoritative for mutable and open work, while `bin/fm-decision-hold.sh verify` also accepts a uniquely identified resolved captain hold from the configured archive when its complete structured resolution record remains intact.
+The `archive` key is optional there, exactly as `tasks-axi` treats it: an absent key resolves to the same `data/done-archive.md` default the backend uses, while a key that is present but not a single unescaped quoted path fails loudly rather than guessing.
 When the default backend is selected and compatible `tasks-axi` is on `PATH`, firstmate uses its verbs for routine backlog mutations.
 Secondmate handoffs are separate and unconditional: `fm-backlog-handoff.sh` keeps only its own fleet-level validation and always delegates the item move to `tasks-axi mv`, the single owner of the backlog format.
 It moves in-scope `## Queued` items only and refuses `## In flight` and historical `## Done` records, which stay with their home for pruning or archiving.

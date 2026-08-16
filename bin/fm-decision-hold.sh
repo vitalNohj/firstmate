@@ -167,27 +167,47 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
+# tasks-axi's own default when [markdown] archive is omitted, so an optional key
+# never blocks this gate on a home the backend itself reads without complaint.
+ARCHIVE_DEFAULT='data/done-archive.md'
+
+# Prints the configured value; returns 3 when the key is legitimately absent and
+# fails loudly when it is present but not a single unescaped quoted path.
 markdown_config_value() {  # <key>
-  local key=$1 config="$FM_HOME/.tasks.toml"
+  local key=$1 config="$FM_HOME/.tasks.toml" value rc=0
   [ -f "$config" ] || fail "tasks-axi configuration is absent: $config"
-  awk -v wanted="$key" '
+  value=$(awk -v wanted="$key" '
+    BEGIN { sq = sprintf("%c", 39) }
     /^[[:space:]]*\[/ { in_markdown = ($0 ~ /^[[:space:]]*\[markdown\][[:space:]]*$/) }
     in_markdown && $0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" {
       line = $0
       sub(/^[^=]*=[[:space:]]*/, "", line)
-      if (substr(line, 1, 1) != "\"" || substr(line, length(line), 1) != "\"") exit 2
+      sub(/[[:space:]]+$/, "", line)
+      quote = substr(line, 1, 1)
+      if (quote != "\"" && quote != sq) { bad = 1; exit }
+      if (length(line) < 3 || substr(line, length(line), 1) != quote) { bad = 1; exit }
       line = substr(line, 2, length(line) - 2)
-      if (line ~ /[\\\r\n]/) exit 2
+      if (line ~ /[\\\r\n]/ || index(line, quote) > 0) { bad = 1; exit }
       print line
       found++
     }
-    END { if (found != 1) exit 2 }
-  ' "$config" || fail "tasks-axi markdown.$key must be one unescaped quoted path in $config"
+    END { if (bad || found > 1) exit 2; if (found != 1) exit 3 }
+  ' "$config") || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$value" ;;
+    3) return 3 ;;
+    *) fail "tasks-axi markdown.$key must be one unescaped quoted path in $config" ;;
+  esac
 }
 
-markdown_path() {  # <key>
-  local value
-  value=$(markdown_config_value "$1") || return 1
+markdown_path() {  # <key> <default-relative-path>
+  local value rc=0
+  value=$(markdown_config_value "$1") || rc=$?
+  case "$rc" in
+    0) : ;;
+    3) value=$2 ;;
+    *) exit 1 ;;
+  esac
   case "$value" in
     /*) printf '%s\n' "$value" ;;
     *) printf '%s/%s\n' "$FM_HOME" "$value" ;;
@@ -220,19 +240,33 @@ archive_task_record() {  # <id> <archive-path>
   esac
 }
 
-archive_has_task_identity() {  # <id>
-  local id=$1 archive
-  archive=$(markdown_path archive) || exit 1
-  [ -f "$archive" ] || return 1
-  awk -v id="$id" '
-    index($0, "- [x] " id " - ") == 1 || index($0, "- [ ] " id " - ") == 1 { found=1 }
-    END { exit !found }
-  ' "$archive"
+# archive_task_record owns the archived-header grammar, so the identity probe is
+# only its "this id is present at all" projection: both a unique record and an
+# ambiguous one mean the identity exists.
+archive_has_task_identity() {  # <id> <archive-path>
+  local rc=0
+  archive_task_record "$1" "$2" >/dev/null || rc=$?
+  [ "$rc" != 1 ]
 }
 
-verify_archived_hold_resolved() {  # <id>
-  local id=$1 record header archive rc=0
-  archive=$(markdown_path archive) || exit 1
+# The routed-identities token a close path records: the ROUTED_NONE sentinel that
+# resolution_body writes for decline and repair, or a comma-separated list of the
+# same privacy-safe slugs validate_slug accepts.
+valid_routed_identities() {  # <value>
+  local value=$1 entry
+  [ "$value" != "$ROUTED_NONE" ] || return 0
+  while IFS= read -r entry; do
+    case "$entry" in
+      ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+  done <<EOF
+$(printf '%s\n' "$value" | tr ',' '\n')
+EOF
+  return 0
+}
+
+verify_archived_hold_resolved() {  # <id> <archive-path>
+  local id=$1 archive=$2 record header block body routed rc=0
   record=$(archive_task_record "$id" "$archive") || rc=$?
   case "$rc" in
     0) : ;;
@@ -244,16 +278,24 @@ verify_archived_hold_resolved() {  # <id>
     "- [x] $id - "*" (kind: captain)"*" (done "*" (hold-kind: captain)"*) : ;;
     *) fail "archived captain decision $id is not a done kind=captain hold" ;;
   esac
-  [ "$(printf '%s\n' "$record" | grep -Fxc '  Resolution recorded by fm-decision-hold.' || true)" = 1 ] \
+  # resolution_body writes the structured fields as the block between the task
+  # line and the first blank line; everything after that blank line is the
+  # arbitrary captain decision text, which must never satisfy a field check.
+  block=$(printf '%s\n' "$record" | awk 'NR == 1 { next } /^[[:space:]]*$/ { exit } { print }')
+  body=$(printf '%s\n' "$record" | awk 'NR == 1 { next } !past && /^[[:space:]]*$/ { past = 1; next } past { print }')
+  [ "$(printf '%s\n' "$block" | grep -Fxc '  Resolution recorded by fm-decision-hold.' || true)" = 1 ] \
     || fail "archived captain decision $id has no unique fm-decision-hold resolution marker"
-  [ "$(printf '%s\n' "$record" | grep -Ec '^  Decision digest: [0-9a-f]{64}$' || true)" = 1 ] \
+  [ "$(printf '%s\n' "$block" | grep -Ec '^  Decision digest: [0-9a-f]{64}$' || true)" = 1 ] \
     || fail "archived captain decision $id has an invalid decision digest"
-  [ "$(printf '%s\n' "$record" | grep -Ec '^  Routed identities: [A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$' || true)" = 1 ] \
+  [ "$(printf '%s\n' "$block" | grep -c '^  Routed identities: ' || true)" = 1 ] \
     || fail "archived captain decision $id has invalid routed identities"
-  [ "$(printf '%s\n' "$record" | grep -Fxc '  Captain decision:' || true)" = 1 ] \
-    || fail "archived captain decision $id has no unique captain decision field"
-  [ "$(printf '%s\n' "$record" | grep -Ec '^  Routed work:' || true)" = 1 ] \
-    || fail "archived captain decision $id has no unique routed work field"
+  routed=$(printf '%s\n' "$block" | sed -n 's/^  Routed identities: //p')
+  valid_routed_identities "$routed" \
+    || fail "archived captain decision $id has invalid routed identities"
+  [ "${body%%$'\n'*}" = '  Captain decision:' ] \
+    || fail "archived captain decision $id has no captain decision field"
+  printf '%s\n' "$body" | grep -Fqx '  Routed work:' \
+    || fail "archived captain decision $id has no routed work field"
 }
 
 show_field() {  # <show-output> <field>
@@ -391,9 +433,9 @@ verify_hold_resolved() {  # <hold-id>
 
 verify_hold_durable() {  # <hold-id>
   local id=$1 show state held kind hold_kind body archive
-  archive=$(markdown_path archive) || exit 1
+  archive=$(markdown_path archive "$ARCHIVE_DEFAULT") || exit 1
   if show=$(task_show "$id"); then
-    archive_has_task_identity "$id" \
+    archive_has_task_identity "$id" "$archive" \
       && fail "captain decision $id is ambiguous across the live backlog and configured archive $archive"
     state=$(show_field "$show" state)
     held=$(show_field "$show" held)
@@ -408,7 +450,7 @@ verify_hold_durable() {  # <hold-id>
     fi
     fail "captain decision $id is neither actively held nor durably resolved"
   fi
-  verify_archived_hold_resolved "$id"
+  verify_archived_hold_resolved "$id" "$archive"
 }
 
 verify_resolution_identity() {
@@ -437,7 +479,7 @@ command_id() {
 }
 
 command_hold() {
-  local origin=${1:-} key=${2:-} title='' reason='' repo='' id show state kind existing_title body
+  local origin=${1:-} key=${2:-} title='' reason='' repo='' id show state kind existing_title body archive
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -465,7 +507,8 @@ command_hold() {
     [ "$kind" = captain ] || fail "existing backlog identity $id is not kind captain"
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
   else
-    archive_has_task_identity "$id" \
+    archive=$(markdown_path archive "$ARCHIVE_DEFAULT") || exit 1
+    archive_has_task_identity "$id" "$archive" \
       && fail "captain decision $id already exists in the configured tasks-axi archive"
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)

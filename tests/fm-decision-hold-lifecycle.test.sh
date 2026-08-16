@@ -853,12 +853,14 @@ test_resolved_archived_hold_verification_is_strict() {
   pass "resolved archived holds verify only with unique complete structured records"
 }
 
-# markdown_config_value hard-fails via `fail` from inside a command substitution, so
-# a malformed or absent [markdown] archive key must still abort `verify` nonzero.
-# Before the propagation fix a live active captain hold made `verify` print the
-# config error yet exit 0 (the fail stayed in the subshell), silently disabling the
-# archive ambiguity and dedupe guards.
-test_malformed_archive_config_fails_verification() {
+# tasks-axi treats [markdown] archive as optional and itself defaults to
+# data/done-archive.md, so an absent key must not block teardown; it falls back to
+# that same default. A key that is present but unparseable is a real
+# misconfiguration and must still abort `verify` nonzero. markdown_config_value
+# reports through a command substitution, so before the propagation fix a live
+# active captain hold made `verify` print the config error yet exit 0, silently
+# disabling the archive ambiguity and dedupe guards.
+test_archive_config_absent_defaults_and_malformed_fails() {
   local home id
   home=$(make_home malformed-archive-config)
   id=sample-malformed-config-review
@@ -879,12 +881,95 @@ test_malformed_archive_config_fails_verification() {
 
   grep -v '^archive = ' "$home/.tasks.toml" > "$home/.tasks.toml.tmp"
   mv "$home/.tasks.toml.tmp" "$home/.tasks.toml"
+  run_decisions "$home" verify "$id" > "$home/absent-config.out" 2> "$home/absent-config.err" \
+    || fail "an absent optional archive key blocked verify: $(cat "$home/absent-config.err")"
+
+  printf 'archive = data/done-archive.md\n' >> "$home/.tasks.toml"
   if run_decisions "$home" verify "$id" > "$home/malformed-config.out" 2> "$home/malformed-config.err"; then
     fail "verify passed with a malformed markdown.archive config, silently disabling the archive guards"
   fi
   assert_grep "markdown.archive must be one unescaped quoted path" "$home/malformed-config.err" \
     "malformed archive config must fail verify with the config error"
-  pass "malformed or absent archive config fails verify nonzero"
+  pass "an absent archive key defaults while a malformed one fails verify nonzero"
+}
+
+# The decline and repair close paths record the ROUTED_NONE `(none)` token rather
+# than a routed-slug list, and tasks-axi stores the arbitrary captain decision text
+# two-space-indented inside the same archived record. Ordinary Done retention
+# pruning must not turn either into a permanently failing verify, which would block
+# scout teardown with no way to rewrite the archived body.
+test_unrouted_and_prose_heavy_archived_holds_verify() {
+  local home origin archive declined repaired
+  home=$(make_home archived-unrouted-hold)
+  origin=sample-unrouted-archive-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review unrouted archived decisions" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create unrouted archive origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Unrouted archived decision review\n' > "$home/data/$origin/report.md"
+  declined=$(run_decisions "$home" hold "$origin" declinedkey \
+    --title "Choose declined route" --reason "captain declined route pending" --repo sample) \
+    || fail "could not create the declined hold"
+  repaired=$(run_decisions "$home" hold "$origin" repairedkey \
+    --title "Choose repaired route" --reason "captain repaired route pending" --repo sample) \
+    || fail "could not create the repaired hold"
+  run_decisions "$home" hold "$origin" prosekey \
+    --title "Choose prose route" --reason "captain prose route pending" --repo sample >/dev/null \
+    || fail "could not create the prose hold"
+  run_decisions "$home" complete "$origin" declinedkey repairedkey prosekey >/dev/null \
+    || fail "could not record the unrouted decision inventory"
+
+  printf 'No follow-up work is needed.\n' > "$home/declined-decision.txt"
+  run_decisions "$home" decline "$origin" declinedkey \
+    --decision-file "$home/declined-decision.txt" >/dev/null \
+    || fail "could not decline the hold before pruning"
+
+  tasks_in "$home" "done" "$repaired" >/dev/null \
+    || fail "could not close the repaired hold outside the script"
+  printf 'The captain already answered this out of band.\n' > "$home/repaired-decision.txt"
+  run_decisions "$home" repair "$origin" repairedkey \
+    --decision-file "$home/repaired-decision.txt" >/dev/null \
+    || fail "could not repair the out-of-band close before pruning"
+
+  # A decision about this very lifecycle: every structured marker also appears as
+  # ordinary captain prose, so a whole-record uniqueness check would reject it.
+  cat > "$home/prose-decision.txt" <<'EOF'
+The archived record starts with the line
+Resolution recorded by fm-decision-hold.
+followed by
+Decision digest: 0000000000000000000000000000000000000000000000000000000000000000
+and
+Routed identities: sample-not-a-real-route
+and then
+Captain decision:
+and finally
+Routed work:
+Keep that grammar and take the northern route.
+EOF
+  run_decisions "$home" decline "$origin" prosekey \
+    --decision-file "$home/prose-decision.txt" >/dev/null \
+    || fail "could not decline the prose-heavy hold before pruning"
+
+  run_decisions "$home" verify "$origin" >/dev/null \
+    || fail "unrouted closed holds did not verify while still in the live backlog"
+
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the closed holds to the default archive"
+  assert_no_grep "- [x] $declined -" "$home/data/backlog.md" \
+    "the declined hold remained in the live backlog after pruning"
+  assert_grep "- [x] $declined -" "$archive" \
+    "the declined hold did not reach the default archive"
+  assert_grep "- [x] $repaired -" "$archive" \
+    "the repaired hold did not reach the default archive"
+  assert_grep "Routed identities: (none)" "$archive" \
+    "the unrouted close paths did not record the (none) routed-identity token"
+
+  run_decisions "$home" verify "$origin" > "$home/unrouted-verify.out" 2> "$home/unrouted-verify.err" \
+    || fail "archived unrouted or prose-heavy holds failed verification: $(cat "$home/unrouted-verify.err")"
+  pass "archived declined, repaired, and prose-heavy holds keep verifying after pruning"
 }
 
 test_uninventoried_report_decision_refuses_completion
@@ -894,7 +979,8 @@ test_declined_decision_closes_without_routed_work
 test_out_of_band_close_is_repairable_before_teardown
 test_unanswered_decision_still_blocks_completion_and_teardown
 test_resolved_archived_hold_verification_is_strict
-test_malformed_archive_config_fails_verification
+test_archive_config_absent_defaults_and_malformed_fails
+test_unrouted_and_prose_heavy_archived_holds_verify
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner

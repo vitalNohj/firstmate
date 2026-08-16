@@ -24,6 +24,7 @@ Scout teardown calls the script's read-only `verify` subcommand after checking f
 The live backlog stays authoritative for mutable and open work, so an active decision must remain a structured active captain item.
 `verify` also accepts a resolved captain hold from the configured tasks-axi archive after ordinary Done retention pruning, but only when that archived record is unique and retains the complete structured fm-decision-hold resolution record.
 A malformed or missing archived record, or an ambiguous identity across the live backlog and the archive, fails verification.
+The accepted archived record is the one every close path writes, including the `(none)` routed-identity token that `decline` and `repair` record, and the structured fields are read only from the header block so arbitrary captain decision prose can never satisfy or break them.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` and `decline` subcommands close active holds, while `repair` attests a hold already closed outside the script.
@@ -63,7 +64,7 @@ The focused end-to-end regression uses only synthetic `sample` identities and de
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
-The archive-aware `verify` acceptance and its malformed, missing, and ambiguous failure cases are covered by executable public-script regressions.
+The archive-aware `verify` acceptance and its malformed, missing, and ambiguous failure cases are covered by executable public-script regressions, together with archived declined, repaired, and prose-heavy holds and an absent optional `archive` key.
 
 Three further regressions cover the close paths that route no work.
 A declined decision closes with a recorded answer, satisfies `verify`, leaves Bearings' Captain's Call, and is refused while the hold still blocks routed work.
