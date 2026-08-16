@@ -180,9 +180,9 @@ Unlike the classify modes, `--deliver` reports failure honestly with a non-zero 
 
 ### What the model sees
 
-The prompt carries four framed parts:
+The prompt carries five framed parts:
 
-1. Its role and the verdict semantics, including the instruction to prefer `same` for ordinary in-conversation replies that share no literal words with the last assistant turn.
+1. Its role and the verdict semantics, including the instruction to prefer `same` for ordinary in-conversation replies that share no literal words with the last assistant turn. It also carries the addressing rule: a message that addresses Firstmate directly (`Firstmate:`, `Firstmate,`, `@firstmate`, in any letter case and usually at the start) is for the current session, so the model answers `same` at once and does not reason about routing it away. Merely mentioning firstmate the project, or discussing firstmate work in the third person, is not a direct address and stays under the normal rules.
 2. A bounded, redacted excerpt of the recent chat history for the current session, supplied by the harness hook through `--chat-history-file`.
 3. `OTHER LIVE SESSIONS`: every other `kind=session` brief, which are the only valid reroute targets. The current session is not listed, because a message cannot be routed to where it already is. When none exist, the prompt says so and reroute is not offered at all.
 4. `PROJECT CONTEXT`: every project brief, explicitly marked as background and never a destination.

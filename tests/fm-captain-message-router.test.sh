@@ -255,6 +255,36 @@ explanation=x' "$prompt")
 	pass "router: project briefs are context and never reroute targets"
 }
 
+test_submit_direct_address_stays_in_the_current_session() {
+	local root="$TMP_ROOT/submit-address" out status=0 fakebin seen
+	make_primary "$root"
+	printf 'Do you want me to proceed?' | run "$root" --on-settle --session-id primary >/dev/null
+	# A live session and a firstmate project brief both exist, so the model has
+	# somewhere to route away to. A message that calls on Firstmate by name is
+	# addressed to the session already talking, and once went out as verdict=new.
+	printf 'Shall I export the glb?' | run "$root" --on-settle --session-id sess-other >/dev/null
+	write_project_brief "$root" firstmate
+	seen="$root/address-prompt.txt"
+	fakebin=$(cursor_fixture "$root" address 'verdict=same
+target=primary
+explanation=addressed to firstmate.' "$seen")
+	out=$(printf 'Firstmate: stop the exporter run' |
+		run_with_probe "$root" "$fakebin" --on-submit --session-id primary) || status=$?
+	expect_code 0 "$status" "direct-address submit exit"
+	assert_contains "$out" "verdict=same target=primary" \
+		"a message addressed to Firstmate stays in the current session"
+	assert_absent "$(pending_dir "$root")/LATEST" "a message addressed to Firstmate stages no handoff"
+	assert_grep "$(printf 'same\tprimary')" "$(verdicts_log "$root")" \
+		"the direct-address verdict is recorded against the current session"
+	# The rule the classifier acts on has to actually reach it.
+	assert_grep "addresses Firstmate directly" "$seen" "the prompt carries the addressing rule"
+	assert_grep 'answer "same" immediately' "$seen" "the rule names the verdict to answer"
+	assert_grep "@firstmate" "$seen" "the rule covers the spellings the captain uses"
+	assert_grep "third person" "$seen" "the rule excludes mere mentions of the project"
+	assert_grep "Firstmate: stop the exporter run" "$seen" "the prompt carries the addressed message"
+	pass "router: a message addressed to Firstmate belongs to the current session"
+}
+
 test_settle_multi_ask_verification_surfaces() {
 	local root="$TMP_ROOT/settle-mismatch" out status=0
 	make_primary "$root"
@@ -2095,6 +2125,7 @@ test_settle_extracts_multiple_anchors
 test_settle_writes_session_brief
 test_settle_multi_ask_verification_surfaces
 test_settle_single_ask_is_silent
+test_submit_direct_address_stays_in_the_current_session
 test_submit_always_spawns_the_model
 test_warm_runner_serves_every_submit_from_one_process
 test_warm_runner_absence_falls_back_to_the_ephemeral_spawn
