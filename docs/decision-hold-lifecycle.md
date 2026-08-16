@@ -25,6 +25,8 @@ The live backlog stays authoritative for mutable and open work, so an active dec
 `verify` also accepts a resolved captain hold from the configured tasks-axi archive after ordinary Done retention pruning, but only when that archived record is unique and retains the complete structured fm-decision-hold resolution record.
 A malformed or missing archived record, or an ambiguous identity across the live backlog and the archive, fails verification.
 The accepted archived record is the one every close path writes, including the `(none)` routed-identity token that `decline` and `repair` record, and the structured fields are read only from the header block so arbitrary captain decision prose can never satisfy or break them.
+The archived acceptance asserts the same invariant the live path asserts - a closed kind `captain` record carrying that resolution block - rather than tasks-axi's rendering of a close, so `done --pr`, `done --report`, and an `unhold` before or after the close all keep verifying once the record is pruned.
+The configured archive path is read from `[markdown] archive`, accepting the same spellings tasks-axi itself accepts, including an inner-spaced section header and a trailing inline comment, and falling back to tasks-axi's own `data/done-archive.md` default when the optional key is absent.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` and `decline` subcommands close active holds, while `repair` attests a hold already closed outside the script.
@@ -64,7 +66,7 @@ The focused end-to-end regression uses only synthetic `sample` identities and de
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
-The archive-aware `verify` acceptance and its malformed, missing, and ambiguous failure cases are covered by executable public-script regressions, together with archived declined, repaired, and prose-heavy holds and an absent optional `archive` key.
+The archive-aware `verify` acceptance and its malformed, missing, and ambiguous failure cases are covered by executable public-script regressions, together with archived declined, repaired, and prose-heavy holds, archived `--pr`, `--report`, and unheld closes, an archived record that is not a captain hold, an absent optional `archive` key, and the backend-honored `archive` config spellings.
 
 Three further regressions cover the close paths that route no work.
 A declined decision closes with a recorded answer, satisfies `verify`, leaves Bearings' Captain's Call, and is refused while the hold still blocks routed work.

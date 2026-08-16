@@ -879,10 +879,24 @@ test_archive_config_absent_defaults_and_malformed_fails() {
   run_decisions "$home" verify "$id" >/dev/null \
     || fail "live captain hold did not verify under valid archive config"
 
+  # The absent-key fallback is only exercised once the record actually leaves the
+  # live backlog, so close and prune the hold before dropping the key: verify now
+  # passes only if the fallback resolves to the same file tasks-axi archived to.
+  printf 'No follow-up work is needed.\n' > "$home/config-decision.txt"
+  run_decisions "$home" decline "$id" route \
+    --decision-file "$home/config-decision.txt" >/dev/null \
+    || fail "could not close the hold before archive-config pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the closed hold to the default archive"
+  assert_no_grep "- [x] $id-decision-route -" "$home/data/backlog.md" \
+    "the closed hold remained in the live backlog after pruning"
+  assert_grep "- [x] $id-decision-route -" "$home/data/done-archive.md" \
+    "tasks-axi did not archive the closed hold to its default archive path"
+
   grep -v '^archive = ' "$home/.tasks.toml" > "$home/.tasks.toml.tmp"
   mv "$home/.tasks.toml.tmp" "$home/.tasks.toml"
   run_decisions "$home" verify "$id" > "$home/absent-config.out" 2> "$home/absent-config.err" \
-    || fail "an absent optional archive key blocked verify: $(cat "$home/absent-config.err")"
+    || fail "an absent optional archive key blocked verify on an archived hold: $(cat "$home/absent-config.err")"
 
   printf 'archive = data/done-archive.md\n' >> "$home/.tasks.toml"
   if run_decisions "$home" verify "$id" > "$home/malformed-config.out" 2> "$home/malformed-config.err"; then
@@ -891,6 +905,50 @@ test_archive_config_absent_defaults_and_malformed_fails() {
   assert_grep "markdown.archive must be one unescaped quoted path" "$home/malformed-config.err" \
     "malformed archive config must fail verify with the config error"
   pass "an absent archive key defaults while a malformed one fails verify nonzero"
+}
+
+# tasks-axi's own TOML reader honors an inner-spaced section header and a trailing
+# inline comment after the quoted value, so this gate must resolve the same file
+# the backend actually archived to rather than rejecting the config or silently
+# falling back to a default archive that holds nothing.
+test_archive_config_matches_backend_toml_spellings() {
+  local home origin archive
+  home=$(make_home archive-config-spellings)
+  origin=sample-config-spelling-review
+  archive="$home/data/decisions/spelled-archive.md"
+  mkdir -p "$home/data/$origin" "$(dirname "$archive")"
+  cat > "$home/.tasks.toml" <<'TOMLEOF'
+backend = "markdown"
+
+[ markdown ]
+path = "data/backlog.md"
+archive = "data/decisions/spelled-archive.md" # decisions stay out of the main archive
+done_keep = 10
+TOMLEOF
+  tasks_in "$home" add "$origin" "Review archive config spellings" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create config-spelling origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Config spelling review\n' > "$home/data/$origin/report.md"
+  run_decisions "$home" hold "$origin" route \
+    --title "Choose config-spelling route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "an inner-spaced section or trailing comment blocked hold creation"
+  run_decisions "$home" complete "$origin" route >/dev/null \
+    || fail "could not record the config-spelling inventory"
+  printf 'No follow-up work is needed.\n' > "$home/spelling-config-decision.txt"
+  run_decisions "$home" decline "$origin" route \
+    --decision-file "$home/spelling-config-decision.txt" >/dev/null \
+    || fail "could not close the config-spelling hold"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the config-spelling hold"
+  assert_grep "- [x] $origin-decision-route -" "$archive" \
+    "tasks-axi did not honor the inner-spaced, trailing-comment archive path"
+  assert_absent "$home/data/done-archive.md" \
+    "the configured archive path was ignored in favor of the default"
+  run_decisions "$home" verify "$origin" > "$home/spelled-config.out" 2> "$home/spelled-config.err" \
+    || fail "a backend-honored archive config spelling blocked verify: $(cat "$home/spelled-config.err")"
+  pass "archive config spellings the backend honors also resolve for verify"
 }
 
 # The decline and repair close paths record the ROUTED_NONE `(none)` token rather
@@ -972,6 +1030,114 @@ EOF
   pass "archived declined, repaired, and prose-heavy holds keep verifying after pruning"
 }
 
+# tasks-axi owns how a close is rendered: `done --pr` writes `(merged <date>)`,
+# `done --report` writes `(reported <date>)`, and an `unhold` before or after the
+# close drops the `(hold: ...)` and `(hold-kind: captain)` markers entirely. All
+# three are documented out-of-band closes that `verify` accepts while the record
+# is live, so ordinary Done retention pruning must not turn any of them into a
+# permanently failing gate that no `repair` can rewrite.
+test_out_of_band_close_spellings_survive_archiving() {
+  local home origin archive merged reported unheld unheld_line
+  home=$(make_home archived-close-spellings)
+  origin=sample-close-spelling-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review out-of-band close spellings" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create close-spelling origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Close spelling review\n' > "$home/data/$origin/report.md"
+  merged=$(run_decisions "$home" hold "$origin" mergedkey \
+    --title "Choose merged route" --reason "captain merged route pending" --repo sample) \
+    || fail "could not create the pr-closed hold"
+  reported=$(run_decisions "$home" hold "$origin" reportedkey \
+    --title "Choose reported route" --reason "captain reported route pending" --repo sample) \
+    || fail "could not create the report-closed hold"
+  unheld=$(run_decisions "$home" hold "$origin" unheldkey \
+    --title "Choose unheld route" --reason "captain unheld route pending" --repo sample) \
+    || fail "could not create the unheld hold"
+  run_decisions "$home" complete "$origin" mergedkey reportedkey unheldkey >/dev/null \
+    || fail "could not record the close-spelling decision inventory"
+  printf 'The captain answered this out of band.\n' > "$home/spelling-decision.txt"
+
+  tasks_in "$home" "done" "$merged" --pr https://github.com/sample/sample/pull/7 >/dev/null \
+    || fail "could not close the hold with a pr link"
+  run_decisions "$home" repair "$origin" mergedkey \
+    --decision-file "$home/spelling-decision.txt" >/dev/null \
+    || fail "could not repair the pr-closed hold"
+
+  mkdir -p "$home/data/$reported"
+  printf '# Reported route\n' > "$home/data/$reported/report.md"
+  tasks_in "$home" "done" "$reported" --report "data/$reported/report.md" >/dev/null \
+    || fail "could not close the hold with a report link"
+  run_decisions "$home" repair "$origin" reportedkey \
+    --decision-file "$home/spelling-decision.txt" >/dev/null \
+    || fail "could not repair the report-closed hold"
+
+  run_decisions "$home" decline "$origin" unheldkey \
+    --decision-file "$home/spelling-decision.txt" >/dev/null \
+    || fail "could not decline the hold before clearing its hold markers"
+  tasks_in "$home" unhold "$unheld" >/dev/null \
+    || fail "could not clear the hold markers on the closed decision"
+
+  run_decisions "$home" verify "$origin" >/dev/null \
+    || fail "out-of-band closed holds did not verify while still in the live backlog"
+
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the out-of-band closed holds to the default archive"
+  assert_grep "- [x] $merged -" "$archive" "the pr-closed hold did not reach the archive"
+  assert_grep "(merged " "$archive" "tasks-axi did not render the pr close as merged"
+  assert_grep "(reported " "$archive" "tasks-axi did not render the report close as reported"
+  unheld_line=$(grep -F -- "- [x] $unheld -" "$archive") \
+    || fail "the unheld closed hold did not reach the archive"
+  case "$unheld_line" in
+    *'hold-kind'*) fail "unhold did not clear the archived hold markers: $unheld_line" ;;
+  esac
+
+  run_decisions "$home" verify "$origin" > "$home/spelling-verify.out" 2> "$home/spelling-verify.err" \
+    || fail "archived out-of-band closes failed verification: $(cat "$home/spelling-verify.err")"
+  pass "archived pr, report, and unheld closes keep verifying after pruning"
+}
+
+# An archived record that is not a closed captain hold must still be refused, so
+# the invariant-shaped header check cannot be satisfied by any archived task.
+test_archived_non_captain_record_is_refused() {
+  local home origin archive hold
+  home=$(make_home archived-non-captain)
+  origin=sample-non-captain-archive-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review non-captain archived record" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create non-captain archive origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Non-captain archive review\n' > "$home/data/$origin/report.md"
+  hold=$(run_decisions "$home" hold "$origin" route \
+    --title "Choose non-captain route" --reason "captain route pending" --repo sample) \
+    || fail "could not create the hold for the non-captain archive fixture"
+  run_decisions "$home" complete "$origin" route >/dev/null \
+    || fail "could not record the non-captain archive inventory"
+  printf 'No follow-up work is needed.\n' > "$home/non-captain-decision.txt"
+  run_decisions "$home" decline "$origin" route \
+    --decision-file "$home/non-captain-decision.txt" >/dev/null \
+    || fail "could not close the hold before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the closed hold to the default archive"
+
+  sed "s#^- \\[x\\] $hold - \\(.*\\)(kind: captain)#- [x] $hold - \\1(kind: ship)#" "$archive" \
+    > "$archive.tmp"
+  mv "$archive.tmp" "$archive"
+  assert_no_grep "(kind: captain)" "$archive" "the non-captain archive fixture was not applied"
+  if run_decisions "$home" verify "$origin" > "$home/non-captain.out" 2> "$home/non-captain.err"; then
+    fail "verification accepted an archived record that is not a captain hold"
+  fi
+  assert_grep "is not a closed kind=captain hold" "$home/non-captain.err" \
+    "archived non-captain record must fail with the kind error"
+  pass "an archived record that is not a closed captain hold is refused"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -980,7 +1146,10 @@ test_out_of_band_close_is_repairable_before_teardown
 test_unanswered_decision_still_blocks_completion_and_teardown
 test_resolved_archived_hold_verification_is_strict
 test_archive_config_absent_defaults_and_malformed_fails
+test_archive_config_matches_backend_toml_spellings
 test_unrouted_and_prose_heavy_archived_holds_verify
+test_out_of_band_close_spellings_survive_archiving
+test_archived_non_captain_record_is_refused
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner

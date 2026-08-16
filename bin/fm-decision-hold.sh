@@ -172,22 +172,32 @@ task_show() {  # <id>
 ARCHIVE_DEFAULT='data/done-archive.md'
 
 # Prints the configured value; returns 3 when the key is legitimately absent and
-# fails loudly when it is present but not a single unescaped quoted path.
+# fails loudly when it is present but not a single unescaped quoted path. The
+# accepted spellings track tasks-axi's own TOML reader - inner-spaced section
+# headers and a trailing inline comment after the quoted value both work there,
+# so this gate must not reject a home the backend itself archives correctly.
 markdown_config_value() {  # <key>
   local key=$1 config="$FM_HOME/.tasks.toml" value rc=0
   [ -f "$config" ] || fail "tasks-axi configuration is absent: $config"
   value=$(awk -v wanted="$key" '
     BEGIN { sq = sprintf("%c", 39) }
-    /^[[:space:]]*\[/ { in_markdown = ($0 ~ /^[[:space:]]*\[markdown\][[:space:]]*$/) }
+    /^[[:space:]]*\[/ {
+      in_markdown = ($0 ~ /^[[:space:]]*\[[[:space:]]*markdown[[:space:]]*\][[:space:]]*(#.*)?$/)
+    }
     in_markdown && $0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" {
       line = $0
       sub(/^[^=]*=[[:space:]]*/, "", line)
-      sub(/[[:space:]]+$/, "", line)
       quote = substr(line, 1, 1)
       if (quote != "\"" && quote != sq) { bad = 1; exit }
-      if (length(line) < 3 || substr(line, length(line), 1) != quote) { bad = 1; exit }
-      line = substr(line, 2, length(line) - 2)
-      if (line ~ /[\\\r\n]/ || index(line, quote) > 0) { bad = 1; exit }
+      rest = substr(line, 2)
+      end = index(rest, quote)
+      if (end < 2) { bad = 1; exit }
+      trailer = substr(rest, end + 1)
+      sub(/^[[:space:]]*/, "", trailer)
+      sub(/[[:space:]]+$/, "", trailer)
+      if (trailer != "" && substr(trailer, 1, 1) != "#") { bad = 1; exit }
+      line = substr(rest, 1, end - 1)
+      if (line ~ /[\\\r\n]/) { bad = 1; exit }
       print line
       found++
     }
@@ -273,10 +283,15 @@ verify_archived_hold_resolved() {  # <id> <archive-path>
     2) fail "captain decision $id has $record matching records in configured archive $archive" ;;
     *) fail "captain decision $id is absent from the live backlog and configured archive $archive" ;;
   esac
+  # The accepted archived record is the same invariant the live path enforces:
+  # closed (a checked box) and kind captain, carrying the structured resolution
+  # record below. tasks-axi owns how a close is spelled - `done`, `merged`, and
+  # `reported` are all closes, and `unhold` before a close drops the hold
+  # markers - so this gate never restates that rendering.
   header=${record%%$'\n'*}
   case "$header" in
-    "- [x] $id - "*" (kind: captain)"*" (done "*" (hold-kind: captain)"*) : ;;
-    *) fail "archived captain decision $id is not a done kind=captain hold" ;;
+    "- [x] $id - "*" (kind: captain)"*) : ;;
+    *) fail "archived captain decision $id is not a closed kind=captain hold" ;;
   esac
   # resolution_body writes the structured fields as the block between the task
   # line and the first blank line; everything after that blank line is the
