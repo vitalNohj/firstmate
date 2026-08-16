@@ -744,29 +744,25 @@ export default function (pi: ExtensionAPI) {
 	// takes effect on the very next captain message with no restart.
 	pi.registerCommand?.("captain-router", {
 		description:
-			"Show or toggle captain-message routing: /captain-router [on|off].",
+			"Toggle captain-message routing, or set it: /captain-router [on|off].",
 		handler: async (args, ctx) => {
 			const argument = String(args ?? "").trim();
-			if (!argument) {
-				const report = readToggle();
-				const lines = [
-					`captain-router: ${report.enabled ? "on" : "off"} (${report.source})`,
-				];
-				if (report.envOverride) {
-					lines.push(
-						`FM_CAPTAIN_ROUTER_ENABLED is set, and it overrides ${routerToggleFile} for every invocation in this environment.`,
+			let wanted: "on" | "off";
+			if (argument) {
+				const requested = argument.toLowerCase();
+				if (requested !== "on" && requested !== "off") {
+					ctx.ui.notify(
+						`captain-router: unrecognized argument ${JSON.stringify(argument)}. Valid: /captain-router (flip), /captain-router on, /captain-router off.`,
+						"error",
 					);
+					return;
 				}
-				ctx.ui.notify(lines.join("\n"), "info");
-				return;
-			}
-			const wanted = argument.toLowerCase();
-			if (wanted !== "on" && wanted !== "off") {
-				ctx.ui.notify(
-					`captain-router: unrecognized argument ${JSON.stringify(argument)}. Valid: /captain-router (report), /captain-router on, /captain-router off.`,
-					"error",
-				);
-				return;
+				wanted = requested;
+			} else {
+				// Flip relative to the effective state readToggle() reports, which
+				// already folds in the environment override, so a bare call never
+				// writes the value routing is already running under.
+				wanted = readToggle().enabled ? "off" : "on";
 			}
 			try {
 				writeToggle(wanted);
@@ -778,15 +774,22 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const report = readToggle();
-			const lines = [
-				`captain-router: ${wanted}. ${routerToggleFile} now holds "${wanted}". Effective on the next captain message, with no restart.`,
-			];
+			// Under an override the written value is not the running state, so lead
+			// with the effective state rather than claiming the write took hold.
 			if (report.envOverride) {
-				lines.push(
-					`Warning: FM_CAPTAIN_ROUTER_ENABLED=${report.envOverride} overrides that file, so routing stays ${report.enabled ? "on" : "off"} until that variable is unset.`,
+				ctx.ui.notify(
+					[
+						`captain-router: ${routerToggleFile} now holds "${wanted}", but FM_CAPTAIN_ROUTER_ENABLED=${report.envOverride} is set and overrides that file.`,
+						`Routing stays ${report.enabled ? "on" : "off"} until that variable is unset.`,
+					].join("\n"),
+					"warning",
 				);
+				return;
 			}
-			ctx.ui.notify(lines.join("\n"), report.envOverride ? "warning" : "info");
+			ctx.ui.notify(
+				`captain-router: ${wanted}. ${routerToggleFile} now holds "${wanted}" (${report.source}). Effective on the next captain message, with no restart.`,
+				"info",
+			);
 		},
 	});
 

@@ -51,6 +51,20 @@ printf 'on\n'  > config/captain-router   # classification resumes
 `off`, `0`, and `false` disable classification. Absent, `on`, or any other value means on: a router that silently disables itself is the same outage as one that silently drops messages.
 `FM_CAPTAIN_ROUTER_ENABLED` overrides the file for a single invocation.
 
+From inside a Pi session the `/captain-router` slash command is the same kill switch:
+
+| Form | Effect |
+| --- | --- |
+| `/captain-router` | Flips the current effective state and writes it: on becomes off, off becomes on |
+| `/captain-router on` | Sets on, whatever it held (idempotent) |
+| `/captain-router off` | Sets off, whatever it held (idempotent) |
+| anything else | Fails loudly, names the valid forms, and leaves the file untouched |
+
+The bare form flips relative to the effective state, the same state the bash owner would act on, not the raw file text: an absent or unrecognized file value counts as on, so a bare call from there writes `off`.
+A typo such as `/captain-router of` errors instead of flipping, so a mistyped absolute setter can never be mistaken for a toggle.
+Writes are atomic (sibling temp plus rename), create `config/` when missing, and keep the trailing newline the `printf 'off\n'` form produces.
+When `FM_CAPTAIN_ROUTER_ENABLED` is set, the command still writes the file but says plainly that the variable overrides it, and reports the real effective state rather than the value just written.
+
 The value is read per message, so toggling takes effect on the very next send with no Pi restart.
 A disabled submit still records its `same` verdict, so `verdicts.log` stays a complete audit.
 `--on-settle` keeps refreshing briefs while off, so re-enabling is immediate.

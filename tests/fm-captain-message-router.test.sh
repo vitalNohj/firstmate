@@ -1523,7 +1523,7 @@ explanation=y')
 # The /captain-router slash command is a control surface over the same kill
 # switch the bash owner reads. This drives the registered handler for real, so a
 # command that silently fails to register fails this test.
-test_pi_hook_captain_router_command_reports_and_toggles() {
+test_pi_hook_captain_router_command_flips_and_sets() {
 	local fixture out status=0
 	if ! command -v node >/dev/null 2>&1; then
 		echo "skip: node not found for the /captain-router command test"
@@ -1563,23 +1563,35 @@ const run = async (args) => {
 };
 const results = {};
 results.description = commands.get("captain-router").description;
-results.absent = await run("");
-results.turnedOff = await run("off");
+// Absent means on, so the first bare call must flip that effective on to off.
+results.flipFromAbsent = await run("");
 results.offFileBytes = JSON.stringify(readFileSync(toggleFile, "utf8"));
-results.reportOff = await run("");
-results.turnedOn = await run(" ON ");
+results.flipBackOn = await run("");
 results.onFileBytes = JSON.stringify(readFileSync(toggleFile, "utf8"));
+// Absolute setters stay absolute, and setting the state it already holds is fine.
+results.setOnWhenOn = await run(" ON ");
+results.fileAfterIdempotentOn = JSON.stringify(readFileSync(toggleFile, "utf8"));
+results.setOff = await run("off");
+results.fileAfterSetOff = JSON.stringify(readFileSync(toggleFile, "utf8"));
+// A typo must error, and must never be mistaken for a bare flip.
 results.bogus = await run("maybe");
 results.fileAfterBogus = JSON.stringify(readFileSync(toggleFile, "utf8"));
-// The owner treats an unrecognized file value as on; the report must agree.
+results.nearMissTypo = await run("of");
+results.fileAfterNearMissTypo = JSON.stringify(readFileSync(toggleFile, "utf8"));
+// The owner treats an unrecognized file value as on; the flip's base must agree.
 writeFileSync(toggleFile, "banana\n");
-results.reportUnknownValue = await run("");
+results.flipFromUnknownValue = await run("");
+results.fileAfterUnknownValue = JSON.stringify(readFileSync(toggleFile, "utf8"));
 writeFileSync(toggleFile, "FALSE\n");
-results.reportUppercaseFalse = await run("");
-process.env.FM_CAPTAIN_ROUTER_ENABLED = "off";
-writeFileSync(toggleFile, "on\n");
-results.reportWithEnvOverride = await run("");
-results.toggleWithEnvOverride = await run("on");
+results.flipFromUppercaseFalse = await run("");
+results.fileAfterUppercaseFalse = JSON.stringify(readFileSync(toggleFile, "utf8"));
+// Under the override the flip's base is the effective state, and the message
+// must never claim routing is off while the variable keeps it on.
+process.env.FM_CAPTAIN_ROUTER_ENABLED = "on";
+writeFileSync(toggleFile, "off\n");
+results.flipWithEnvOverride = await run("");
+results.fileAfterEnvFlip = JSON.stringify(readFileSync(toggleFile, "utf8"));
+results.setWithEnvOverride = await run("on");
 delete process.env.FM_CAPTAIN_ROUTER_ENABLED;
 results.noTempLeft = !existsSync(`${toggleFile}.tmp.${process.pid}`);
 console.log(JSON.stringify(results));
@@ -1587,30 +1599,43 @@ JS
 	) || status=$?
 	expect_code 0 "$status" "/captain-router command test exit ($out)"
 	assert_contains "$out" "/captain-router [on|off]" "the command advertises its arguments"
-	assert_contains "$out" "absent, and absent means on" \
-		"a missing toggle file reports on and says why"
+	assert_contains "$out" '"flipFromAbsent":{"message":"captain-router: off' \
+		"a bare call flips the effective on of an absent file to off"
 	assert_contains "$out" '"offFileBytes":"\"off\\n\""' \
-		"off writes exactly the documented printf form"
+		"the flip to off writes exactly the documented printf form"
+	assert_contains "$out" '"flipBackOn":{"message":"captain-router: on' \
+		"a second bare call flips back on"
 	assert_contains "$out" '"onFileBytes":"\"on\\n\""' \
-		"on writes exactly the documented printf form"
-	assert_contains "$out" "captain-router: off" "turning it off confirms the new state"
+		"the flip to on writes exactly the documented printf form"
+	assert_contains "$out" '"setOnWhenOn":{"message":"captain-router: on' \
+		"setting on while already on still confirms on"
+	assert_contains "$out" '"fileAfterIdempotentOn":"\"on\\n\""' \
+		"an explicit setter is absolute, never a flip"
+	assert_contains "$out" '"fileAfterSetOff":"\"off\\n\""' \
+		"an explicit off sets off"
 	assert_contains "$out" "next captain message, with no restart" \
 		"the confirmation states the no-restart semantics"
 	assert_contains "$out" "unrecognized argument" "a bogus argument fails loudly"
 	assert_contains "$out" "captain-router on, /captain-router off" \
 		"the failure names every valid option"
-	assert_contains "$out" '"fileAfterBogus":"\"on\\n\""' \
+	assert_contains "$out" '"fileAfterBogus":"\"off\\n\""' \
 		"a bogus argument never changes the toggle"
-	assert_contains "$out" '"reportUnknownValue":{"message":"captain-router: on' \
-		"an unrecognized file value reports on, matching the owner"
-	assert_contains "$out" '"reportUppercaseFalse":{"message":"captain-router: off' \
-		"FALSE disables, matching the owner"
-	assert_contains "$out" "FM_CAPTAIN_ROUTER_ENABLED is set" \
-		"the report discloses an environment override"
-	assert_contains "$out" "until that variable is unset" \
-		"a write under an environment override warns that the file is not effective"
+	assert_contains "$out" '"nearMissTypo":{"message":"captain-router: unrecognized argument \"of\"' \
+		"a near-miss typo errors instead of flipping"
+	assert_contains "$out" '"fileAfterNearMissTypo":"\"off\\n\""' \
+		"a near-miss typo leaves the toggle exactly as it was"
+	assert_contains "$out" '"fileAfterUnknownValue":"\"off\\n\""' \
+		"an unrecognized file value counts as on, so the flip writes off"
+	assert_contains "$out" '"fileAfterUppercaseFalse":"\"on\\n\""' \
+		"FALSE counts as off, so the flip writes on"
+	assert_contains "$out" '"fileAfterEnvFlip":"\"off\\n\""' \
+		"the flip's base is the effective state, not the raw file text"
+	assert_contains "$out" "FM_CAPTAIN_ROUTER_ENABLED=on is set and overrides that file" \
+		"a write under an environment override discloses the override"
+	assert_contains "$out" "Routing stays on until that variable is unset" \
+		"the override message reports the real effective state, never a false off"
 	assert_contains "$out" '"noTempLeft":true' "the atomic write leaves no temp file"
-	pass "router: /captain-router reports and toggles the kill switch"
+	pass "router: /captain-router flips bare and sets absolutely"
 }
 
 test_pi_hook_threads_bounded_redacted_history() {
@@ -2246,7 +2271,7 @@ test_pi_hook_uses_context_session_ids_without_outer_timeout
 test_pi_hook_classifies_queued_input_and_rejects_mixed_runs
 test_pi_hook_holds_the_send_without_blocking_the_input_path
 test_pi_hook_rejects_typed_session_start_context
-test_pi_hook_captain_router_command_reports_and_toggles
+test_pi_hook_captain_router_command_flips_and_sets
 test_verdict_is_logged
 test_pi_hook_threads_bounded_redacted_history
 test_deliver_reroute_resumes_the_target_in_a_visible_pane
