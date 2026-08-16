@@ -840,15 +840,24 @@ test_resolved_archived_hold_verification_is_strict() {
     || fail "duplicate archive verification must emit exactly one accurate error: $(cat "$home/archive-duplicate.err")"
   cp "$pristine" "$archive"
 
+  # A home that re-used a decision key after retention pruning carries the identity
+  # in both places. The live backlog is authoritative for open work, so a satisfied
+  # live record must still verify - refusing it stranded such homes with no recovery
+  # short of --force - while a live record that satisfies nothing still fails.
   tasks_in "$home" add "$hold" "Conflicting live archived route" --kind captain --repo sample >/dev/null \
-    || fail "could not create live/archive ambiguity fixture"
+    || fail "could not create live/archive reuse fixture"
   tasks_in "$home" hold "$hold" --reason "captain conflicting route pending" --kind captain >/dev/null \
-    || fail "could not activate live/archive ambiguity fixture"
-  if run_decisions "$home" verify "$origin" > "$home/live-duplicate.out" 2> "$home/live-duplicate.err"; then
-    fail "verification accepted the same identity in live backlog and archive"
+    || fail "could not activate live/archive reuse fixture"
+  run_decisions "$home" verify "$origin" > "$home/live-reuse.out" 2> "$home/live-reuse.err" \
+    || fail "an archived earlier cycle blocked a satisfied live hold: $(cat "$home/live-reuse.err")"
+
+  tasks_in "$home" unhold "$hold" >/dev/null \
+    || fail "could not release the live/archive reuse fixture"
+  if run_decisions "$home" verify "$origin" > "$home/live-unsatisfied.out" 2> "$home/live-unsatisfied.err"; then
+    fail "an archived earlier cycle rescued a live record that satisfies nothing"
   fi
-  assert_grep "ambiguous across the live backlog and configured archive" "$home/live-duplicate.err" \
-    "live/archive duplicate failure did not report ambiguity"
+  assert_grep "neither actively held nor durably resolved" "$home/live-unsatisfied.err" \
+    "an unsatisfied live record must fail on its own merits"
 
   pass "resolved archived holds verify only with unique complete structured records"
 }

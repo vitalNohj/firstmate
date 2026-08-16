@@ -451,7 +451,7 @@ EOF
 
 verify_hold_active() {  # <hold-id>
   local id=$1 show state held kind hold_kind
-  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  show=$(task_show "$id") || fail "captain hold $id is absent from $(backlog_path)"
   state=$(show_field "$show" state)
   held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
@@ -473,12 +473,15 @@ verify_hold_resolved() {  # <hold-id>
   body_has_resolution_record "$body"
 }
 
+# The live backlog stays authoritative for this identity, so the archive is read
+# only once the record has actually left the backlog. A stale archived copy from an
+# earlier decision cycle cannot make a satisfied live invariant untrue, and a live
+# record that does not satisfy it still fails below on its own merits, while
+# refusing a live-and-archived identity outright permanently stranded every home
+# that re-used a decision key after retention pruning.
 verify_hold_durable() {  # <hold-id>
   local id=$1 show state held kind hold_kind body archive
-  archive=$(archive_path) || exit 1
   if show=$(task_show "$id"); then
-    archive_has_task_identity "$id" "$archive" \
-      && fail "captain decision $id is ambiguous across the live backlog and configured archive $archive"
     state=$(show_field "$show" state)
     held=$(show_field "$show" held)
     kind=$(show_field "$show" kind)
@@ -492,6 +495,7 @@ verify_hold_durable() {  # <hold-id>
     fi
     fail "captain decision $id is neither actively held nor durably resolved"
   fi
+  archive=$(archive_path) || exit 1
   verify_archived_hold_resolved "$id" "$archive"
 }
 
@@ -773,7 +777,7 @@ command_decline() {
     printf 'declined: %s\n' "$id"
     return 0
   fi
-  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $(backlog_path)"
   state=$(show_field "$hold_show" state)
   [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
@@ -805,7 +809,7 @@ command_repair() {
   load_decision "$decision_file"
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
+  show=$(task_show "$id") || fail "captain decision $id is absent from $(backlog_path)"
   kind=$(show_field "$show" kind)
   [ "$kind" = captain ] || fail "backlog item $id is not kind captain"
   # tasks-axi keeps hold_kind after a close, so it is the surviving proof that
