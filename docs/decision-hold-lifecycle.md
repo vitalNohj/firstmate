@@ -12,6 +12,7 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 The `hold` subcommand maps an originating work id and stable decision key to `<origin-id>-decision-<decision-key>`.
 It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry.
 It rejects an identity collision, a changed title, and attempts to reopen an already resolved identity.
+It is archive-aware for the same reason `verify` is: it refuses an identity that already exists in the configured archive, so a decision key that was closed and pruned is permanently retired and a later decision on the same origin needs a new key.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.
@@ -26,7 +27,8 @@ The live backlog stays authoritative for mutable and open work, so an active dec
 A malformed or missing archived record, or an ambiguous identity across the live backlog and the archive, fails verification.
 The accepted archived record is the one every close path writes, including the `(none)` routed-identity token that `decline` and `repair` record, and the structured fields are read only from the header block so arbitrary captain decision prose can never satisfy or break them.
 The archived acceptance asserts the same invariant the live path asserts - a closed kind `captain` record carrying that resolution block - rather than tasks-axi's rendering of a close, so `done --pr`, `done --report`, and an `unhold` before or after the close all keep verifying once the record is pruned.
-The configured archive path is read from `[markdown] archive`, accepting the same spellings tasks-axi itself accepts, including an inner-spaced section header and a trailing inline comment, and falling back to tasks-axi's own `data/done-archive.md` default when the optional key is absent.
+The configured archive path is read from `[markdown] archive`, accepting the same spellings tasks-axi itself accepts, including an inner-spaced section header, a trailing inline comment, and a repeated key whose last assignment wins.
+When that optional key is absent, or `.tasks.toml` itself is absent, the path falls back to tasks-axi's own derived default of `done-archive.md` beside the resolved `[markdown] path` backlog rather than a fixed `data/` location, so a home with a customized backlog path never blocks teardown.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` and `decline` subcommands close active holds, while `repair` attests a hold already closed outside the script.

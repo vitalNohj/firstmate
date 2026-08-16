@@ -853,9 +853,11 @@ test_resolved_archived_hold_verification_is_strict() {
   pass "resolved archived holds verify only with unique complete structured records"
 }
 
-# tasks-axi treats [markdown] archive as optional and itself defaults to
-# data/done-archive.md, so an absent key must not block teardown; it falls back to
-# that same default. A key that is present but unparseable is a real
+# tasks-axi treats [markdown] archive as optional and derives its own default from
+# the resolved backlog path - done-archive.md beside that file, not a fixed data/
+# location - so an absent key must not block teardown on a home whose backlog lives
+# anywhere else. The backlog path here is deliberately outside data/, so a hardcoded
+# default cannot pass. A key that is present but unparseable is a real
 # misconfiguration and must still abort `verify` nonzero. markdown_config_value
 # reports through a command substitution, so before the propagation fix a live
 # active captain hold made `verify` print the config error yet exit 0, silently
@@ -864,7 +866,15 @@ test_archive_config_absent_defaults_and_malformed_fails() {
   local home id
   home=$(make_home malformed-archive-config)
   id=sample-malformed-config-review
-  mkdir -p "$home/data/$id"
+  mkdir -p "$home/data/$id" "$home/notes"
+  cat > "$home/.tasks.toml" <<'TOMLEOF'
+backend = "markdown"
+
+[markdown]
+path = "notes/backlog.md"
+archive = "notes/done-archive.md"
+done_keep = 10
+TOMLEOF
   tasks_in "$home" add "$id" "Review malformed archive config" \
     --kind scout --repo sample --start >/dev/null \
     || fail "could not create malformed-config origin"
@@ -888,29 +898,71 @@ test_archive_config_absent_defaults_and_malformed_fails() {
     || fail "could not close the hold before archive-config pruning"
   tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
     || fail "could not prune the closed hold to the default archive"
-  assert_no_grep "- [x] $id-decision-route -" "$home/data/backlog.md" \
+  assert_no_grep "- [x] $id-decision-route -" "$home/notes/backlog.md" \
     "the closed hold remained in the live backlog after pruning"
-  assert_grep "- [x] $id-decision-route -" "$home/data/done-archive.md" \
-    "tasks-axi did not archive the closed hold to its default archive path"
+  assert_grep "- [x] $id-decision-route -" "$home/notes/done-archive.md" \
+    "tasks-axi did not archive the closed hold beside its configured backlog"
+  assert_absent "$home/data/done-archive.md" \
+    "tasks-axi archived to a fixed data/ path rather than beside its backlog"
 
   grep -v '^archive = ' "$home/.tasks.toml" > "$home/.tasks.toml.tmp"
   mv "$home/.tasks.toml.tmp" "$home/.tasks.toml"
   run_decisions "$home" verify "$id" > "$home/absent-config.out" 2> "$home/absent-config.err" \
     || fail "an absent optional archive key blocked verify on an archived hold: $(cat "$home/absent-config.err")"
 
-  printf 'archive = data/done-archive.md\n' >> "$home/.tasks.toml"
+  printf 'archive = notes/done-archive.md\n' >> "$home/.tasks.toml"
   if run_decisions "$home" verify "$id" > "$home/malformed-config.out" 2> "$home/malformed-config.err"; then
     fail "verify passed with a malformed markdown.archive config, silently disabling the archive guards"
   fi
   assert_grep "markdown.archive must be one unescaped quoted path" "$home/malformed-config.err" \
     "malformed archive config must fail verify with the config error"
-  pass "an absent archive key defaults while a malformed one fails verify nonzero"
+  pass "an absent archive key derives the backend default while a malformed one fails verify"
 }
 
-# tasks-axi's own TOML reader honors an inner-spaced section header and a trailing
-# inline comment after the quoted value, so this gate must resolve the same file
-# the backend actually archived to rather than rejecting the config or silently
-# falling back to a default archive that holds nothing.
+# tasks-axi reads a home with no .tasks.toml at all, resolving its backlog to the
+# first existing of backlog.md and data/backlog.md and archiving beside it. This
+# gate must do the same rather than failing before any archive lookup is needed,
+# because a hard failure here permanently blocks scout teardown on a home the
+# backend itself accepts - for a live hold that never reads the archive as well as
+# for one that has already been pruned into it.
+test_absent_tasks_toml_falls_back_to_backend_defaults() {
+  local home id
+  home=$(make_home absent-tasks-toml)
+  id=sample-absent-config-review
+  rm -f "$home/.tasks.toml"
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Review absent tasks config" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create absent-config origin"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Absent tasks config review\n' > "$home/data/$id/report.md"
+  run_decisions "$home" hold "$id" route \
+    --title "Choose absent-config route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "an absent .tasks.toml blocked hold creation"
+  run_decisions "$home" complete "$id" route >/dev/null \
+    || fail "could not record inventory without a .tasks.toml"
+  run_decisions "$home" verify "$id" > "$home/live-absent.out" 2> "$home/live-absent.err" \
+    || fail "an absent .tasks.toml blocked verify on a live active hold: $(cat "$home/live-absent.err")"
+
+  printf 'No follow-up work is needed.\n' > "$home/absent-config-decision.txt"
+  run_decisions "$home" decline "$id" route \
+    --decision-file "$home/absent-config-decision.txt" >/dev/null \
+    || fail "could not close the hold without a .tasks.toml"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the closed hold without a .tasks.toml"
+  assert_grep "- [x] $id-decision-route -" "$home/data/done-archive.md" \
+    "tasks-axi did not archive beside the backlog it resolved without a config"
+  run_decisions "$home" verify "$id" > "$home/archived-absent.out" 2> "$home/archived-absent.err" \
+    || fail "an absent .tasks.toml blocked verify on an archived hold: $(cat "$home/archived-absent.err")"
+  pass "an absent .tasks.toml falls back to the backend's own resolved defaults"
+}
+
+# tasks-axi's own TOML reader honors an inner-spaced section header, a trailing
+# inline comment after the quoted value, and a repeated key whose last assignment
+# wins, so this gate must resolve the same file the backend actually archived to
+# rather than rejecting the config or silently falling back to a default archive
+# that holds nothing.
 test_archive_config_matches_backend_toml_spellings() {
   local home origin archive
   home=$(make_home archive-config-spellings)
@@ -922,6 +974,7 @@ backend = "markdown"
 
 [ markdown ]
 path = "data/backlog.md"
+archive = "data/decisions/overridden-archive.md"
 archive = "data/decisions/spelled-archive.md" # decisions stay out of the main archive
 done_keep = 10
 TOMLEOF
@@ -943,7 +996,9 @@ TOMLEOF
   tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
     || fail "could not prune the config-spelling hold"
   assert_grep "- [x] $origin-decision-route -" "$archive" \
-    "tasks-axi did not honor the inner-spaced, trailing-comment archive path"
+    "tasks-axi did not honor the inner-spaced, trailing-comment, last-wins archive path"
+  assert_absent "$home/data/decisions/overridden-archive.md" \
+    "tasks-axi did not take the last assignment of a repeated archive key"
   assert_absent "$home/data/done-archive.md" \
     "the configured archive path was ignored in favor of the default"
   run_decisions "$home" verify "$origin" > "$home/spelled-config.out" 2> "$home/spelled-config.err" \
@@ -1146,6 +1201,7 @@ test_out_of_band_close_is_repairable_before_teardown
 test_unanswered_decision_still_blocks_completion_and_teardown
 test_resolved_archived_hold_verification_is_strict
 test_archive_config_absent_defaults_and_malformed_fails
+test_absent_tasks_toml_falls_back_to_backend_defaults
 test_archive_config_matches_backend_toml_spellings
 test_unrouted_and_prose_heavy_archived_holds_verify
 test_out_of_band_close_spellings_survive_archiving

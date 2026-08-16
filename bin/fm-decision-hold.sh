@@ -36,6 +36,9 @@
 # source before this gate has succeeded. It accepts a resolved captain hold from
 # the configured tasks-axi archive only when that archived record is unique and
 # retains the complete structured fm-decision-hold resolution record.
+# `hold` reads the same archive: it refuses an identity that already exists there,
+# so a decision key that has been closed and pruned is permanently retired and a
+# new decision needs a new key.
 #
 # `resolve` and `decline` close active holds; `repair` attests a hold already closed
 # outside this script. All three paths require a non-empty captain decision file of
@@ -167,18 +170,16 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
-# tasks-axi's own default when [markdown] archive is omitted, so an optional key
-# never blocks this gate on a home the backend itself reads without complaint.
-ARCHIVE_DEFAULT='data/done-archive.md'
-
-# Prints the configured value; returns 3 when the key is legitimately absent and
-# fails loudly when it is present but not a single unescaped quoted path. The
-# accepted spellings track tasks-axi's own TOML reader - inner-spaced section
-# headers and a trailing inline comment after the quoted value both work there,
-# so this gate must not reject a home the backend itself archives correctly.
+# Prints the configured value; returns 3 when the key is legitimately absent,
+# including when the whole config file is absent, which tasks-axi also reads as
+# every key defaulted. It fails loudly only when the key is present but not a
+# single unescaped quoted path. The accepted spellings track tasks-axi's own TOML
+# reader - inner-spaced section headers, a trailing inline comment after the
+# quoted value, and a repeated key whose last assignment wins all work there, so
+# this gate must not reject a home the backend itself archives correctly.
 markdown_config_value() {  # <key>
   local key=$1 config="$FM_HOME/.tasks.toml" value rc=0
-  [ -f "$config" ] || fail "tasks-axi configuration is absent: $config"
+  [ -f "$config" ] || return 3
   value=$(awk -v wanted="$key" '
     BEGIN { sq = sprintf("%c", 39) }
     /^[[:space:]]*\[/ {
@@ -198,10 +199,10 @@ markdown_config_value() {  # <key>
       if (trailer != "" && substr(trailer, 1, 1) != "#") { bad = 1; exit }
       line = substr(rest, 1, end - 1)
       if (line ~ /[\\\r\n]/) { bad = 1; exit }
-      print line
-      found++
+      value = line
+      found = 1
     }
-    END { if (bad || found > 1) exit 2; if (found != 1) exit 3 }
+    END { if (bad) exit 2; if (!found) exit 3; print value }
   ' "$config") || rc=$?
   case "$rc" in
     0) printf '%s\n' "$value" ;;
@@ -210,18 +211,44 @@ markdown_config_value() {  # <key>
   esac
 }
 
-markdown_path() {  # <key> <default-relative-path>
+home_relative_path() {  # <path>
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$1" ;;
+  esac
+}
+
+# tasks-axi resolves its markdown backlog from [markdown] path, and when that key
+# is absent it takes the first existing of backlog.md and data/backlog.md under
+# the working home, falling back to backlog.md.
+backlog_path() {
   local value rc=0
-  value=$(markdown_config_value "$1") || rc=$?
+  value=$(markdown_config_value path) || rc=$?
   case "$rc" in
     0) : ;;
-    3) value=$2 ;;
+    3)
+      value=backlog.md
+      [ -f "$FM_HOME/backlog.md" ] || [ ! -f "$FM_HOME/data/backlog.md" ] || value=data/backlog.md
+      ;;
     *) exit 1 ;;
   esac
-  case "$value" in
-    /*) printf '%s\n' "$value" ;;
-    *) printf '%s/%s\n' "$FM_HOME" "$value" ;;
+  home_relative_path "$value"
+}
+
+# The archive tasks-axi prunes into: [markdown] archive when it is set, and
+# otherwise the backend's own derived default of <backlog directory>/done-archive.md.
+# Deriving it keeps an absent optional key or an absent config file from blocking
+# this gate on a home the backend itself reads without complaint.
+archive_path() {
+  local value rc=0 backlog
+  value=$(markdown_config_value archive) || rc=$?
+  case "$rc" in
+    0) home_relative_path "$value"; return 0 ;;
+    3) : ;;
+    *) exit 1 ;;
   esac
+  backlog=$(backlog_path) || exit 1
+  printf '%s/done-archive.md\n' "${backlog%/*}"
 }
 
 archive_task_record() {  # <id> <archive-path>
@@ -448,7 +475,7 @@ verify_hold_resolved() {  # <hold-id>
 
 verify_hold_durable() {  # <hold-id>
   local id=$1 show state held kind hold_kind body archive
-  archive=$(markdown_path archive "$ARCHIVE_DEFAULT") || exit 1
+  archive=$(archive_path) || exit 1
   if show=$(task_show "$id"); then
     archive_has_task_identity "$id" "$archive" \
       && fail "captain decision $id is ambiguous across the live backlog and configured archive $archive"
@@ -522,7 +549,7 @@ command_hold() {
     [ "$kind" = captain ] || fail "existing backlog identity $id is not kind captain"
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
   else
-    archive=$(markdown_path archive "$ARCHIVE_DEFAULT") || exit 1
+    archive=$(archive_path) || exit 1
     archive_has_task_identity "$id" "$archive" \
       && fail "captain decision $id already exists in the configured tasks-axi archive"
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
