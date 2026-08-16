@@ -115,7 +115,15 @@ class WarmChild {
 	}
 
 	start() {
-		const args = ["--mode", "rpc", "--no-session", "--no-tools"];
+		// --no-extensions is load-bearing, not tidiness. This child inherits the
+		// trusted project, so without it Pi auto-discovers the home's primary
+		// extensions here. The watcher extension would then claim the watcher
+		// generation from inside the classifier (its ancestor walk reaches the
+		// session lock holder, so ownership by ancestry cannot tell it apart from
+		// the primary) and retiring this child would take the live watcher down
+		// with it, leaving no successor. The classifier is an ephemeral vendor
+		// process that only returns model text, so it needs no extensions.
+		const args = ["--mode", "rpc", "--no-session", "--no-tools", "--no-extensions"];
 		if (this.model) args.push("--model", this.model);
 		const child = spawn(this.pi, args, {
 			stdio: ["pipe", "pipe", "ignore"],

@@ -335,8 +335,13 @@ serve_warm_runner() {
 	local root=$1 pid waited=0
 	mkdir -p "$root/state/captain-router"
 	printf '"verdict=same\\ntarget=primary\\nexplanation=Warm reply."' >"$root/reply.json"
+	# FM_FAKE_PI_WATCH_MARKER points at this root's own isolated state dir, never
+	# the live one, so a classifier that loads extensions is caught here without
+	# any test ever writing to the real watcher marker.
 	# The runner exits with its stdin, so a sleeper holds that pipe open.
 	pid=$(FM_FAKE_PI_LOG="$root" FM_FAKE_PI_REPLY="$root/reply.json" \
+		FM_FAKE_PI_WATCH_MARKER="$root/state/.pi-watch-extension-loaded" \
+		FM_STATE_OVERRIDE="$root/state" \
 		FM_CAPTAIN_ROUTER_PI="$ROOT/tests/fake-pi-rpc.sh" \
 		sh -c "sleep 60 | node '$ROOT/bin/fm-captain-router-runner.mjs' serve --state '$root/state' \
 			>'$root/runner.out' 2>'$root/runner.err' & echo \$!")
@@ -373,6 +378,79 @@ test_warm_runner_serves_every_submit_from_one_process() {
 		fail "three submits must share one warm process, saw $launches launches"
 	[ "$prompts" -eq 3 ] || fail "every submit must reach the warm classifier, saw $prompts"
 	pass "router: one warm classifier process serves every submit"
+}
+
+# The classifier child inherits the trusted project, so without --no-extensions
+# Pi auto-loads this home's primary extensions inside it. The watcher extension
+# there stamps state/.pi-watch-extension-loaded with the classifier pid and
+# claims the watcher generation, and retiring the classifier then takes the live
+# watcher down with no successor. These three tests pin the flag, the marker,
+# and that classification still works with the flag applied.
+test_warm_classifier_spawn_disables_extension_discovery() {
+	local root="$TMP_ROOT/warm-no-extensions" holder
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the classifier extension-discovery test"
+		return 0
+	fi
+	make_primary "$root"
+	holder=$(serve_warm_runner "$root")
+	assert_grep ready "$root/runner.out" "the warm classifier reports itself ready"
+	kill "$holder" 2>/dev/null || true
+	assert_grep '--no-extensions' "$root/pi-args.txt" \
+		"the classifier spawn must disable extension discovery"
+	assert_grep '--no-tools' "$root/pi-args.txt" \
+		"the classifier spawn still disables tools"
+	assert_grep '--no-session' "$root/pi-args.txt" \
+		"the classifier spawn still disables the session"
+	pass "router: the warm classifier spawns with extension discovery disabled"
+}
+
+test_warm_classifier_never_stamps_the_watcher_marker() {
+	local root="$TMP_ROOT/warm-marker" marker holder before after
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the classifier watcher-marker test"
+		return 0
+	fi
+	make_primary "$root"
+	marker="$root/state/.pi-watch-extension-loaded"
+	# Stand in for the live primary: the lock holder owns the marker, and only it
+	# may ever rewrite that file.
+	printf '%s\n' 4242 >"$root/state/.lock"
+	printf 'sha256:primary\n%s\n' 4242 >"$marker"
+	before=$(cat "$marker")
+	holder=$(serve_warm_runner "$root")
+	assert_grep ready "$root/runner.out" "the warm classifier reports itself ready"
+	# Retire the classifier: the hijack showed up on child teardown, so the marker
+	# must survive the whole start-to-retire cycle untouched.
+	kill "$holder" 2>/dev/null || true
+	sleep 0.3
+	after=$(cat "$marker")
+	[ "$before" = "$after" ] ||
+		fail "the classifier rewrote the watcher marker: $before -> $after"
+	assert_grep 4242 "$marker" "the marker still carries the lock holder pid"
+	pass "router: a warm classifier never stamps the watcher marker with its own pid"
+}
+
+test_warm_classifier_still_classifies_with_extensions_disabled() {
+	local root="$TMP_ROOT/warm-no-extensions-verdict" out status=0 holder
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the classifier verdict test"
+		return 0
+	fi
+	make_primary "$root"
+	# The first message of a session is never classified, so settle once first.
+	printf 'Shall I continue?' | run "$root" --on-settle --session-id primary >/dev/null
+	holder=$(serve_warm_runner "$root")
+	assert_grep ready "$root/runner.out" "the warm classifier reports itself ready"
+	out=$(printf 'a captain message needing a verdict' |
+		run "$root" --on-submit --session-id primary) || status=$?
+	kill "$holder" 2>/dev/null || true
+	expect_code 0 "$status" "warm submit exit with extensions disabled"
+	assert_grep '--no-extensions' "$root/pi-args.txt" \
+		"the verdict came from a child with extension discovery disabled"
+	assert_contains "$out" "verdict=same" "the warm classifier still returns a verdict"
+	assert_contains "$out" "confidence=model" "the verdict is still a real model verdict"
+	pass "router: classification still works with extension discovery disabled"
 }
 
 test_warm_runner_absence_falls_back_to_the_ephemeral_spawn() {
@@ -2246,6 +2324,9 @@ test_settle_single_ask_is_silent
 test_submit_direct_address_stays_in_the_current_session
 test_submit_always_spawns_the_model
 test_warm_runner_serves_every_submit_from_one_process
+test_warm_classifier_spawn_disables_extension_discovery
+test_warm_classifier_never_stamps_the_watcher_marker
+test_warm_classifier_still_classifies_with_extensions_disabled
 test_warm_runner_absence_falls_back_to_the_ephemeral_spawn
 test_submit_model_sees_briefs_history_and_message
 test_chat_history_is_bounded_and_redacted
