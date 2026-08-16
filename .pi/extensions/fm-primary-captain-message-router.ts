@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	mkdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -49,6 +50,8 @@ const fmHome = process.env.FM_HOME || process.env.FM_ROOT_OVERRIDE || root;
 const state = process.env.FM_STATE_OVERRIDE || `${fmHome}/state`;
 const router = `${root}/bin/fm-captain-message-router.sh`;
 const sessionLockLib = `${root}/bin/fm-session-lock-lib.sh`;
+const configDir = process.env.FM_CONFIG_OVERRIDE || `${fmHome}/config`;
+const routerToggleFile = `${configDir}/captain-router`;
 const hookLogDir = `${state}/captain-router`;
 const hookLog = `${hookLogDir}/hook.log`;
 const marker = `${state}/.pi-captain-router-extension-loaded`;
@@ -111,6 +114,83 @@ function lockOwnership(): LockOwnership {
 		if (!pid || pid === "1") break;
 	}
 	return pidAlive(lockPid) ? "other" : "missing";
+}
+
+// Toggle parsing mirrors router_enabled() in bin/fm-captain-message-router.sh
+// exactly: `off`, `0`, `false` (any case) disable, and anything else means on,
+// because a router that silently disables itself is the same outage as one that
+// silently drops messages. Do not tighten this into a stricter parser.
+function toggleValueIsOff(raw: string): boolean {
+	const stored = raw.replace(/\s/g, "");
+	return (
+		stored === "off" ||
+		stored === "OFF" ||
+		stored === "0" ||
+		stored === "false" ||
+		stored === "FALSE"
+	);
+}
+
+type ToggleReport = {
+	enabled: boolean;
+	source: string;
+	envOverride: string | undefined;
+};
+
+// The bash owner prefers a non-empty FM_CAPTAIN_ROUTER_ENABLED over the file,
+// so read the same way rather than reporting a file value the owner ignores.
+function readToggle(): ToggleReport {
+	const env = process.env.FM_CAPTAIN_ROUTER_ENABLED;
+	const envOverride = env ? env : undefined;
+	if (envOverride) {
+		return {
+			enabled: !toggleValueIsOff(envOverride),
+			source: `FM_CAPTAIN_ROUTER_ENABLED=${envOverride}`,
+			envOverride,
+		};
+	}
+	let raw = "";
+	try {
+		raw = readFileSync(routerToggleFile, "utf8");
+	} catch {
+		return {
+			enabled: true,
+			source: `${routerToggleFile} absent, and absent means on`,
+			envOverride,
+		};
+	}
+	if (!raw.replace(/\s/g, "")) {
+		return {
+			enabled: true,
+			source: `${routerToggleFile} is empty, and that means on`,
+			envOverride,
+		};
+	}
+	const firstLine = raw.split("\n", 1)[0] ?? "";
+	return {
+		enabled: !toggleValueIsOff(firstLine),
+		source: `${routerToggleFile} holds ${JSON.stringify(firstLine.trim())}`,
+		envOverride,
+	};
+}
+
+// Atomic: write a sibling temp file, then rename over the toggle, so a reader
+// racing the write never sees a half-written or missing value. The trailing
+// newline matches the documented `printf 'off\n'` form.
+function writeToggle(value: "on" | "off"): void {
+	mkdirSync(configDir, { recursive: true });
+	const temp = `${routerToggleFile}.tmp.${process.pid}`;
+	try {
+		writeFileSync(temp, `${value}\n`);
+		renameSync(temp, routerToggleFile);
+	} catch (error) {
+		try {
+			rmSync(temp, { force: true });
+		} catch {
+			// The rename already consumed it, or the temp write never landed.
+		}
+		throw error;
+	}
 }
 
 function markLoaded(): void {
@@ -658,6 +738,57 @@ export default function (pi: ExtensionAPI) {
 		pendingSubmits.push(submit);
 		void drainPendingSubmits();
 	}
+
+	// The control surface over the existing kill switch. No routing behavior
+	// changes here: the value is read per message by the bash owner, so a toggle
+	// takes effect on the very next captain message with no restart.
+	pi.registerCommand?.("captain-router", {
+		description:
+			"Show or toggle captain-message routing: /captain-router [on|off].",
+		handler: async (args, ctx) => {
+			const argument = String(args ?? "").trim();
+			if (!argument) {
+				const report = readToggle();
+				const lines = [
+					`captain-router: ${report.enabled ? "on" : "off"} (${report.source})`,
+				];
+				if (report.envOverride) {
+					lines.push(
+						`FM_CAPTAIN_ROUTER_ENABLED is set, and it overrides ${routerToggleFile} for every invocation in this environment.`,
+					);
+				}
+				ctx.ui.notify(lines.join("\n"), "info");
+				return;
+			}
+			const wanted = argument.toLowerCase();
+			if (wanted !== "on" && wanted !== "off") {
+				ctx.ui.notify(
+					`captain-router: unrecognized argument ${JSON.stringify(argument)}. Valid: /captain-router (report), /captain-router on, /captain-router off.`,
+					"error",
+				);
+				return;
+			}
+			try {
+				writeToggle(wanted);
+			} catch (error) {
+				ctx.ui.notify(
+					`captain-router: could not write ${routerToggleFile}: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+				return;
+			}
+			const report = readToggle();
+			const lines = [
+				`captain-router: ${wanted}. ${routerToggleFile} now holds "${wanted}". Effective on the next captain message, with no restart.`,
+			];
+			if (report.envOverride) {
+				lines.push(
+					`Warning: FM_CAPTAIN_ROUTER_ENABLED=${report.envOverride} overrides that file, so routing stays ${report.enabled ? "on" : "off"} until that variable is unset.`,
+				);
+			}
+			ctx.ui.notify(lines.join("\n"), report.envOverride ? "warning" : "info");
+		},
+	});
 
 	pi.on?.("session_start", (_event, context) => {
 		bindSession(context, true);

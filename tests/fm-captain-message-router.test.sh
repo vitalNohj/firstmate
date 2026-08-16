@@ -1520,6 +1520,99 @@ explanation=y')
 	pass "router: every submit verdict is appended to the log"
 }
 
+# The /captain-router slash command is a control surface over the same kill
+# switch the bash owner reads. This drives the registered handler for real, so a
+# command that silently fails to register fails this test.
+test_pi_hook_captain_router_command_reports_and_toggles() {
+	local fixture out status=0
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the /captain-router command test"
+		return 0
+	fi
+	fixture="$TMP_ROOT/hook-captain-router-command"
+	mkdir -p "$fixture/state"
+	out=$(
+		FM_HOME="$fixture" FM_STATE_OVERRIDE="$fixture/state" \
+			FM_CONFIG_OVERRIDE="$fixture/config" \
+			FM_OPERATIONAL_INPUT_SCRIPT=/probe/fm-operational-input.sh \
+			FM_HOOK_HARNESS="$ROOT/tests/pi-hook-harness.mjs" \
+			node --experimental-test-module-mocks --experimental-strip-types --no-warnings \
+			--input-type=module 2>&1 <<'JS'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const harness = await import(process.env.FM_HOOK_HARNESS);
+harness.installChildProcess({
+  real: { spawnSync: () => ({ status: 1, stdout: "", stderr: "" }), spawn: () => harness.fakeChild("") },
+  lockOwned: () => true,
+  operational: () => false,
+});
+const extension = await import(`./.pi/extensions/fm-primary-captain-message-router.ts?router-command-test=${Date.now()}`);
+const commands = new Map();
+extension.default({
+  on: () => {},
+  registerCommand: (name, options) => commands.set(name, options),
+  sendUserMessage: () => {},
+});
+if (!commands.has("captain-router")) throw new Error("captain-router command did not register");
+const toggleFile = `${process.env.FM_CONFIG_OVERRIDE}/captain-router`;
+const notices = [];
+const ctx = { ui: { notify: (message, level) => notices.push({ message, level }) } };
+const run = async (args) => {
+  notices.length = 0;
+  await commands.get("captain-router").handler(args, ctx);
+  return notices[notices.length - 1];
+};
+const results = {};
+results.description = commands.get("captain-router").description;
+results.absent = await run("");
+results.turnedOff = await run("off");
+results.offFileBytes = JSON.stringify(readFileSync(toggleFile, "utf8"));
+results.reportOff = await run("");
+results.turnedOn = await run(" ON ");
+results.onFileBytes = JSON.stringify(readFileSync(toggleFile, "utf8"));
+results.bogus = await run("maybe");
+results.fileAfterBogus = JSON.stringify(readFileSync(toggleFile, "utf8"));
+// The owner treats an unrecognized file value as on; the report must agree.
+writeFileSync(toggleFile, "banana\n");
+results.reportUnknownValue = await run("");
+writeFileSync(toggleFile, "FALSE\n");
+results.reportUppercaseFalse = await run("");
+process.env.FM_CAPTAIN_ROUTER_ENABLED = "off";
+writeFileSync(toggleFile, "on\n");
+results.reportWithEnvOverride = await run("");
+results.toggleWithEnvOverride = await run("on");
+delete process.env.FM_CAPTAIN_ROUTER_ENABLED;
+results.noTempLeft = !existsSync(`${toggleFile}.tmp.${process.pid}`);
+console.log(JSON.stringify(results));
+JS
+	) || status=$?
+	expect_code 0 "$status" "/captain-router command test exit ($out)"
+	assert_contains "$out" "/captain-router [on|off]" "the command advertises its arguments"
+	assert_contains "$out" "absent, and absent means on" \
+		"a missing toggle file reports on and says why"
+	assert_contains "$out" '"offFileBytes":"\"off\\n\""' \
+		"off writes exactly the documented printf form"
+	assert_contains "$out" '"onFileBytes":"\"on\\n\""' \
+		"on writes exactly the documented printf form"
+	assert_contains "$out" "captain-router: off" "turning it off confirms the new state"
+	assert_contains "$out" "next captain message, with no restart" \
+		"the confirmation states the no-restart semantics"
+	assert_contains "$out" "unrecognized argument" "a bogus argument fails loudly"
+	assert_contains "$out" "captain-router on, /captain-router off" \
+		"the failure names every valid option"
+	assert_contains "$out" '"fileAfterBogus":"\"on\\n\""' \
+		"a bogus argument never changes the toggle"
+	assert_contains "$out" '"reportUnknownValue":{"message":"captain-router: on' \
+		"an unrecognized file value reports on, matching the owner"
+	assert_contains "$out" '"reportUppercaseFalse":{"message":"captain-router: off' \
+		"FALSE disables, matching the owner"
+	assert_contains "$out" "FM_CAPTAIN_ROUTER_ENABLED is set" \
+		"the report discloses an environment override"
+	assert_contains "$out" "until that variable is unset" \
+		"a write under an environment override warns that the file is not effective"
+	assert_contains "$out" '"noTempLeft":true' "the atomic write leaves no temp file"
+	pass "router: /captain-router reports and toggles the kill switch"
+}
+
 test_pi_hook_threads_bounded_redacted_history() {
 	local fixture out status=0
 	if ! command -v node >/dev/null 2>&1; then
@@ -2153,6 +2246,7 @@ test_pi_hook_uses_context_session_ids_without_outer_timeout
 test_pi_hook_classifies_queued_input_and_rejects_mixed_runs
 test_pi_hook_holds_the_send_without_blocking_the_input_path
 test_pi_hook_rejects_typed_session_start_context
+test_pi_hook_captain_router_command_reports_and_toggles
 test_verdict_is_logged
 test_pi_hook_threads_bounded_redacted_history
 test_deliver_reroute_resumes_the_target_in_a_visible_pane
