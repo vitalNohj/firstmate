@@ -82,7 +82,7 @@ session_start_completed() {
   [ "$completion_pid" = "$lock_pid" ]
 }
 
-if [ -z "$SOURCE" ] && [ ! -t 0 ]; then
+if [ -z "$SOURCE" ] && [ ! -t 0 ] && { true <&3; } 2>/dev/null 3<&0; then
   # Claude and Codex both deliver a JSON SessionStart payload on stdin whose
   # `source` field carries startup|resume|clear|compact. Parsed without jq so a
   # host missing it still gets correct routing rather than silent full runs.

@@ -540,6 +540,29 @@ test_run_reads_source_from_the_hook_payload() {
   pass "run wrapper: the hook payload's source field drives routing with no explicit argument"
 }
 
+test_run_survives_a_closed_stdin() {
+  # Regression: [ ! -t 0 ] is true for a *closed* fd 0, and the wrapper's
+  # payload read is `PAYLOAD=$(cat)`. With fd 0 closed, command substitution
+  # allocates its capture pipe at fd 0, so cat reads its own pipe and never sees
+  # EOF - the hook hangs the session open until the harness timeout. A launch
+  # path that closes stdin must instead fall through to the startup digest at
+  # once. Bounded so a regression fails as a timeout, not a hung suite.
+  local root="$TMP_ROOT/run-closed-stdin" out status=0
+  make_run_primary "$root"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-timeout-lib.sh"
+  # fm_run_timed backgrounds the command, and a backgrounded job gets /dev/null
+  # reattached to stdin, so the close has to happen in the innermost child that
+  # actually execs the wrapper.
+  # shellcheck disable=SC2016 # Expansion is deliberately deferred to the child shell.
+  out=$(fm_run_timed 20 bash -c 'exec env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$1" FM_HOME="$1" PATH="$2" "$3" <&-' _ "$root" "$RUN_PATH" "$RUN") || status=$?
+  [ "$status" != 124 ] || fail "a closed stdin hung the run wrapper instead of falling through to the digest"
+  expect_code 0 "$status" "run wrapper with a closed stdin"
+  assert_contains "$out" "SESSION START" "a closed stdin did not fall through to the startup digest"
+  pass "run wrapper: a closed stdin falls through to the startup digest instead of hanging"
+}
+
 test_run_unknown_source_takes_the_helm() {
   local root="$TMP_ROOT/run-unknown" out status=0
   make_run_primary "$root"
@@ -596,6 +619,7 @@ test_run_clear_without_completion_finishes_startup
 test_run_clear_rejects_previous_owner_completion
 test_run_resume_delegates_to_the_nudge
 test_run_reads_source_from_the_hook_payload
+test_run_survives_a_closed_stdin
 test_run_unknown_source_takes_the_helm
 test_run_gate_and_scope_are_silent
 test_run_reports_a_failed_session_start_as_digest_text
