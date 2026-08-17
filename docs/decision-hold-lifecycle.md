@@ -12,6 +12,8 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 The `hold` subcommand maps an originating work id and stable decision key to `<origin-id>-decision-<decision-key>`.
 It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry.
 It rejects an identity collision, a changed title, and attempts to reopen an already resolved identity.
+It is archive-aware for the same reason `verify` is, and refuses exactly what `verify` would accept: an identity whose archived record satisfies the durable resolution invariant is permanently retired, so a later decision on the same origin needs a new key.
+An archived identity that does not satisfy that invariant - a close that never recorded a resolution block - stays re-holdable on purpose, because no command can rewrite an archived body, so refusing it would leave `verify` failing forever with no recovery short of `--force`.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.
@@ -21,6 +23,15 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 `bin/fm-classify-lib.sh` recognizes that transfer as closing the live status copy without claiming that the captain has answered it.
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
+The live backlog stays authoritative for mutable and open work, so an active decision must remain a structured active captain item.
+`verify` also accepts a resolved captain hold from the configured tasks-axi archive after ordinary Done retention pruning, when some archived record for that identity retains the complete structured fm-decision-hold resolution record.
+The archive is append-only history, not a uniqueness index: because a non-conforming archived identity is deliberately re-holdable, one decision key legitimately accumulates several archived cycles, and any durably resolved cycle independently attests that the decision was answered, so duplicates must never fail.
+The archive is consulted only when the identity has actually left the live backlog: a live record that satisfies the durable invariant wins over any archived copy of an earlier decision cycle, because a stale archived record cannot make a satisfied live record untrue, and a live record that satisfies nothing still fails on its own.
+An identity with no archived record at all, or whose every archived record is malformed, still fails verification.
+The accepted archived record is the one every close path writes, including the `(none)` routed-identity token that `decline` and `repair` record, and the structured fields are read only from the header block so arbitrary captain decision prose can never satisfy or break them.
+The archived acceptance asserts the same invariant the live path asserts - a closed kind `captain` record carrying that resolution block - rather than tasks-axi's rendering of a close, so `done --pr`, `done --report`, and an `unhold` after the close all keep verifying once the record is pruned; an `unhold` before the close strips the captain-hold provenance every close path requires, so such a hold never acquires a resolution record at all.
+The configured archive path is read from `[markdown] archive`, accepting the same spellings tasks-axi itself accepts, including an inner-spaced section header, a trailing inline comment, and a repeated key whose last assignment wins.
+When that optional key is absent, or `.tasks.toml` itself is absent, the path falls back to tasks-axi's own derived default of `done-archive.md` beside the resolved `[markdown] path` backlog rather than a fixed `data/` location, so a home with a customized backlog path never blocks teardown.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
 The `resolve` and `decline` subcommands close active holds, while `repair` attests a hold already closed outside the script.
@@ -60,6 +71,8 @@ The focused end-to-end regression uses only synthetic `sample` identities and de
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+The archive-aware `verify` acceptance and its malformed and missing failure cases are covered by executable public-script regressions, together with a repeated archived identity whose durably resolved cycle is accepted beside a non-conforming one, a re-used decision key whose satisfied live record outranks its archived earlier cycle, archived declined, repaired, and prose-heavy holds, archived `--pr`, `--report`, and unheld closes, an archived record that is not a captain hold, an absent optional `archive` key, and the backend-honored `archive` config spellings.
+A further regression pins both sides of `hold`'s retirement boundary: a resolved-and-pruned key is refused, while an identity pruned without a resolution record is re-held and then verifies once `decline` records the captain's answer, including after that recovered record is itself pruned so the archive holds two records of the one identity.
 
 Three further regressions cover the close paths that route no work.
 A declined decision closes with a recorded answer, satisfies `verify`, leaves Bearings' Captain's Call, and is refused while the hold still blocks routed work.
@@ -67,46 +80,5 @@ A hold closed by a direct `tasks-axi done` reproduces the shape that fails `veri
 An unanswered decision still blocks completion and teardown, and neither `decline` nor `repair` can close a hold that is still actively held or supply an answer with a missing or empty decision file.
 `repair` also refuses a closed captain-kind task that was never held for the captain.
 
-The final verification commands and their exact summarized outputs follow.
-
-```text
-$ bash tests/fm-decision-hold-lifecycle.test.sh
-ok - report-only unresolved decision is reproduced and completion refuses before loss
-ok - non-forced scout teardown always requires durable inventory verification
-ok - a declined decision closes with a recorded answer and no routed work
-ok - a decision closed outside the script is repairable and then clears teardown
-ok - an unanswered decision still blocks completion and resists both unrouted close paths
-ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
-ok - completion and verification validate origins before constructing paths
-ok - ended visual review follows the same decision-hold completion owner
-ok - resolved findings and decision-like prose do not create false holds
-ok - terminal single-owner stale status decisions do not block empty inventory
-ok - main-home and secondmate-home captain holds remain correctly routed
-ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
-
-$ bash tests/fm-fleet-snapshot-view.test.sh
-ok - backlog normalization preserves strict roles and resolves every blocker compatibly
-ok - durable captain-held transfer closes the duplicate live status decision
-ok - snapshot parses tasks-axi rows and respects operational overrides
-
-$ bash tests/fm-bearings-snapshot.test.sh
-ok - a completed scout with decision-like report prose is a pointer, not pending
-ok - an authoritative captain hold surfaces end-to-end
-ok - action-free items (working/done/queued/landed) do not leak into Captain's Call
-ok - main and secondmate captain actionability use the same blocker readiness
-
-$ bash tests/fm-brief.test.sh
-ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy
-
-$ bash tests/fm-teardown.test.sh
-ok - the run abort and the leaked-process reap both complete before the destructive worktree return
-
-$ bin/fm-lint.sh
-fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
-
-$ bin/fm-doc-audience-check.sh
-fm-doc-audience-check: ok surfaces=67 local_links=243
-
-$ git diff --check
-(no output)
-```
+The live executable suites are the authoritative evidence.
+Run `bash tests/fm-decision-hold-lifecycle.test.sh` and the sibling `tests/fm-fleet-snapshot-view.test.sh`, `tests/fm-bearings-snapshot.test.sh`, `tests/fm-brief.test.sh`, and `tests/fm-teardown.test.sh` scripts, followed by `bin/fm-lint.sh`, for the current pass state.

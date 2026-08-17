@@ -33,7 +33,19 @@
 # metadata inventory is unioned idempotently. A post-teardown visual review can
 # complete against the surviving report and holds without recreating task state.
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
-# source before this gate has succeeded.
+# source before this gate has succeeded. It accepts a resolved captain hold from
+# the configured tasks-axi archive when some archived record for that identity
+# retains the complete structured fm-decision-hold resolution record. The archive is
+# append-only history, not a uniqueness index: one identity legitimately accumulates
+# several archived cycles, and any durably resolved cycle attests the decision was
+# answered. An identity with no archived record, or whose every archived record is
+# malformed, still fails.
+# `hold` reads the same archive against the same predicate: it refuses an identity
+# that is already durably resolved there, so a genuinely resolved decision key that
+# has been pruned is permanently retired and a new decision needs a new key. An
+# archived identity that does not satisfy the invariant - a close that never
+# recorded a resolution block - stays re-holdable, because the archive can never be
+# rewritten and refusing it would leave `verify` failing with no in-script recovery.
 #
 # `resolve` and `decline` close active holds; `repair` attests a hold already closed
 # outside this script. All three paths require a non-empty captain decision file of
@@ -165,6 +177,219 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
+# Prints the configured value; returns 3 when the key is legitimately absent,
+# including when the whole config file is absent, which tasks-axi also reads as
+# every key defaulted. It fails loudly only when the key is present but not a
+# single unescaped quoted path. The accepted spellings track tasks-axi's own TOML
+# reader - inner-spaced section headers, a trailing inline comment after the
+# quoted value, and a repeated key whose last assignment wins all work there, so
+# this gate must not reject a home the backend itself archives correctly.
+markdown_config_value() {  # <key>
+  local key=$1 config="$FM_HOME/.tasks.toml" value rc=0
+  [ -f "$config" ] || return 3
+  value=$(awk -v wanted="$key" '
+    BEGIN { sq = sprintf("%c", 39) }
+    /^[[:space:]]*\[/ {
+      in_markdown = ($0 ~ /^[[:space:]]*\[[[:space:]]*markdown[[:space:]]*\][[:space:]]*(#.*)?$/)
+    }
+    in_markdown && $0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" {
+      line = $0
+      sub(/^[^=]*=[[:space:]]*/, "", line)
+      quote = substr(line, 1, 1)
+      if (quote != "\"" && quote != sq) { bad = 1; exit }
+      rest = substr(line, 2)
+      end = index(rest, quote)
+      if (end < 2) { bad = 1; exit }
+      trailer = substr(rest, end + 1)
+      sub(/^[[:space:]]*/, "", trailer)
+      sub(/[[:space:]]+$/, "", trailer)
+      if (trailer != "" && substr(trailer, 1, 1) != "#") { bad = 1; exit }
+      line = substr(rest, 1, end - 1)
+      if (line ~ /[\\\r\n]/) { bad = 1; exit }
+      value = line
+      found = 1
+    }
+    END { if (bad) exit 2; if (!found) exit 3; print value }
+  ' "$config") || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$value" ;;
+    3) return 3 ;;
+    *) fail "tasks-axi markdown.$key must be one unescaped quoted path in $config" ;;
+  esac
+}
+
+home_relative_path() {  # <path>
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$1" ;;
+  esac
+}
+
+# tasks-axi resolves its markdown backlog from [markdown] path, and when that key
+# is absent it takes the first existing of backlog.md and data/backlog.md under
+# the working home, falling back to backlog.md.
+backlog_path() {
+  local value rc=0
+  value=$(markdown_config_value path) || rc=$?
+  case "$rc" in
+    0) : ;;
+    3)
+      value=backlog.md
+      [ -f "$FM_HOME/backlog.md" ] || [ ! -f "$FM_HOME/data/backlog.md" ] || value=data/backlog.md
+      ;;
+    *) exit 1 ;;
+  esac
+  home_relative_path "$value"
+}
+
+# The archive tasks-axi prunes into: [markdown] archive when it is set, and
+# otherwise the backend's own derived default of <backlog directory>/done-archive.md.
+# Deriving it keeps an absent optional key or an absent config file from blocking
+# this gate on a home the backend itself reads without complaint.
+archive_path() {
+  local value rc=0 backlog
+  value=$(markdown_config_value archive) || rc=$?
+  case "$rc" in
+    0) home_relative_path "$value"; return 0 ;;
+    3) : ;;
+    *) exit 1 ;;
+  esac
+  backlog=$(backlog_path) || exit 1
+  printf '%s/done-archive.md\n' "${backlog%/*}"
+}
+
+# The configured archive is append-only history, not a uniqueness index. A decision
+# key that was pruned without a resolution record stays re-holdable, so one identity
+# legitimately accumulates several archived cycles, and each cycle is judged on its
+# own. These two helpers therefore enumerate every archived record for an identity
+# instead of insisting there is exactly one.
+archive_task_record_count() {  # <id> <archive-path>
+  local id=$1 archive=$2
+  if [ ! -f "$archive" ]; then
+    printf '0\n'
+    return 0
+  fi
+  awk -v id="$id" '
+    function starts_task(line) {
+      return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
+    }
+    /^- \[[ x]\] [A-Za-z0-9._-]+ - / { if (starts_task($0)) matches++ }
+    END { print matches + 0 }
+  ' "$archive"
+}
+
+archive_task_record() {  # <id> <archive-path> <index>
+  local id=$1 archive=$2 want=$3
+  [ -f "$archive" ] || return 1
+  awk -v id="$id" -v want="$want" '
+    function starts_task(line) {
+      return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
+    }
+    /^- \[[ x]\] [A-Za-z0-9._-]+ - / {
+      if (starts_task($0)) { seen++; capture = (seen == want) }
+      else capture = 0
+    }
+    /^## / { capture=0 }
+    capture { print }
+  ' "$archive"
+}
+
+# verify_archived_hold_resolved owns the archived durable invariant, so the
+# retirement probe is only its quiet predicate form: an archived identity counts
+# as retired exactly when `verify` would accept it. An archived identity whose
+# records all fail that invariant must stay re-holdable, because no command can
+# rewrite an archived body, so refusing it would strand the identity with `verify`
+# failing forever.
+archive_hold_is_durably_resolved() {  # <id> <archive-path>
+  (verify_archived_hold_resolved "$1" "$2" >/dev/null 2>&1)
+}
+
+# The routed-identities token a close path records: the ROUTED_NONE sentinel that
+# resolution_body writes for decline and repair, or a comma-separated list of the
+# same privacy-safe slugs validate_slug accepts.
+valid_routed_identities() {  # <value>
+  local value=$1 entry
+  [ "$value" != "$ROUTED_NONE" ] || return 0
+  while IFS= read -r entry; do
+    case "$entry" in
+      ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+  done <<EOF
+$(printf '%s\n' "$value" | tr ',' '\n')
+EOF
+  return 0
+}
+
+# Judges one archived record against the durable invariant. It prints the defect
+# and returns 1 rather than aborting, so the caller can keep looking at the other
+# archived cycles of the same identity.
+archived_record_defect() {  # <id> <record>
+  local id=$1 record=$2 header block body routed
+  # The accepted archived record is the same invariant the live path enforces:
+  # closed (a checked box) and kind captain, carrying the structured resolution
+  # record below. tasks-axi owns how a close is spelled - `done`, `merged`, and
+  # `reported` are all closes, and `unhold` before a close drops the hold
+  # markers - so this gate never restates that rendering.
+  header=${record%%$'\n'*}
+  case "$header" in
+    "- [x] $id - "*" (kind: captain)"*) : ;;
+    *)
+      printf 'archived captain decision %s is not a closed kind=captain hold\n' "$id"
+      return 1
+      ;;
+  esac
+  # resolution_body writes the structured fields as the block between the task
+  # line and the first blank line; everything after that blank line is the
+  # arbitrary captain decision text, which must never satisfy a field check.
+  block=$(printf '%s\n' "$record" | awk 'NR == 1 { next } /^[[:space:]]*$/ { exit } { print }')
+  body=$(printf '%s\n' "$record" | awk 'NR == 1 { next } !past && /^[[:space:]]*$/ { past = 1; next } past { print }')
+  if [ "$(printf '%s\n' "$block" | grep -Fxc '  Resolution recorded by fm-decision-hold.' || true)" != 1 ]; then
+    printf 'archived captain decision %s has no unique fm-decision-hold resolution marker\n' "$id"
+    return 1
+  fi
+  if [ "$(printf '%s\n' "$block" | grep -Ec '^  Decision digest: [0-9a-f]{64}$' || true)" != 1 ]; then
+    printf 'archived captain decision %s has an invalid decision digest\n' "$id"
+    return 1
+  fi
+  routed=$(printf '%s\n' "$block" | sed -n 's/^  Routed identities: //p')
+  if [ "$(printf '%s\n' "$block" | grep -c '^  Routed identities: ' || true)" != 1 ] \
+    || ! valid_routed_identities "$routed"; then
+    printf 'archived captain decision %s has invalid routed identities\n' "$id"
+    return 1
+  fi
+  if [ "${body%%$'\n'*}" != '  Captain decision:' ]; then
+    printf 'archived captain decision %s has no captain decision field\n' "$id"
+    return 1
+  fi
+  if ! printf '%s\n' "$body" | grep -Fqx '  Routed work:'; then
+    printf 'archived captain decision %s has no routed work field\n' "$id"
+    return 1
+  fi
+}
+
+# The archived acceptance asks whether SOME archived cycle of this identity was
+# durably resolved, not whether the identity appears exactly once. Multiple records
+# are ordinary append-only history - the recovery path re-holds an identity whose
+# archived close carried no resolution block - and any one durably resolved cycle
+# attests the decision was answered. An identity with no archived record at all, or
+# whose every archived record is malformed, still fails.
+verify_archived_hold_resolved() {  # <id> <archive-path>
+  local id=$1 archive=$2 count index record defect first_defect=''
+  count=$(archive_task_record_count "$id" "$archive")
+  [ "$count" -gt 0 ] \
+    || fail "captain decision $id is absent from the live backlog and configured archive $archive"
+  index=1
+  while [ "$index" -le "$count" ]; do
+    record=$(archive_task_record "$id" "$archive" "$index")
+    if defect=$(archived_record_defect "$id" "$record"); then
+      return 0
+    fi
+    [ -n "$first_defect" ] || first_defect=$defect
+    index=$((index + 1))
+  done
+  fail "$first_defect"
+}
+
 show_field() {  # <show-output> <field>
   local output=$1 field=$2
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
@@ -275,8 +500,11 @@ EOF
 }
 
 verify_hold_active() {  # <hold-id>
-  local id=$1 show state held kind hold_kind
-  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  local id=$1 show state held kind hold_kind backlog
+  if ! show=$(task_show "$id"); then
+    backlog=$(backlog_path) || exit 1
+    fail "captain hold $id is absent from $backlog"
+  fi
   state=$(show_field "$show" state)
   held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
@@ -298,21 +526,30 @@ verify_hold_resolved() {  # <hold-id>
   body_has_resolution_record "$body"
 }
 
+# The live backlog stays authoritative for this identity, so the archive is read
+# only once the record has actually left the backlog. A stale archived copy from an
+# earlier decision cycle cannot make a satisfied live invariant untrue, and a live
+# record that does not satisfy it still fails below on its own merits, while
+# refusing a live-and-archived identity outright permanently stranded every home
+# that re-used a decision key after retention pruning.
 verify_hold_durable() {  # <hold-id>
-  local id=$1 show state held kind hold_kind body
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
-  state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
-  kind=$(show_field "$show" kind)
-  hold_kind=$(show_field "$show" hold_kind)
-  body=$(show_field "$show" body)
-  if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
-    return 0
+  local id=$1 show state held kind hold_kind body archive
+  if show=$(task_show "$id"); then
+    state=$(show_field "$show" state)
+    held=$(show_field "$show" held)
+    kind=$(show_field "$show" kind)
+    hold_kind=$(show_field "$show" hold_kind)
+    body=$(show_field "$show" body)
+    if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
+      return 0
+    fi
+    if [ "$state" = "done" ] && [ "$kind" = captain ] && body_has_resolution_record "$body"; then
+      return 0
+    fi
+    fail "captain decision $id is neither actively held nor durably resolved"
   fi
-  if [ "$state" = "done" ] && [ "$kind" = captain ] && body_has_resolution_record "$body"; then
-    return 0
-  fi
-  fail "captain decision $id is neither actively held nor durably resolved"
+  archive=$(archive_path) || exit 1
+  verify_archived_hold_resolved "$id" "$archive"
 }
 
 verify_resolution_identity() {
@@ -341,7 +578,7 @@ command_id() {
 }
 
 command_hold() {
-  local origin=${1:-} key=${2:-} title='' reason='' repo='' id show state kind existing_title body
+  local origin=${1:-} key=${2:-} title='' reason='' repo='' id show state kind existing_title body archive
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -369,6 +606,9 @@ command_hold() {
     [ "$kind" = captain ] || fail "existing backlog identity $id is not kind captain"
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
   else
+    archive=$(archive_path) || exit 1
+    archive_hold_is_durably_resolved "$id" "$archive" \
+      && fail "captain decision $id is already durably resolved in the configured tasks-axi archive; use a new decision key for a new decision"
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
       repo=${repo%/}
@@ -574,7 +814,7 @@ parse_decision_only_flags() {  # <args...>; prints the --decision-file value
 }
 
 command_decline() {
-  local origin=${1:-} key=${2:-} decision_file id body hold_show hold_body state dependents
+  local origin=${1:-} key=${2:-} decision_file id body hold_show hold_body state dependents backlog
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   decision_file=$(parse_decision_only_flags "$@") || exit 2
@@ -590,7 +830,10 @@ command_decline() {
     printf 'declined: %s\n' "$id"
     return 0
   fi
-  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  if ! hold_show=$(task_show "$id"); then
+    backlog=$(backlog_path) || exit 1
+    fail "captain hold $id is absent from $backlog"
+  fi
   state=$(show_field "$hold_show" state)
   [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
@@ -613,7 +856,7 @@ command_decline() {
 }
 
 command_repair() {
-  local origin=${1:-} key=${2:-} decision_file id body show state kind hold_kind hold_body
+  local origin=${1:-} key=${2:-} decision_file id body show state kind hold_kind hold_body backlog
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   decision_file=$(parse_decision_only_flags "$@") || exit 2
@@ -622,7 +865,10 @@ command_repair() {
   load_decision "$decision_file"
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
+  if ! show=$(task_show "$id"); then
+    backlog=$(backlog_path) || exit 1
+    fail "captain decision $id is absent from $backlog"
+  fi
   kind=$(show_field "$show" kind)
   [ "$kind" = captain ] || fail "backlog item $id is not kind captain"
   # tasks-axi keeps hold_kind after a close, so it is the surviving proof that
