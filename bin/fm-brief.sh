@@ -40,6 +40,12 @@
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
+# Every generated variant states its own authoritative absolute path and tells the
+# worker to re-read that file after a context reset or compaction, and whenever
+# task intent is uncertain, then reconcile it against that variant's durable
+# progress record before resuming, so recovery never restarts completed work.
+# This generalizes the pointer bin/fm-spawn.sh already sends to Kimi, whose TUI
+# cannot take a positional brief, to every harness that receives the brief inline.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
@@ -177,6 +183,7 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+BRIEF_QUOTED=$(shell_quote "$BRIEF")
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -207,6 +214,13 @@ $SECONDMATE_CHARTER
 
 # Routing scope
 $SECONDMATE_SCOPE
+
+# Recovering this charter
+This charter is the authoritative statement of your standing job.
+It lives on disk in two places that outlive this conversation: your own home's \`data/charter.md\`, which is the copy you were launched from, and the scaffold it was generated from, readable with \`cat -- $BRIEF_QUOTED\`.
+Re-read whichever of those exists after any context reset or compaction, and whenever your standing job or a routed request's intent is uncertain.
+Then reconcile it with this home's durable records before you act again: your own \`data/\` and \`state/\` files and the crewmates recorded there.
+Resume from what those records do not already show as finished, and never restart work they show as done.
 
 # Project clones
 $PROJECT_CLONES_BODY
@@ -312,6 +326,11 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
+
+This brief is the authoritative statement of your task and lives on disk, outliving this conversation.
+Re-read it with \`cat -- $BRIEF_QUOTED\` after any context reset or compaction, and whenever you are unsure what the task requires.
+Then reconcile it with your durable progress record before you act again: the report you have written so far under Definition of done, and the status lines you have already appended under Rules.
+Resume at the first question that record does not already answer, and never redo investigation the report already shows as finished.
 
 # Rules
 1. Never push to any remote and never open a PR.
@@ -425,6 +444,11 @@ The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+
+This brief is the authoritative statement of your task and lives on disk, outliving this conversation.
+Re-read it with \`cat -- $BRIEF_QUOTED\` after any context reset or compaction, and whenever you are unsure what the task requires.
+Then reconcile it with your durable progress record before you act again: the commits already on the branch you created above, and the status lines you have already appended under Rules.
+Resume at the first requirement that record does not already satisfy, and never redo work the record already shows as finished.
 
 # Rules
 $RULE1
