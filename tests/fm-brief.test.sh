@@ -690,6 +690,95 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+# Every generated variant must locate itself: a compacted worker whose harness
+# summarized the launch prompt away can only recover the task statement if the
+# brief text names its own absolute path. The recovery wording must also bind
+# that re-read to the variant's durable progress record, so recovery resumes
+# rather than restarting completed work.
+test_every_variant_is_self_locating() {
+  local home brief
+  home="$TMP_ROOT/self-locating-home"
+  mkdir -p "$home/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" selfloc-ship someproj --mode no-mistakes >/dev/null 2>&1 \
+    || fail "ship scaffold for the self-locating check exited non-zero"
+  brief="$home/data/selfloc-ship/brief.md"
+  assert_grep "cat -- '$home/data/selfloc-ship/brief.md'" "$brief" \
+    "ship brief did not name its own absolute path as a runnable re-read"
+  assert_grep "after any context reset or compaction" "$brief" \
+    "ship brief did not trigger the re-read on a context reset or compaction"
+  assert_grep "whenever you are unsure what the task requires" "$brief" \
+    "ship brief did not trigger the re-read on uncertain task intent"
+  assert_grep "the commits already on the branch you created above" "$brief" \
+    "ship brief did not name its durable progress record"
+  assert_grep "never redo work the record already shows as finished" "$brief" \
+    "ship brief recovery wording permits blindly restarting completed work"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" selfloc-scout someproj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold for the self-locating check exited non-zero"
+  brief="$home/data/selfloc-scout/brief.md"
+  assert_grep "cat -- '$home/data/selfloc-scout/brief.md'" "$brief" \
+    "scout brief did not name its own absolute path as a runnable re-read"
+  assert_grep "after any context reset or compaction" "$brief" \
+    "scout brief did not trigger the re-read on a context reset or compaction"
+  assert_grep "the report you have written so far under Definition of done" "$brief" \
+    "scout brief did not name its durable progress record"
+  assert_grep "never redo investigation the report already shows as finished" "$brief" \
+    "scout brief recovery wording permits blindly restarting completed investigation"
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    "$ROOT/bin/fm-brief.sh" selfloc-mate --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate scaffold for the self-locating check exited non-zero"
+  brief="$home/data/selfloc-mate/brief.md"
+  assert_grep "cat -- '$home/data/selfloc-mate/brief.md'" "$brief" \
+    "secondmate charter did not name its own absolute path as a runnable re-read"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'your own home'\''s `data/charter.md`' "$brief" \
+    "secondmate charter did not name the seeded copy it is actually launched from"
+  assert_grep "after any context reset or compaction" "$brief" \
+    "secondmate charter did not trigger the re-read on a context reset or compaction"
+  assert_grep "never restart work they show as done" "$brief" \
+    "secondmate charter recovery wording permits blindly restarting completed work"
+
+  # A project-carrying charter is a separate rendered body from --no-projects.
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise alpha.' \
+    "$ROOT/bin/fm-brief.sh" selfloc-mate-proj --secondmate alpha >/dev/null 2>&1 \
+    || fail "project-carrying secondmate scaffold exited non-zero"
+  assert_grep "cat -- '$home/data/selfloc-mate-proj/brief.md'" "$home/data/selfloc-mate-proj/brief.md" \
+    "project-carrying charter did not name its own absolute path"
+
+  # The Herdr-lab body replaces a whole section; the pointer must survive it.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" selfloc-herdr firstmate --mode direct-PR --herdr-lab >/dev/null 2>&1 \
+    || fail "herdr-lab scaffold for the self-locating check exited non-zero"
+  assert_grep "cat -- '$home/data/selfloc-herdr/brief.md'" "$home/data/selfloc-herdr/brief.md" \
+    "herdr-lab brief did not name its own absolute path"
+  pass "fm-brief.sh: every generated variant states its own path and reconciles before resuming"
+}
+
+# The scaffold's public input contract already accepts a home whose path carries
+# spaces and apostrophes (test_herdr_lab_contract_quotes_foreign_firstmate_path
+# covers the helper path). The self-locating pointer is a command the worker is
+# told to run, so it must round-trip through a shell rather than corrupt at the
+# first metacharacter.
+test_self_locating_pointer_survives_shell_sensitive_paths() {
+  local home brief pointer recovered
+  home="$TMP_ROOT/self-locating home's dir"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" selfloc-quoted someproj --mode local-only >/dev/null 2>&1 \
+    || fail "scaffold under a shell-sensitive home path exited non-zero"
+  brief="$home/data/selfloc-quoted/brief.md"
+  assert_present "$brief" "shell-sensitive home did not scaffold a brief"
+
+  # shellcheck disable=SC2016  # single quotes are deliberate: this sed script matches literal backticks
+  pointer=$(sed -n 's/.*`\(cat -- .*\)`.*/\1/p' "$brief" | head -n 1)
+  [ -n "$pointer" ] || fail "no self-locating re-read command was rendered"
+  recovered=$(eval "$pointer") \
+    || fail "the rendered re-read command failed to run: $pointer"
+  [ "$recovered" = "$(cat "$brief")" ] \
+    || fail "the rendered re-read command did not recover this brief's own bytes"
+  pass "fm-brief.sh: the self-locating re-read command survives a shell-sensitive home path"
+}
+
 # Scout and secondmate paths still scaffold well-formed briefs.
 test_scout_and_secondmate_scaffold() {
   local brief
@@ -729,4 +818,6 @@ test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+test_every_variant_is_self_locating
+test_self_locating_pointer_survives_shell_sensitive_paths
 test_scout_and_secondmate_scaffold
