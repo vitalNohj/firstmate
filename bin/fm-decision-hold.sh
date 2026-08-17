@@ -34,15 +34,18 @@
 # complete against the surviving report and holds without recreating task state.
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
 # source before this gate has succeeded. It accepts a resolved captain hold from
-# the configured tasks-axi archive only when that archived record is unique and
-# retains the complete structured fm-decision-hold resolution record.
-# `hold` reads the same archive: it refuses an identity whose archived record
-# already satisfies that same durable invariant, so a genuinely resolved decision
-# key that has been pruned is permanently retired and a new decision needs a new
-# key. An archived identity that does not satisfy it - a close that never recorded
-# a resolution block, or a duplicated identity - stays re-holdable, because the
-# archive can never be rewritten and refusing it would leave `verify` failing with
-# no in-script recovery.
+# the configured tasks-axi archive when some archived record for that identity
+# retains the complete structured fm-decision-hold resolution record. The archive is
+# append-only history, not a uniqueness index: one identity legitimately accumulates
+# several archived cycles, and any durably resolved cycle attests the decision was
+# answered. An identity with no archived record, or whose every archived record is
+# malformed, still fails.
+# `hold` reads the same archive against the same predicate: it refuses an identity
+# that is already durably resolved there, so a genuinely resolved decision key that
+# has been pruned is permanently retired and a new decision needs a new key. An
+# archived identity that does not satisfy the invariant - a close that never
+# recorded a resolution block - stays re-holdable, because the archive can never be
+# rewritten and refusing it would leave `verify` failing with no in-script recovery.
 #
 # `resolve` and `decline` close active holds; `repair` attests a hold already closed
 # outside this script. All three paths require a non-empty captain decision file of
@@ -255,37 +258,48 @@ archive_path() {
   printf '%s/done-archive.md\n' "${backlog%/*}"
 }
 
-archive_task_record() {  # <id> <archive-path>
-  local id=$1 archive=$2 scan count
+# The configured archive is append-only history, not a uniqueness index. A decision
+# key that was pruned without a resolution record stays re-holdable, so one identity
+# legitimately accumulates several archived cycles, and each cycle is judged on its
+# own. These two helpers therefore enumerate every archived record for an identity
+# instead of insisting there is exactly one.
+archive_task_record_count() {  # <id> <archive-path>
+  local id=$1 archive=$2
+  if [ ! -f "$archive" ]; then
+    printf '0\n'
+    return 0
+  fi
+  awk -v id="$id" '
+    function starts_task(line) {
+      return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
+    }
+    /^- \[[ x]\] [A-Za-z0-9._-]+ - / { if (starts_task($0)) matches++ }
+    END { print matches + 0 }
+  ' "$archive"
+}
+
+archive_task_record() {  # <id> <archive-path> <index>
+  local id=$1 archive=$2 want=$3
   [ -f "$archive" ] || return 1
-  scan=$(awk -v id="$id" '
+  awk -v id="$id" -v want="$want" '
     function starts_task(line) {
       return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
     }
     /^- \[[ x]\] [A-Za-z0-9._-]+ - / {
-      if (starts_task($0)) { matches++; capture=1 }
-      else capture=0
+      if (starts_task($0)) { seen++; capture = (seen == want) }
+      else capture = 0
     }
     /^## / { capture=0 }
-    capture { records = records $0 "\n" }
-    END { printf "%d\n%s", matches, records }
-  ' "$archive")
-  count=${scan%%$'\n'*}
-  case "$count" in
-    1) printf '%s' "${scan#*$'\n'}" ;;
-    0) return 1 ;;
-    *)
-      printf '%s' "$count"
-      return 2
-      ;;
-  esac
+    capture { print }
+  ' "$archive"
 }
 
 # verify_archived_hold_resolved owns the archived durable invariant, so the
 # retirement probe is only its quiet predicate form: an archived identity counts
-# as retired exactly when `verify` would accept it. An archived record that fails
-# that invariant must stay re-holdable, because no command can rewrite an archived
-# body, so refusing it would strand the identity with `verify` failing forever.
+# as retired exactly when `verify` would accept it. An archived identity whose
+# records all fail that invariant must stay re-holdable, because no command can
+# rewrite an archived body, so refusing it would strand the identity with `verify`
+# failing forever.
 archive_hold_is_durably_resolved() {  # <id> <archive-path>
   (verify_archived_hold_resolved "$1" "$2" >/dev/null 2>&1)
 }
@@ -306,14 +320,11 @@ EOF
   return 0
 }
 
-verify_archived_hold_resolved() {  # <id> <archive-path>
-  local id=$1 archive=$2 record header block body routed rc=0
-  record=$(archive_task_record "$id" "$archive") || rc=$?
-  case "$rc" in
-    0) : ;;
-    2) fail "captain decision $id has $record matching records in configured archive $archive" ;;
-    *) fail "captain decision $id is absent from the live backlog and configured archive $archive" ;;
-  esac
+# Judges one archived record against the durable invariant. It prints the defect
+# and returns 1 rather than aborting, so the caller can keep looking at the other
+# archived cycles of the same identity.
+archived_record_defect() {  # <id> <record>
+  local id=$1 record=$2 header block body routed
   # The accepted archived record is the same invariant the live path enforces:
   # closed (a checked box) and kind captain, carrying the structured resolution
   # record below. tasks-axi owns how a close is spelled - `done`, `merged`, and
@@ -322,26 +333,61 @@ verify_archived_hold_resolved() {  # <id> <archive-path>
   header=${record%%$'\n'*}
   case "$header" in
     "- [x] $id - "*" (kind: captain)"*) : ;;
-    *) fail "archived captain decision $id is not a closed kind=captain hold" ;;
+    *)
+      printf 'archived captain decision %s is not a closed kind=captain hold\n' "$id"
+      return 1
+      ;;
   esac
   # resolution_body writes the structured fields as the block between the task
   # line and the first blank line; everything after that blank line is the
   # arbitrary captain decision text, which must never satisfy a field check.
   block=$(printf '%s\n' "$record" | awk 'NR == 1 { next } /^[[:space:]]*$/ { exit } { print }')
   body=$(printf '%s\n' "$record" | awk 'NR == 1 { next } !past && /^[[:space:]]*$/ { past = 1; next } past { print }')
-  [ "$(printf '%s\n' "$block" | grep -Fxc '  Resolution recorded by fm-decision-hold.' || true)" = 1 ] \
-    || fail "archived captain decision $id has no unique fm-decision-hold resolution marker"
-  [ "$(printf '%s\n' "$block" | grep -Ec '^  Decision digest: [0-9a-f]{64}$' || true)" = 1 ] \
-    || fail "archived captain decision $id has an invalid decision digest"
-  [ "$(printf '%s\n' "$block" | grep -c '^  Routed identities: ' || true)" = 1 ] \
-    || fail "archived captain decision $id has invalid routed identities"
+  if [ "$(printf '%s\n' "$block" | grep -Fxc '  Resolution recorded by fm-decision-hold.' || true)" != 1 ]; then
+    printf 'archived captain decision %s has no unique fm-decision-hold resolution marker\n' "$id"
+    return 1
+  fi
+  if [ "$(printf '%s\n' "$block" | grep -Ec '^  Decision digest: [0-9a-f]{64}$' || true)" != 1 ]; then
+    printf 'archived captain decision %s has an invalid decision digest\n' "$id"
+    return 1
+  fi
   routed=$(printf '%s\n' "$block" | sed -n 's/^  Routed identities: //p')
-  valid_routed_identities "$routed" \
-    || fail "archived captain decision $id has invalid routed identities"
-  [ "${body%%$'\n'*}" = '  Captain decision:' ] \
-    || fail "archived captain decision $id has no captain decision field"
-  printf '%s\n' "$body" | grep -Fqx '  Routed work:' \
-    || fail "archived captain decision $id has no routed work field"
+  if [ "$(printf '%s\n' "$block" | grep -c '^  Routed identities: ' || true)" != 1 ] \
+    || ! valid_routed_identities "$routed"; then
+    printf 'archived captain decision %s has invalid routed identities\n' "$id"
+    return 1
+  fi
+  if [ "${body%%$'\n'*}" != '  Captain decision:' ]; then
+    printf 'archived captain decision %s has no captain decision field\n' "$id"
+    return 1
+  fi
+  if ! printf '%s\n' "$body" | grep -Fqx '  Routed work:'; then
+    printf 'archived captain decision %s has no routed work field\n' "$id"
+    return 1
+  fi
+}
+
+# The archived acceptance asks whether SOME archived cycle of this identity was
+# durably resolved, not whether the identity appears exactly once. Multiple records
+# are ordinary append-only history - the recovery path re-holds an identity whose
+# archived close carried no resolution block - and any one durably resolved cycle
+# attests the decision was answered. An identity with no archived record at all, or
+# whose every archived record is malformed, still fails.
+verify_archived_hold_resolved() {  # <id> <archive-path>
+  local id=$1 archive=$2 count index record defect first_defect=''
+  count=$(archive_task_record_count "$id" "$archive")
+  [ "$count" -gt 0 ] \
+    || fail "captain decision $id is absent from the live backlog and configured archive $archive"
+  index=1
+  while [ "$index" -le "$count" ]; do
+    record=$(archive_task_record "$id" "$archive" "$index")
+    if defect=$(archived_record_defect "$id" "$record"); then
+      return 0
+    fi
+    [ -n "$first_defect" ] || first_defect=$defect
+    index=$((index + 1))
+  done
+  fail "$first_defect"
 }
 
 show_field() {  # <show-output> <field>

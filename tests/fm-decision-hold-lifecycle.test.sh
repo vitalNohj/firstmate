@@ -823,21 +823,38 @@ test_resolved_archived_hold_verification_is_strict() {
     "malformed archive failure did not identify the invalid structured field"
   cp "$pristine" "$archive"
 
+  # The archive is append-only history, not a uniqueness index: an earlier
+  # non-conforming cycle of the same key sits beside the durably resolved one, and
+  # the resolved cycle still attests that the decision was answered.
   record=$(awk -v id="$hold" '
     index($0, "- [x] " id " - ") == 1 { capture=1 }
     capture && /^## / { exit }
     capture { print }
   ' "$pristine")
-  printf '\n## Archived 2026-07-15\n%s\n' "$record" >> "$archive"
-  if run_decisions "$home" verify "$origin" > "$home/archive-duplicate.out" 2> "$home/archive-duplicate.err"; then
-    fail "verification accepted duplicate identities in the archive"
+  {
+    printf '## Archived 2026-07-15\n'
+    printf '%s\n' "$record" | sed '/^  Decision digest:/d'
+    printf '\n'
+    cat "$pristine"
+  } > "$archive"
+  run_decisions "$home" verify "$origin" > "$home/archive-duplicate.out" 2> "$home/archive-duplicate.err" \
+    || fail "an earlier non-conforming archived cycle blocked a durably resolved one: $(cat "$home/archive-duplicate.err")"
+
+  {
+    printf '## Archived 2026-07-15\n'
+    printf '%s\n' "$record" | sed '/^  Decision digest:/d'
+    printf '\n'
+    sed '/^  Decision digest:/d' "$pristine"
+  } > "$archive"
+  if run_decisions "$home" verify "$origin" > "$home/archive-all-malformed.out" 2> "$home/archive-all-malformed.err"; then
+    fail "verification accepted a duplicated identity whose every archived record is malformed"
   fi
-  assert_grep "2 matching records" "$home/archive-duplicate.err" \
-    "duplicate archive failure did not report ambiguity"
-  assert_no_grep "absent from the live backlog and configured archive" "$home/archive-duplicate.err" \
-    "duplicate archive ambiguity must not also claim the record is absent"
-  [ "$(grep -c '^fm-decision-hold:' "$home/archive-duplicate.err")" = 1 ] \
-    || fail "duplicate archive verification must emit exactly one accurate error: $(cat "$home/archive-duplicate.err")"
+  assert_grep "invalid decision digest" "$home/archive-all-malformed.err" \
+    "an all-malformed duplicated identity did not fail on the invalid structured field"
+  assert_no_grep "absent from the live backlog and configured archive" "$home/archive-all-malformed.err" \
+    "a present-but-malformed archived identity must not also claim the record is absent"
+  [ "$(grep -c '^fm-decision-hold:' "$home/archive-all-malformed.err")" = 1 ] \
+    || fail "an all-malformed duplicated identity must emit exactly one accurate error: $(cat "$home/archive-all-malformed.err")"
   cp "$pristine" "$archive"
 
   # A home that re-used a decision key after retention pruning carries the identity
@@ -859,7 +876,7 @@ test_resolved_archived_hold_verification_is_strict() {
   assert_grep "neither actively held nor durably resolved" "$home/live-unsatisfied.err" \
     "an unsatisfied live record must fail on its own merits"
 
-  pass "resolved archived holds verify only with unique complete structured records"
+  pass "resolved archived holds verify on any complete structured archived cycle"
 }
 
 # tasks-axi treats [markdown] archive as optional and derives its own default from
@@ -1269,6 +1286,23 @@ test_hold_retires_only_durably_resolved_archived_keys() {
     || fail "could not record the captain decision on the recovered hold"
   run_decisions "$home" verify "$origin" > "$home/recovered-verify.out" 2> "$home/recovered-verify.err" \
     || fail "the recovered decision still failed verification: $(cat "$home/recovered-verify.err")"
+
+  # Ordinary retention pruning then archives the recovered cycle beside the
+  # unresolved one, so the archive legitimately holds two records of one identity.
+  # The resolved cycle must keep attesting the answer.
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the recovered hold to the archive"
+  [ "$(grep -c "^- \[x\] $stranded - " "$archive")" = 2 ] \
+    || fail "expected two archived cycles of the recovered identity, got $(grep -c "^- \[x\] $stranded - " "$archive")"
+  run_decisions "$home" verify "$origin" > "$home/recovered-pruned.out" 2> "$home/recovered-pruned.err" \
+    || fail "a second archived cycle of one decision key blocked verification: $(cat "$home/recovered-pruned.err")"
+  if run_decisions "$home" hold "$origin" strandedkey \
+    --title "Choose stranded route" --reason "captain stranded route pending" --repo sample \
+    > "$home/recovered-rehold.out" 2> "$home/recovered-rehold.err"; then
+    fail "hold reopened a key whose archive now carries a durably resolved cycle"
+  fi
+  assert_grep "already durably resolved in the configured tasks-axi archive" "$home/recovered-rehold.err" \
+    "a recovered-and-pruned key was not retired by the same predicate verify accepts"
   run_teardown "$home" "$origin" >/dev/null 2> "$home/retirement-teardown.err" \
     || fail "teardown still refused after the stranded decision was recovered: $(cat "$home/retirement-teardown.err")"
   pass "hold retires only durably resolved archived keys and leaves the rest recoverable"

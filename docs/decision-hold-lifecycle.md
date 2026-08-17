@@ -13,7 +13,7 @@ The `hold` subcommand maps an originating work id and stable decision key to `<o
 It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry.
 It rejects an identity collision, a changed title, and attempts to reopen an already resolved identity.
 It is archive-aware for the same reason `verify` is, and refuses exactly what `verify` would accept: an identity whose archived record satisfies the durable resolution invariant is permanently retired, so a later decision on the same origin needs a new key.
-An archived identity that does not satisfy that invariant - a close that never recorded a resolution block, or a duplicated identity - stays re-holdable on purpose, because no command can rewrite an archived body, so refusing it would leave `verify` failing forever with no recovery short of `--force`.
+An archived identity that does not satisfy that invariant - a close that never recorded a resolution block - stays re-holdable on purpose, because no command can rewrite an archived body, so refusing it would leave `verify` failing forever with no recovery short of `--force`.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.
@@ -24,9 +24,10 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 The live backlog stays authoritative for mutable and open work, so an active decision must remain a structured active captain item.
-`verify` also accepts a resolved captain hold from the configured tasks-axi archive after ordinary Done retention pruning, but only when that archived record is unique and retains the complete structured fm-decision-hold resolution record.
+`verify` also accepts a resolved captain hold from the configured tasks-axi archive after ordinary Done retention pruning, when some archived record for that identity retains the complete structured fm-decision-hold resolution record.
+The archive is append-only history, not a uniqueness index: because a non-conforming archived identity is deliberately re-holdable, one decision key legitimately accumulates several archived cycles, and any durably resolved cycle independently attests that the decision was answered, so duplicates must never fail.
 The archive is consulted only when the identity has actually left the live backlog: a live record that satisfies the durable invariant wins over any archived copy of an earlier decision cycle, because a stale archived record cannot make a satisfied live record untrue, and a live record that satisfies nothing still fails on its own.
-A malformed or missing archived record, or an ambiguous identity within the archive itself, fails verification.
+An identity with no archived record at all, or whose every archived record is malformed, still fails verification.
 The accepted archived record is the one every close path writes, including the `(none)` routed-identity token that `decline` and `repair` record, and the structured fields are read only from the header block so arbitrary captain decision prose can never satisfy or break them.
 The archived acceptance asserts the same invariant the live path asserts - a closed kind `captain` record carrying that resolution block - rather than tasks-axi's rendering of a close, so `done --pr`, `done --report`, and an `unhold` after the close all keep verifying once the record is pruned; an `unhold` before the close strips the captain-hold provenance every close path requires, so such a hold never acquires a resolution record at all.
 The configured archive path is read from `[markdown] archive`, accepting the same spellings tasks-axi itself accepts, including an inner-spaced section header, a trailing inline comment, and a repeated key whose last assignment wins.
@@ -71,7 +72,7 @@ It begins with a completed investigation and visual review whose genuine unresol
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
 The archive-aware `verify` acceptance and its malformed, missing, and ambiguous failure cases are covered by executable public-script regressions, together with a re-used decision key whose satisfied live record outranks its archived earlier cycle, archived declined, repaired, and prose-heavy holds, archived `--pr`, `--report`, and unheld closes, an archived record that is not a captain hold, an absent optional `archive` key, and the backend-honored `archive` config spellings.
-A further regression pins both sides of `hold`'s retirement boundary: a resolved-and-pruned key is refused, while an identity pruned without a resolution record is re-held and then verifies once `decline` records the captain's answer.
+A further regression pins both sides of `hold`'s retirement boundary: a resolved-and-pruned key is refused, while an identity pruned without a resolution record is re-held and then verifies once `decline` records the captain's answer, including after that recovered record is itself pruned so the archive holds two records of the one identity.
 
 Three further regressions cover the close paths that route no work.
 A declined decision closes with a recorded answer, satisfies `verify`, leaves Bearings' Captain's Call, and is refused while the hold still blocks routed work.
