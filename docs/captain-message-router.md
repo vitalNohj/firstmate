@@ -238,14 +238,16 @@ The captain is never locked out by a broken or slow router.
 
 The ephemeral fallback always uses upstream Firstmate's Cursor Agent CLI resolver and defaults to `cursor-grok-4.6-low`.
 Set `FM_CAPTAIN_ROUTER_MODEL` to another model id exposed by the current Cursor account.
-The warm classifier hosts a Pi model id, which is a different catalog, so it takes its own `FM_CAPTAIN_ROUTER_RUNNER_MODEL` and otherwise uses Pi's configured model.
+The warm classifier hosts a Pi model id, which is a different catalog, so it takes its own `FM_CAPTAIN_ROUTER_RUNNER_MODEL` and defaults to `codex-lb/orcarouter/qwen/qwen3.8-27b-free`.
+Setting that variable to an empty value hands the child no `--model` at all, which is how the warm path falls back to Pi's own configured model.
 `FM_CAPTAIN_ROUTER_PI` overrides the Pi executable the warm child runs, and `FM_CAPTAIN_ROUTER_RUNNER` overrides the runner script the hook starts.
 The Cursor model id carries the reasoning level because Cursor exposes no separate effort flag.
 
-Both defaults are deliberately unchanged.
-The warm runner can host a faster or free model later by pinning `FM_CAPTAIN_ROUTER_RUNNER_MODEL`, and that is the only change such a swap needs.
-The free ids available here were measured and none was usable: `opencode-zen/mimo-v2.5-free` refuses the classifier role or answers without a target, `opencode-zen/north-mini-code-free` returns an upstream-unavailable error, `oc/deepseek-v4-flash-free` and `oc/big-pickle` returned no text, and the OpenRouter `cohere/north-mini-code:free` id has no API key in this Pi.
-Re-measure before pinning one; a model that cannot return a parseable verdict costs a fail-open on every submit.
+The warm default is pinned rather than inherited because a primary configured for a large reasoning model would otherwise spend it classifying every captain submit, which is the one call on this path that never needs one.
+The Cursor fallback default is deliberately unchanged: that catalog cannot host an `orcarouter/` id.
+The free ids measured before the current one were all unusable: `opencode-zen/mimo-v2.5-free` refuses the classifier role or answers without a target, `opencode-zen/north-mini-code-free` returns an upstream-unavailable error, `oc/deepseek-v4-flash-free` and `oc/big-pickle` returned no text, and the OpenRouter `cohere/north-mini-code:free` id has no API key in this Pi.
+Re-measure before pinning a different one; a model that cannot return a parseable verdict costs a fail-open on every submit.
+Live-fire verified (2026-08-17): against a real warm child on the pinned id, two submits returned `verdict=reroute target=<other-session> confidence=model` in 4.2s and `verdict=same target=<current-session> confidence=model` in 2.0s, each with a coherent `explanations.log` rationale, a staged pending route for the reroute, and an empty `failures.log`.
 Launch is non-interactive Cursor `--print --mode ask`, pinned to the Firstmate home as its workspace.
 Shell submit-path fixtures put a recording fake `cursor-agent` executable on `PATH`, so those regressions cross the verified resolver, shared timeout owner, private prompt-file handoff, and read-only Cursor argv boundary.
 No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is the opt-in live proof.
@@ -273,7 +275,7 @@ No real model calls in unit tests; `tests/fm-captain-router-live-e2e.test.sh` is
 - Multi-ask mismatch warns and never blocks.
 - Delivery needs the herdr backend and a herdr-hosted launching process; every other runtime refuses and keeps answering in the current session.
 - The primary hook is available for Pi only.
-- No free classifier model is pinned; the warm child uses Pi's configured model until a measured free id can return a parseable verdict.
+- Only the warm classifier runs the pinned free model; the ephemeral Cursor fallback cannot host that catalog and still spends a Cursor model on every submit it answers.
 
 ## Verification
 

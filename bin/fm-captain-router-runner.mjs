@@ -45,11 +45,15 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-// The warm child hosts whatever model Pi is configured for unless the caller
-// pins one. FM_CAPTAIN_ROUTER_MODEL names a Cursor id for the ephemeral
-// fallback spawn, which is a different catalog, so it is deliberately not read
-// here: pin the warm child with FM_CAPTAIN_ROUTER_RUNNER_MODEL.
-const RUNNER_MODEL = process.env.FM_CAPTAIN_ROUTER_RUNNER_MODEL || "";
+// The warm child pins a free classifier id instead of inheriting whatever model
+// Pi is configured for, because a primary configured for a large reasoning model
+// would otherwise spend it on every captain submit. FM_CAPTAIN_ROUTER_MODEL
+// names a Cursor id for the ephemeral fallback spawn, which is a different
+// catalog, so it is deliberately not read here: override the warm child with
+// FM_CAPTAIN_ROUTER_RUNNER_MODEL, or set it empty to inherit Pi's own model.
+const RUNNER_MODEL =
+	process.env.FM_CAPTAIN_ROUTER_RUNNER_MODEL ??
+	"codex-lb/orcarouter/qwen/qwen3.8-27b-free";
 const RUNNER_PI = process.env.FM_CAPTAIN_ROUTER_PI || "pi";
 // A wedged model call must not pin the warm child forever: the request is
 // abandoned, the child is recycled, and the caller falls back.
