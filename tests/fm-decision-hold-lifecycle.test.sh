@@ -1202,6 +1202,78 @@ test_archived_non_captain_record_is_refused() {
   pass "an archived record that is not a closed captain hold is refused"
 }
 
+# `hold` retires a decision key against the same invariant `verify` accepts, not
+# against mere presence in the archive. A record that was pruned without a
+# resolution block - an out-of-band close archived before `repair` ran, which
+# `done_keep = 0` does on the very same close - fails `verify` forever, and no
+# command can rewrite an archived body, so re-holding it is the only recovery.
+# Refusing every archived identity stranded that origin with no way past teardown.
+test_hold_retires_only_durably_resolved_archived_keys() {
+  local home origin archive resolved stranded
+  home=$(make_home archived-hold-retirement)
+  origin=sample-retirement-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review archived hold retirement" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create retirement origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Retirement review\n' > "$home/data/$origin/report.md"
+  resolved=$(run_decisions "$home" hold "$origin" resolvedkey \
+    --title "Choose resolved route" --reason "captain resolved route pending" --repo sample) \
+    || fail "could not create the resolved hold"
+  stranded=$(run_decisions "$home" hold "$origin" strandedkey \
+    --title "Choose stranded route" --reason "captain stranded route pending" --repo sample) \
+    || fail "could not create the stranded hold"
+  run_decisions "$home" complete "$origin" resolvedkey strandedkey >/dev/null \
+    || fail "could not record the retirement decision inventory"
+
+  printf 'No follow-up work is needed.\n' > "$home/retirement-decision.txt"
+  run_decisions "$home" decline "$origin" resolvedkey \
+    --decision-file "$home/retirement-decision.txt" >/dev/null \
+    || fail "could not close the resolved hold"
+  tasks_in "$home" "done" "$stranded" >/dev/null \
+    || fail "could not reproduce the out-of-band close"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune both closed holds to the archive"
+  assert_grep "- [x] $resolved -" "$archive" "the resolved hold did not reach the archive"
+  assert_grep "- [x] $stranded -" "$archive" "the out-of-band close did not reach the archive"
+
+  if run_decisions "$home" verify "$origin" > "$home/stranded-verify.out" 2> "$home/stranded-verify.err"; then
+    fail "verification accepted an archived close that recorded no captain decision"
+  fi
+  assert_grep "no unique fm-decision-hold resolution marker" "$home/stranded-verify.err" \
+    "the archived unresolved close did not fail on its missing resolution record"
+  if run_decisions "$home" repair "$origin" strandedkey \
+    --decision-file "$home/retirement-decision.txt" \
+    > "$home/stranded-repair.out" 2> "$home/stranded-repair.err"; then
+    fail "repair rewrote a record that has already left the live backlog"
+  fi
+  assert_grep "is absent from" "$home/stranded-repair.err" \
+    "repair did not report the archived record as absent from the live backlog"
+
+  if run_decisions "$home" hold "$origin" resolvedkey \
+    --title "Choose resolved route" --reason "captain resolved route again" --repo sample \
+    > "$home/retired-hold.out" 2> "$home/retired-hold.err"; then
+    fail "hold reopened a decision key whose archived record is durably resolved"
+  fi
+  assert_grep "already durably resolved in the configured tasks-axi archive" "$home/retired-hold.err" \
+    "a resolved-and-pruned key was not refused as retired"
+
+  run_decisions "$home" hold "$origin" strandedkey \
+    --title "Choose stranded route" --reason "captain stranded route pending" --repo sample >/dev/null \
+    || fail "an archived record that fails verify could not be re-held for recovery"
+  run_decisions "$home" decline "$origin" strandedkey \
+    --decision-file "$home/retirement-decision.txt" >/dev/null \
+    || fail "could not record the captain decision on the recovered hold"
+  run_decisions "$home" verify "$origin" > "$home/recovered-verify.out" 2> "$home/recovered-verify.err" \
+    || fail "the recovered decision still failed verification: $(cat "$home/recovered-verify.err")"
+  run_teardown "$home" "$origin" >/dev/null 2> "$home/retirement-teardown.err" \
+    || fail "teardown still refused after the stranded decision was recovered: $(cat "$home/retirement-teardown.err")"
+  pass "hold retires only durably resolved archived keys and leaves the rest recoverable"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -1215,6 +1287,7 @@ test_archive_config_matches_backend_toml_spellings
 test_unrouted_and_prose_heavy_archived_holds_verify
 test_out_of_band_close_spellings_survive_archiving
 test_archived_non_captain_record_is_refused
+test_hold_retires_only_durably_resolved_archived_keys
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner

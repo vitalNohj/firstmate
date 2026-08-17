@@ -36,9 +36,13 @@
 # source before this gate has succeeded. It accepts a resolved captain hold from
 # the configured tasks-axi archive only when that archived record is unique and
 # retains the complete structured fm-decision-hold resolution record.
-# `hold` reads the same archive: it refuses an identity that already exists there,
-# so a decision key that has been closed and pruned is permanently retired and a
-# new decision needs a new key.
+# `hold` reads the same archive: it refuses an identity whose archived record
+# already satisfies that same durable invariant, so a genuinely resolved decision
+# key that has been pruned is permanently retired and a new decision needs a new
+# key. An archived identity that does not satisfy it - a close that never recorded
+# a resolution block, or a duplicated identity - stays re-holdable, because the
+# archive can never be rewritten and refusing it would leave `verify` failing with
+# no in-script recovery.
 #
 # `resolve` and `decline` close active holds; `repair` attests a hold already closed
 # outside this script. All three paths require a non-empty captain decision file of
@@ -277,13 +281,13 @@ archive_task_record() {  # <id> <archive-path>
   esac
 }
 
-# archive_task_record owns the archived-header grammar, so the identity probe is
-# only its "this id is present at all" projection: both a unique record and an
-# ambiguous one mean the identity exists.
-archive_has_task_identity() {  # <id> <archive-path>
-  local rc=0
-  archive_task_record "$1" "$2" >/dev/null || rc=$?
-  [ "$rc" != 1 ]
+# verify_archived_hold_resolved owns the archived durable invariant, so the
+# retirement probe is only its quiet predicate form: an archived identity counts
+# as retired exactly when `verify` would accept it. An archived record that fails
+# that invariant must stay re-holdable, because no command can rewrite an archived
+# body, so refusing it would strand the identity with `verify` failing forever.
+archive_hold_is_durably_resolved() {  # <id> <archive-path>
+  (verify_archived_hold_resolved "$1" "$2" >/dev/null 2>&1)
 }
 
 # The routed-identities token a close path records: the ROUTED_NONE sentinel that
@@ -450,8 +454,11 @@ EOF
 }
 
 verify_hold_active() {  # <hold-id>
-  local id=$1 show state held kind hold_kind
-  show=$(task_show "$id") || fail "captain hold $id is absent from $(backlog_path)"
+  local id=$1 show state held kind hold_kind backlog
+  if ! show=$(task_show "$id"); then
+    backlog=$(backlog_path) || exit 1
+    fail "captain hold $id is absent from $backlog"
+  fi
   state=$(show_field "$show" state)
   held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
@@ -554,8 +561,8 @@ command_hold() {
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
   else
     archive=$(archive_path) || exit 1
-    archive_has_task_identity "$id" "$archive" \
-      && fail "captain decision $id already exists in the configured tasks-axi archive"
+    archive_hold_is_durably_resolved "$id" "$archive" \
+      && fail "captain decision $id is already durably resolved in the configured tasks-axi archive; use a new decision key for a new decision"
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
       repo=${repo%/}
@@ -761,7 +768,7 @@ parse_decision_only_flags() {  # <args...>; prints the --decision-file value
 }
 
 command_decline() {
-  local origin=${1:-} key=${2:-} decision_file id body hold_show hold_body state dependents
+  local origin=${1:-} key=${2:-} decision_file id body hold_show hold_body state dependents backlog
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   decision_file=$(parse_decision_only_flags "$@") || exit 2
@@ -777,7 +784,10 @@ command_decline() {
     printf 'declined: %s\n' "$id"
     return 0
   fi
-  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $(backlog_path)"
+  if ! hold_show=$(task_show "$id"); then
+    backlog=$(backlog_path) || exit 1
+    fail "captain hold $id is absent from $backlog"
+  fi
   state=$(show_field "$hold_show" state)
   [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
@@ -800,7 +810,7 @@ command_decline() {
 }
 
 command_repair() {
-  local origin=${1:-} key=${2:-} decision_file id body show state kind hold_kind hold_body
+  local origin=${1:-} key=${2:-} decision_file id body show state kind hold_kind hold_body backlog
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   decision_file=$(parse_decision_only_flags "$@") || exit 2
@@ -809,7 +819,10 @@ command_repair() {
   load_decision "$decision_file"
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
-  show=$(task_show "$id") || fail "captain decision $id is absent from $(backlog_path)"
+  if ! show=$(task_show "$id"); then
+    backlog=$(backlog_path) || exit 1
+    fail "captain decision $id is absent from $backlog"
+  fi
   kind=$(show_field "$show" kind)
   [ "$kind" = captain ] || fail "backlog item $id is not kind captain"
   # tasks-axi keeps hold_kind after a close, so it is the surviving proof that

@@ -12,7 +12,8 @@ It never reads report bodies, review artifacts, terminal output, or chat.
 The `hold` subcommand maps an originating work id and stable decision key to `<origin-id>-decision-<decision-key>`.
 It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry.
 It rejects an identity collision, a changed title, and attempts to reopen an already resolved identity.
-It is archive-aware for the same reason `verify` is: it refuses an identity that already exists in the configured archive, so a decision key that was closed and pruned is permanently retired and a later decision on the same origin needs a new key.
+It is archive-aware for the same reason `verify` is, and refuses exactly what `verify` would accept: an identity whose archived record satisfies the durable resolution invariant is permanently retired, so a later decision on the same origin needs a new key.
+An archived identity that does not satisfy that invariant - a close that never recorded a resolution block, or a duplicated identity - stays re-holdable on purpose, because no command can rewrite an archived body, so refusing it would leave `verify` failing forever with no recovery short of `--force`.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.
@@ -70,6 +71,7 @@ It begins with a completed investigation and visual review whose genuine unresol
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
 The archive-aware `verify` acceptance and its malformed, missing, and ambiguous failure cases are covered by executable public-script regressions, together with a re-used decision key whose satisfied live record outranks its archived earlier cycle, archived declined, repaired, and prose-heavy holds, archived `--pr`, `--report`, and unheld closes, an archived record that is not a captain hold, an absent optional `archive` key, and the backend-honored `archive` config spellings.
+A further regression pins both sides of `hold`'s retirement boundary: a resolved-and-pruned key is refused, while an identity pruned without a resolution record is re-held and then verifies once `decline` records the captain's answer.
 
 Three further regressions cover the close paths that route no work.
 A declined decision closes with a recorded answer, satisfies `verify`, leaves Bearings' Captain's Call, and is refused while the hold still blocks routed work.
