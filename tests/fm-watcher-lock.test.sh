@@ -20,6 +20,14 @@ LIB="$ROOT/bin/fm-wake-lib.sh"
 # an arm genuinely fails to exit; a passing case returns as soon as it does.
 ARM_FAIL_EXIT_POLLS=400
 
+# Signal-driven arm shutdown cannot beat the child watcher's current poll sleep:
+# the child only runs its TERM handler when that sleep returns, so a case using
+# FM_POLL=5 needs just over 5s before the arm can report its own exit status.
+# 80 polls (8s) left ~2.8s of headroom, which a loaded machine running the full
+# suite in parallel can consume, so these waits scale with the poll budget
+# instead of assuming a wall time that only holds on an idle host.
+ARM_SIGNAL_EXIT_POLLS=200
+
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
 
 mark_pr_check_migration_complete() {
@@ -641,7 +649,7 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
   done
   grep -qF "watcher: attached pid=$wpid" "$armout" || fail "arm did not report attach before signal"
   kill -TERM "$armpid" 2>/dev/null || fail "could not signal the attached arm"
-  wait_for_exit "$armpid" 80
+  wait_for_exit "$armpid" "$ARM_SIGNAL_EXIT_POLLS"
   status=$?
   [ "$status" -eq 143 ] || fail "attached arm did not exit with TERM status (got $status)"
   grep -q "arm_pid=$armpid.*watcher_pid=$wpid.*origin=attached.*exit_code=143.*signal=TERM.*reason=arm-interrupted" "$state/.watch-cycle-exits.log" \
@@ -724,7 +732,7 @@ test_arm_hup_cleans_child_and_temp_output() {
   grep -qF 'watcher: started pid=' "$armout" || fail "arm did not start before HUP cleanup check"
   lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
   kill -HUP "$armpid" 2>/dev/null || fail "could not send HUP to arm"
-  wait_for_exit "$armpid" 80
+  wait_for_exit "$armpid" "$ARM_SIGNAL_EXIT_POLLS"
   status=$?
   [ "$status" -eq 129 ] || fail "arm did not exit with HUP status (got $status)"
   i=0
