@@ -56,7 +56,11 @@ find_chrome() {
     printf '%s\n' "$FM_CHROME_BIN"
     return 0
   fi
+  # chrome-headless-shell is first because this case only dumps a DOM, which is
+  # exactly what that binary exists for; full Chrome builds have regressed
+  # --dump-dom before, and when they do they hang rather than fail.
   for candidate in \
+    chrome-headless-shell \
     google-chrome \
     google-chrome-stable \
     chromium \
@@ -1817,6 +1821,12 @@ TS
       fail "Pi follow-up $label case did not process the monitoring notification"
     fi
 
+    # The loop above waits on the SESSION FILE, which Pi writes before the TUI
+    # has painted the corresponding rows. Capturing the pane on that signal alone
+    # races the renderer and intermittently sees zero captain answers, so wait for
+    # the rendered text itself before any pane assertion.
+    wait_for_text "$TMP_ROOT/followup-$label-render.txt" "MONITOR_HANDLED_${label}_ONE" \
+      || fail "Pi follow-up $label case did not render the processing result"
     pane=$(tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S - 2>/dev/null || true)
     [ "$(printf '%s\n' "$pane" | grep -Fc "CAPTAIN_ANSWER_$label" || true)" -eq 1 ] \
       || fail "Pi follow-up $label case rendered a duplicate captain answer"
@@ -3541,7 +3551,16 @@ JS
     sleep 0.1
     chrome_wait=$((chrome_wait + 1))
   done
+  # A renderer that ignores TERM would otherwise wedge this case forever, since
+  # `wait` blocks with no timeout of its own. Escalate to KILL after a bounded
+  # grace period so the assertion below reports the real outcome instead.
   kill "$chrome_pid" 2>/dev/null || true
+  chrome_wait=0
+  while kill -0 "$chrome_pid" 2>/dev/null && [ "$chrome_wait" -lt 50 ]; do
+    sleep 0.1
+    chrome_wait=$((chrome_wait + 1))
+  done
+  kill -9 "$chrome_pid" 2>/dev/null || true
   wait "$chrome_pid" 2>/dev/null || true
   grep -Fq '</html>' "$export_dom" 2>/dev/null \
     || fail "could not render calm-mode HTML export DOM"
