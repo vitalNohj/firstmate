@@ -574,21 +574,39 @@ verify_hold_durable() {  # <task-id>
 
 # Resolve one inventory entry or channel key to the task that carries it: the
 # exact task id when it exists, else the legacy derived identity.
+#
+# An entry that names no live task may still be a call the captain answered
+# before ordinary Done retention pruning moved it into the archive, so the
+# archive is searched on the same live-first precedence before giving up. It
+# only resolves the identity; verify_hold_durable still judges the record, so an
+# archived identity carrying no recorded answer fails there rather than here.
 resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
-  local origin=$1 entry=$2 legacy
+  local origin=$1 entry=$2 legacy archive
   if task_show "$entry" >/dev/null 2>&1; then
     printf '%s' "$entry"
     return 0
   fi
+  legacy=''
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
     legacy=$(legacy_hold_id "$origin" "$entry")
     if task_show "$legacy" >/dev/null 2>&1; then
       printf '%s' "$legacy"
       return 0
     fi
-    fail "no captain-held task $entry and no legacy identity $legacy in $FM_HOME/data/backlog.md"
   fi
-  fail "no captain-held task $entry in $FM_HOME/data/backlog.md"
+  archive=$(archive_path) || exit 1
+  if [ "$(archive_task_record_count "$entry" "$archive")" -gt 0 ]; then
+    printf '%s' "$entry"
+    return 0
+  fi
+  if [ -n "$legacy" ]; then
+    if [ "$(archive_task_record_count "$legacy" "$archive")" -gt 0 ]; then
+      printf '%s' "$legacy"
+      return 0
+    fi
+    fail "captain-held task $entry, and its legacy identity $legacy, are absent from the live backlog and configured archive $archive"
+  fi
+  fail "captain-held task $entry is absent from the live backlog and configured archive $archive"
 }
 
 command_hold() {
@@ -985,7 +1003,7 @@ command_answers() {
 }
 
 command_complete() {
-  local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open raw_open has_meta=0 transfer_rc
+  local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open raw_open has_meta=0 transfer_rc resolved
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
   shift
@@ -1016,7 +1034,11 @@ command_complete() {
   if [ -n "$keys" ]; then
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
-      verify_hold_durable "$(resolve_entry "$origin" "$entry")"
+      # resolve_entry's own fail runs in the substitution subshell, so its exit
+      # status must be checked here or an unresolvable entry would be verified
+      # as the empty id.
+      resolved=$(resolve_entry "$origin" "$entry") || exit 1
+      verify_hold_durable "$resolved"
     done <<EOF
 $(printf '%s\n' "$keys" | tr ',' '\n')
 EOF
@@ -1058,7 +1080,7 @@ EOF
 }
 
 command_verify() {
-  local origin=${1:-} meta reviewed keys entry key open
+  local origin=${1:-} meta reviewed keys entry key open resolved
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
   meta="$STATE/$origin.meta"
@@ -1070,7 +1092,10 @@ command_verify() {
   if [ -n "$keys" ]; then
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
-      verify_hold_durable "$(resolve_entry "$origin" "$entry")"
+      # See command_complete: the substitution subshell swallows resolve_entry's
+      # own fail, so its status is checked rather than verifying the empty id.
+      resolved=$(resolve_entry "$origin" "$entry") || exit 1
+      verify_hold_durable "$resolved"
     done <<EOF
 $(printf '%s\n' "$keys" | tr ',' '\n')
 EOF
