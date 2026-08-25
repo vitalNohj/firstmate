@@ -79,11 +79,6 @@ esac
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
-# How long a signalled arm waits for its child watcher to exit before escalating
-# to KILL. The child acts on TERM only when its current poll sleep returns, so
-# this must clear that poll (default 30s, plus the check the cycle may be
-# running) rather than assume an immediate exit.
-ARM_CHILD_REAP_POLLS=${FM_ARM_CHILD_REAP_POLLS:-600}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
@@ -462,33 +457,13 @@ cleanup_child() {
   fi
 }
 
-# Reap the child without ever blocking indefinitely. `wait` has no timeout, so a
-# child that has not yet acted on TERM - it only runs its handler when its
-# current poll sleep returns, and a TERM arriving inside its own brief
-# trap-deferred window is dropped entirely - would otherwise pin this shell
-# forever and leave the arm alive after the signal that was meant to end it.
-# Poll for the exit instead, then escalate to KILL, which cannot be caught.
-# shellcheck disable=SC2329 # Invoked indirectly by the signal handler below.
-reap_child_bounded() {
-  local pid=$1 waited=0
-  while [ "$waited" -lt "$ARM_CHILD_REAP_POLLS" ]; do
-    fm_pid_alive "$pid" || break
-    sleep 0.1
-    waited=$((waited + 1))
-  done
-  if fm_pid_alive "$pid"; then
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-  wait "$pid" 2>/dev/null || true
-}
-
 # shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
 handle_arm_signal() {
   local signal=$1 rc=$2
   trap - HUP TERM INT
   if [ -n "$child" ] && fm_pid_alive "$child"; then
     kill -TERM "$child" 2>/dev/null || true
-    reap_child_bounded "$child"
+    wait "$child" 2>/dev/null || true
   fi
   cycle_log_append "$rc" "$signal" arm-interrupted none
   cleanup_child

@@ -745,43 +745,6 @@ test_arm_hup_cleans_child_and_temp_output() {
   pass "arm cleans child watcher and temp output on HUP"
 }
 
-# A signalled arm must not depend on its child observing TERM. The child only
-# runs its handler when its current poll sleep returns, and a TERM arriving in
-# the child's own trap-deferred window is dropped outright, so an arm that
-# blocks in an unbounded `wait` outlives the signal that was meant to end it.
-test_arm_signal_exits_when_child_ignores_term() {
-  local dir state fakebin armout i armpid lock_pid status
-  dir=$(make_case arm-hup-term-immune)
-  state="$dir/state"
-  fakebin="$dir/fakebin"
-  armout="$dir/arm.out"
-  # A short reap budget keeps the case fast; the arm must still escalate and exit
-  # rather than block forever, which is the behavior under test.
-  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CHILD_REAP_POLLS=10 "$WATCH_ARM" > "$armout" &
-  armpid=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  grep -qF 'watcher: started pid=' "$armout" || fail "arm did not start before TERM-immune check"
-  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-  [ -n "$lock_pid" ] || fail "arm published no child pid to make TERM-immune"
-  # Make the running child ignore TERM, exactly as a child that has not yet
-  # returned from its poll sleep appears to the arm.
-  kill -STOP "$lock_pid" 2>/dev/null || fail "could not suspend the child watcher"
-  kill -HUP "$armpid" 2>/dev/null || fail "could not send HUP to arm"
-  # Bounded well under the arm's own escalation budget: the point is that the
-  # arm exits on its own rather than blocking on an unresponsive child.
-  wait_for_exit "$armpid" "$ARM_SIGNAL_EXIT_POLLS"
-  status=$?
-  kill -CONT "$lock_pid" 2>/dev/null || true
-  kill -KILL "$lock_pid" 2>/dev/null || true
-  [ "$status" -eq 129 ] || fail "arm did not exit with HUP status while its child ignored TERM (got $status)"
-  pass "arm exits on signal even when its child does not observe TERM"
-}
-
 test_arm_propagates_immediate_wake_before_confirmation() {
   local dir state fakebin armout drain_out check_file rc
   dir=$(make_case arm-immediate-wake)
@@ -1190,7 +1153,6 @@ test_arm_attaches_and_waits_for_live_fresh_watcher
 test_attached_arm_signal_is_recorded_in_cycle_ledger
 test_arm_starts_and_self_heals
 test_arm_hup_cleans_child_and_temp_output
-test_arm_signal_exits_when_child_ignores_term
 test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
