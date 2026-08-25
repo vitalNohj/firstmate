@@ -80,12 +80,10 @@ CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 # How long a signalled arm waits for its child watcher to exit before escalating
-# to KILL, in 0.1s polls, and how often it re-sends TERM while waiting. The
-# child acts on TERM once its current poll sleep returns, so the budget outlasts
-# that sleep, while the retry interval stays long enough for an ordinary
-# shutdown to complete its cleanup uninterrupted.
+# to KILL. The child acts on TERM only when its current poll sleep returns, so
+# this must clear that poll (default 30s, plus the check the cycle may be
+# running) rather than assume an immediate exit.
 ARM_CHILD_REAP_POLLS=${FM_ARM_CHILD_REAP_POLLS:-600}
-ARM_CHILD_REAP_RETRY_POLLS=${FM_ARM_CHILD_REAP_RETRY_POLLS:-100}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
@@ -465,28 +463,16 @@ cleanup_child() {
 }
 
 # Reap the child without ever blocking indefinitely. `wait` has no timeout, so a
-# child that never acts on TERM would pin this shell forever and leave the arm
-# alive after the signal that was meant to end it.
-#
-# A single TERM is not always enough. The child runs its handler only when its
-# current poll sleep returns, and a TERM delivered inside the child's own brief
-# trap-deferred window is dropped outright rather than queued - after which the
-# child simply starts its next poll cycle and never exits.
-#
-# So re-send TERM periodically rather than on every poll: the child's exit runs
-# its cleanup, which persists recovery state, and a TERM landing mid-cleanup
-# re-enters its exit path and abandons that work. The retry interval therefore
-# has to leave an ordinary shutdown time to finish. A child still running after
-# the budget is not shutting down on its own, so escalate to KILL, which cannot
-# be caught or deferred.
+# child that has not yet acted on TERM - it only runs its handler when its
+# current poll sleep returns, and a TERM arriving inside its own brief
+# trap-deferred window is dropped entirely - would otherwise pin this shell
+# forever and leave the arm alive after the signal that was meant to end it.
+# Poll for the exit instead, then escalate to KILL, which cannot be caught.
 # shellcheck disable=SC2329 # Invoked indirectly by the signal handler below.
 reap_child_bounded() {
   local pid=$1 waited=0
   while [ "$waited" -lt "$ARM_CHILD_REAP_POLLS" ]; do
     fm_pid_alive "$pid" || break
-    if [ "$waited" -gt 0 ] && [ $((waited % ARM_CHILD_REAP_RETRY_POLLS)) -eq 0 ]; then
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
     sleep 0.1
     waited=$((waited + 1))
   done
