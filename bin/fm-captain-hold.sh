@@ -243,6 +243,31 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
+# True only when tasks-axi proved this id is absent from the live backlog.
+#
+# `tasks-axi show` exits 1 for a missing task and for a backend read failure
+# alike, so exit status alone cannot tell "pruned into the archive" from "the
+# backlog could not be read". Treating the second as the first fails open: the
+# archive fallback would then accept a stale resolved record from an earlier
+# cycle and let teardown erase work while a captain call is still genuinely
+# open. tasks-axi does distinguish them in its own typed output, NOT_FOUND for
+# an absent id against UNKNOWN for an EACCES or IO failure, so key the fallback
+# on that proof and fail loudly on anything else.
+task_absent() {  # <id>; true only on a proven not-found result
+  local id=$1 out rc
+  out=$(tasks_axi show "$id" --full 2>&1)
+  rc=$?
+  [ "$rc" -eq 0 ] && return 1
+  case $out in
+    *'code: NOT_FOUND'*) return 0 ;;
+    # A rejected config is not a read failure, and markdown_config_value owns
+    # that diagnosis with the exact offending key. Defer to it rather than
+    # reporting the precise cause as an unreadable backlog.
+    *'code: VALIDATION_ERROR'*) return 0 ;;
+  esac
+  fail "cannot read the live backlog for task $id: ${out:-tasks-axi show failed with status $rc}"
+}
+
 # Prints the configured value; returns 3 when the key is legitimately absent,
 # including when the whole config file is absent, which tasks-axi also reads as
 # every key defaulted. It fails loudly only when the key is present but not a
@@ -568,6 +593,9 @@ verify_hold_durable() {  # <task-id>
     fi
     fail "captain-held task $id is neither held for the captain nor closed with a recorded captain answer"
   fi
+  # Only a proven absence may fall through to the archive; a backend read error
+  # fails loudly inside task_absent rather than being read as "pruned".
+  task_absent "$id" || exit 1
   archive=$(archive_path) || exit 1
   verify_archived_hold_resolved "$id" "$archive"
 }
@@ -586,6 +614,9 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
     printf '%s' "$entry"
     return 0
   fi
+  # Prove the entry is absent rather than unreadable before considering the
+  # legacy identity or the archive at all.
+  task_absent "$entry" || exit 1
   legacy=''
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
     legacy=$(legacy_hold_id "$origin" "$entry")
@@ -593,6 +624,7 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
       printf '%s' "$legacy"
       return 0
     fi
+    task_absent "$legacy" || exit 1
   fi
   archive=$(archive_path) || exit 1
   if [ "$(archive_task_record_count "$entry" "$archive")" -gt 0 ]; then
@@ -648,6 +680,9 @@ command_hold() {
   else
     [ -n "$title" ] || fail "--title is required to create task $id"
     validate_one_line title "$title"
+    # An unreadable backlog must not be mistaken for a free identity, which
+    # would add a second task over an existing one.
+    task_absent "$id" || exit 1
     archive=$(archive_path) || exit 1
     archive_hold_is_durably_resolved "$id" "$archive" \
       && fail "captain-held task $id is already durably resolved in the configured tasks-axi archive; a new captain call needs its own task"

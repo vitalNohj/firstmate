@@ -1276,6 +1276,106 @@ test_resolved_archived_hold_verification_is_strict() {
   pass "archived answered calls verify on any complete structured archived cycle"
 }
 
+# The archive fallback exists for an identity that ordinary Done retention
+# pruning moved out of the live backlog. `tasks-axi show` exits non-zero for a
+# missing task and for a backend read failure alike, so keying the fallback on
+# exit status alone would read "the backlog is unreadable" as "this was pruned"
+# and judge the call from a stale earlier archived cycle. That fails open: the
+# gate would report a genuinely open captain call as verified, and teardown
+# would then erase the origin's work.
+test_unreadable_live_backlog_never_falls_back_to_archive() {
+  local home origin hold archive rc
+  home=$(make_home unreadable-backlog-archive)
+  origin=sample-unreadable-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review unreadable backlog fallback" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the unreadable-backlog origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Unreadable backlog review\n' > "$home/data/$origin/report.md"
+  hold=sample-unreadable-route-call
+  run_captain "$home" hold "$hold" \
+    --title "Choose unreadable route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route north.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the archive"
+  assert_grep "- [x] $hold -" "$archive" \
+    "the answered call did not reach the configured archive"
+  run_captain "$home" verify "$origin" >/dev/null \
+    || fail "a durably resolved archived call did not verify from a readable backlog"
+
+  # Re-open the same identity live, so the archive now holds a STALE resolved
+  # cycle while the real call is open. This is the reuse case the archive
+  # fallback is explicitly designed to support.
+  tasks_in "$home" add "$hold" "Reopened route call" --kind ship --repo sample >/dev/null \
+    || fail "could not re-open the identity"
+  tasks_in "$home" hold "$hold" --reason "captain route still pending" --kind captain >/dev/null \
+    || fail "could not re-activate the captain hold"
+
+  # With the live backlog readable, the open live hold is authoritative and
+  # verification passes on the live record, never on the stale archived one.
+  run_captain "$home" verify "$origin" >/dev/null \
+    || fail "a satisfied live hold did not verify while an archived cycle existed"
+
+  chmod 000 "$home/data/backlog.md"
+  set +e
+  run_captain "$home" verify "$origin" > "$home/unreadable.out" 2> "$home/unreadable.err"
+  rc=$?
+  set -e
+  # Restore before any assertion can abort the case and leave the fixture
+  # undeletable by the suite's cleanup.
+  chmod 600 "$home/data/backlog.md"
+  [ "$rc" -ne 0 ] \
+    || fail "verification passed while the live backlog could not be read, trusting a stale archived cycle"
+  assert_grep "cannot read the live backlog" "$home/unreadable.err" \
+    "an unreadable backlog did not report itself as a read failure"
+  assert_no_grep "absent from the live backlog" "$home/unreadable.err" \
+    "an unreadable backlog must not be reported as a missing identity"
+  pass "an unreadable live backlog fails loudly instead of falling back to a stale archived cycle"
+}
+
+# The inverse guard: the fallback must still work. A genuinely pruned identity
+# reports NOT_FOUND, which is proof of absence rather than a backend failure,
+# so the archive remains authoritative for it.
+test_pruned_identity_still_resolves_from_archive() {
+  local home origin hold archive
+  home=$(make_home pruned-archive-fallback)
+  origin=sample-pruned-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review pruned fallback" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the pruned-fallback origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Pruned fallback review\n' > "$home/data/$origin/report.md"
+  hold=sample-pruned-route-call
+  run_captain "$home" hold "$hold" \
+    --title "Choose pruned route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route south.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the archive"
+  assert_no_grep "- [x] $hold -" "$home/data/backlog.md" \
+    "the answered call remained live after pruning"
+  assert_grep "- [x] $hold -" "$archive" \
+    "the answered call did not reach the archive"
+  run_captain "$home" verify "$origin" > "$home/pruned.out" 2> "$home/pruned.err" \
+    || fail "a proven-absent identity did not fall back to the archive: $(cat "$home/pruned.err")"
+  pass "a proven-absent identity still verifies from the configured archive"
+}
+
 # tasks-axi treats [markdown] archive as optional and derives its own default
 # from the resolved backlog path - done-archive.md beside that file, not a fixed
 # data/ location. The gate must derive the same path, and must never silently
@@ -1593,6 +1693,8 @@ test_hold_retires_only_durably_resolved_archived_ids() {
 test_uninventoried_report_decision_refuses_completion
 test_completion_gate_attests_and_transfers
 test_resolved_archived_hold_verification_is_strict
+test_unreadable_live_backlog_never_falls_back_to_archive
+test_pruned_identity_still_resolves_from_archive
 test_archive_config_absent_defaults_and_malformed_fails
 test_absent_tasks_toml_falls_back_to_backend_defaults
 test_archive_config_matches_backend_toml_spellings
