@@ -1376,6 +1376,148 @@ test_pruned_identity_still_resolves_from_archive() {
   pass "a proven-absent identity still verifies from the configured archive"
 }
 
+# Only NOT_FOUND proves absence. tasks-axi raises VALIDATION_ERROR for ANY
+# rejected key, including keys this gate never inspects, so accepting that code
+# as "pruned" reopens the fail-open on an ordinary .tasks.toml typo: a genuinely
+# open live captain hold plus any stale archived cycle would verify, and
+# teardown would then erase the origin's work.
+test_unrelated_config_error_never_proves_absence() {
+  local home origin hold archive rc
+  home=$(make_home config-error-absence)
+  origin=sample-config-error-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review config-error absence" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the config-error origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Config error review\n' > "$home/data/$origin/report.md"
+  hold=sample-config-error-call
+  run_captain "$home" hold "$hold" \
+    --title "Choose config-error route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route north.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the archive"
+  assert_grep "- [x] $hold -" "$archive" \
+    "the answered call did not reach the configured archive"
+
+  # Re-open the same identity, so the call is genuinely OPEN while a stale
+  # resolved cycle sits in the archive.
+  tasks_in "$home" add "$hold" "Reopened config-error call" --kind ship --repo sample >/dev/null \
+    || fail "could not re-open the identity"
+  tasks_in "$home" hold "$hold" --reason "captain route still pending" --kind captain >/dev/null \
+    || fail "could not re-activate the captain hold"
+  run_captain "$home" verify "$origin" >/dev/null \
+    || fail "a satisfied live hold did not verify under a healthy config"
+
+  # An unrelated key the archive gate never inspects. tasks-axi rejects the
+  # whole config, so no task can be read at all.
+  sed 's/done_keep = 10/done_keep = "abc"/' "$home/.tasks.toml" > "$home/.tasks.toml.tmp"
+  mv "$home/.tasks.toml.tmp" "$home/.tasks.toml"
+  set +e
+  run_captain "$home" verify "$origin" > "$home/config-error.out" 2> "$home/config-error.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || fail "verification passed on an open captain call because an unrelated config key was malformed"
+  assert_no_grep "^verified:" "$home/config-error.out" \
+    "an open captain call was reported verified under a rejected config"
+  pass "a rejected config never proves an identity absent from the live backlog"
+}
+
+# The live-backlog read is not the only place absence is inferred. An archive
+# that exists but cannot be read yielded an empty count, which callers compared
+# with -gt and treated as "no archived record", letting hold re-create an
+# identity the retirement guard must refuse permanently.
+test_unreadable_archive_never_retires_or_re_mints() {
+  local home origin hold archive rc
+  home=$(make_home unreadable-archive-guard)
+  origin=sample-unreadable-archive-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review unreadable archive" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the unreadable-archive origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Unreadable archive review\n' > "$home/data/$origin/report.md"
+  hold=sample-unreadable-archive-call
+  run_captain "$home" hold "$hold" \
+    --title "Choose archive route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route east.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the archive"
+
+  # Readable archive: the retirement guard refuses to re-mint the answered call.
+  if run_captain "$home" hold "$hold" \
+    --title "Re-minted call" --reason "should refuse" --repo sample > "$home/retire.out" 2> "$home/retire.err"; then
+    fail "hold re-created an identity already durably resolved in the archive"
+  fi
+  assert_grep "already durably resolved" "$home/retire.err" \
+    "the retirement guard did not name the durable archived resolution"
+
+  chmod 000 "$archive"
+  set +e
+  run_captain "$home" hold "$hold" \
+    --title "Re-minted call" --reason "should refuse" --repo sample > "$home/unreadable-archive.out" 2> "$home/unreadable-archive.err"
+  rc=$?
+  set -e
+  chmod 600 "$archive"
+  [ "$rc" -ne 0 ] \
+    || fail "hold re-minted an already-answered captain call while the archive could not be read"
+  assert_grep "cannot read the configured tasks-axi archive" "$home/unreadable-archive.err" \
+    "an unreadable archive did not report itself as a read failure"
+  pass "an unreadable archive fails loudly instead of reading as no archived record"
+}
+
+# A read failure must never be reported as a nonexistent task: answers would
+# otherwise drop the captain's recorded words under a reason that is wrong.
+test_answers_reports_read_failure_not_absence() {
+  local home origin hold rc
+  home=$(make_home answers-read-failure)
+  origin=sample-answers-read-review
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review answers read failure" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the answers origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Answers read failure review\n' > "$home/data/$origin/report.md"
+  hold=sample-answers-read-call
+  run_captain "$home" hold "$hold" \
+    --title "Choose answers route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf '%s\tUse north\tNorth\n' "$hold" > "$home/rows.tsv"
+
+  chmod 000 "$home/data/backlog.md"
+  set +e
+  run_captain "$home" answers "$origin" --source chat < "$home/rows.tsv" \
+    > "$home/answers.out" 2> "$home/answers.err"
+  rc=$?
+  set -e
+  chmod 600 "$home/data/backlog.md"
+  [ "$rc" -eq 0 ] \
+    && fail "answers reported success while the live backlog could not be read"
+  assert_grep "cannot read the live backlog" "$home/answers.out" \
+    "answers did not surface the real read-failure reason"
+  assert_no_grep "no captain-held task with that id" "$home/answers.out" \
+    "answers reported a read failure as a nonexistent task, dropping the captain's answer"
+  pass "answers reports an unreadable backlog as a read failure rather than a missing task"
+}
+
 # tasks-axi treats [markdown] archive as optional and derives its own default
 # from the resolved backlog path - done-archive.md beside that file, not a fixed
 # data/ location. The gate must derive the same path, and must never silently
@@ -1695,6 +1837,9 @@ test_completion_gate_attests_and_transfers
 test_resolved_archived_hold_verification_is_strict
 test_unreadable_live_backlog_never_falls_back_to_archive
 test_pruned_identity_still_resolves_from_archive
+test_unrelated_config_error_never_proves_absence
+test_unreadable_archive_never_retires_or_re_mints
+test_answers_reports_read_failure_not_absence
 test_archive_config_absent_defaults_and_malformed_fails
 test_absent_tasks_toml_falls_back_to_backend_defaults
 test_archive_config_matches_backend_toml_spellings

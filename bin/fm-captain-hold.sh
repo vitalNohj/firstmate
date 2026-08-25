@@ -253,6 +253,14 @@ task_show() {  # <id>
 # open. tasks-axi does distinguish them in its own typed output, NOT_FOUND for
 # an absent id against UNKNOWN for an EACCES or IO failure, so key the fallback
 # on that proof and fail loudly on anything else.
+#
+# NOT_FOUND is the only code that proves absence. VALIDATION_ERROR must not be
+# accepted here: it is raised for any rejected key, including one this gate
+# never inspects such as done_keep, so treating it as "pruned" reopened the
+# identical fail-open on an ordinary .tasks.toml typo. Callers that can hit a
+# config problem resolve the archive path first, so markdown_config_value still
+# reports a malformed archive key with its own precise message before this
+# helper is ever consulted.
 task_absent() {  # <id>; true only on a proven not-found result
   local id=$1 out rc
   out=$(tasks_axi show "$id" --full 2>&1)
@@ -260,10 +268,6 @@ task_absent() {  # <id>; true only on a proven not-found result
   [ "$rc" -eq 0 ] && return 1
   case $out in
     *'code: NOT_FOUND'*) return 0 ;;
-    # A rejected config is not a read failure, and markdown_config_value owns
-    # that diagnosis with the exact offending key. Defer to it rather than
-    # reporting the precise cause as an unreadable backlog.
-    *'code: VALIDATION_ERROR'*) return 0 ;;
   esac
   fail "cannot read the live backlog for task $id: ${out:-tasks-axi show failed with status $rc}"
 }
@@ -354,24 +358,37 @@ archive_path() {
 # accumulates several archived cycles, and each cycle is judged on its own. These
 # two helpers therefore enumerate every archived record for an identity instead
 # of insisting there is exactly one.
+# An absent archive legitimately counts zero, but one that exists and cannot be
+# read is not evidence of anything. awk prints nothing on a read failure, and
+# callers compare that empty string with -gt, which errors with "integer
+# expression expected" and is then taken as "no archived record" - the same
+# read-failure-as-absence confusion task_absent closes on the live side. Left
+# open it lets `hold` re-mint an identity the retirement guard must refuse
+# permanently, so fail loudly instead.
 archive_task_record_count() {  # <id> <archive-path>
-  local id=$1 archive=$2
+  local id=$1 archive=$2 count
   if [ ! -f "$archive" ]; then
     printf '0\n'
     return 0
   fi
-  awk -v id="$id" '
+  [ -r "$archive" ] || fail "cannot read the configured tasks-axi archive $archive"
+  count=$(awk -v id="$id" '
     function starts_task(line) {
       return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
     }
     /^- \[[ x]\] [A-Za-z0-9._-]+ - / { if (starts_task($0)) matches++ }
     END { print matches + 0 }
-  ' "$archive"
+  ' "$archive") || fail "cannot read the configured tasks-axi archive $archive"
+  case $count in
+    ''|*[!0-9]*) fail "cannot read the configured tasks-axi archive $archive" ;;
+  esac
+  printf '%s\n' "$count"
 }
 
 archive_task_record() {  # <id> <archive-path> <index>
   local id=$1 archive=$2 want=$3
   [ -f "$archive" ] || return 1
+  [ -r "$archive" ] || fail "cannot read the configured tasks-axi archive $archive"
   awk -v id="$id" -v want="$want" '
     function starts_task(line) {
       return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
@@ -430,7 +447,13 @@ archived_record_defect() {  # <id> <record>
 # records all fail that invariant must stay re-holdable, because no command can
 # rewrite an archived body, so refusing it would strand the identity with `verify`
 # failing forever.
+# The quiet form still must not turn an unreadable archive into "not retired",
+# which would re-mint an already-answered call, so readability is asserted here
+# before the predicate's own output is discarded.
 archive_hold_is_durably_resolved() {  # <id> <archive-path>
+  if [ -f "$2" ] && [ ! -r "$2" ]; then
+    fail "cannot read the configured tasks-axi archive $2"
+  fi
   (verify_archived_hold_resolved "$1" "$2" >/dev/null 2>&1)
 }
 
@@ -442,7 +465,9 @@ archive_hold_is_durably_resolved() {  # <id> <archive-path>
 # whose every archived record is malformed, still fails.
 verify_archived_hold_resolved() {  # <id> <archive-path>
   local id=$1 archive=$2 count index record defect first_defect=''
-  count=$(archive_task_record_count "$id" "$archive")
+  # The substitution subshell swallows archive_task_record_count's own fail, so
+  # its status is checked rather than comparing an empty count.
+  count=$(archive_task_record_count "$id" "$archive") || exit 1
   [ "$count" -gt 0 ] \
     || fail "captain-held task $id is absent from the live backlog and configured archive $archive"
   index=1
@@ -593,10 +618,12 @@ verify_hold_durable() {  # <task-id>
     fi
     fail "captain-held task $id is neither held for the captain nor closed with a recorded captain answer"
   fi
-  # Only a proven absence may fall through to the archive; a backend read error
-  # fails loudly inside task_absent rather than being read as "pruned".
-  task_absent "$id" || exit 1
+  # Resolve the configured archive first, so a malformed [markdown] archive key
+  # is reported by its owner with the offending key rather than surfacing as a
+  # generic backend read failure. Only then may a proven absence fall through;
+  # any other backend result fails loudly inside task_absent.
   archive=$(archive_path) || exit 1
+  task_absent "$id" || exit 1
   verify_archived_hold_resolved "$id" "$archive"
 }
 
@@ -609,11 +636,14 @@ verify_hold_durable() {  # <task-id>
 # only resolves the identity; verify_hold_durable still judges the record, so an
 # archived identity carrying no recorded answer fails there rather than here.
 resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
-  local origin=$1 entry=$2 legacy archive
+  local origin=$1 entry=$2 legacy archive entry_records legacy_records
   if task_show "$entry" >/dev/null 2>&1; then
     printf '%s' "$entry"
     return 0
   fi
+  # Resolve the configured archive before judging absence, so a config error
+  # keeps its precise diagnosis (see verify_hold_durable).
+  archive=$(archive_path) || exit 1
   # Prove the entry is absent rather than unreadable before considering the
   # legacy identity or the archive at all.
   task_absent "$entry" || exit 1
@@ -626,13 +656,14 @@ resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
     fi
     task_absent "$legacy" || exit 1
   fi
-  archive=$(archive_path) || exit 1
-  if [ "$(archive_task_record_count "$entry" "$archive")" -gt 0 ]; then
+  entry_records=$(archive_task_record_count "$entry" "$archive") || exit 1
+  if [ "$entry_records" -gt 0 ]; then
     printf '%s' "$entry"
     return 0
   fi
   if [ -n "$legacy" ]; then
-    if [ "$(archive_task_record_count "$legacy" "$archive")" -gt 0 ]; then
+    legacy_records=$(archive_task_record_count "$legacy" "$archive") || exit 1
+    if [ "$legacy_records" -gt 0 ]; then
       printf '%s' "$legacy"
       return 0
     fi
@@ -680,10 +711,10 @@ command_hold() {
   else
     [ -n "$title" ] || fail "--title is required to create task $id"
     validate_one_line title "$title"
+    archive=$(archive_path) || exit 1
     # An unreadable backlog must not be mistaken for a free identity, which
     # would add a second task over an existing one.
     task_absent "$id" || exit 1
-    archive=$(archive_path) || exit 1
     archive_hold_is_durably_resolved "$id" "$archive" \
       && fail "captain-held task $id is already durably resolved in the configured tasks-axi archive; a new captain call needs its own task"
     if [ -z "$repo" ] && [ -n "$origin" ] && [ -f "$STATE/$origin.meta" ]; then
@@ -974,8 +1005,17 @@ command_answers() {
         continue
         ;;
     esac
-    if ! id=$(resolve_entry "$origin" "$key" 2>/dev/null); then
-      printf 'skipped: %s (no captain-held task with that id)\n' "$key"
+    # Only a genuine absence may be reported as one. resolve_entry also fails
+    # when the backlog or archive cannot be read, and reporting that as a
+    # nonexistent task silently drops the captain's recorded words under a wrong
+    # reason, so its own diagnostic is preserved and surfaced instead.
+    if ! id=$(resolve_entry "$origin" "$key" 2>"$err"); then
+      if [ -s "$err" ]; then
+        reason=$(head -n 1 "$err" | sed 's/^fm-captain-hold: //')
+        printf 'skipped: %s (%s)\n' "$key" "$(sanitize_field "$reason")"
+      else
+        printf 'skipped: %s (no captain-held task with that id)\n' "$key"
+      fi
       skipped=$((skipped + 1))
       continue
     fi
