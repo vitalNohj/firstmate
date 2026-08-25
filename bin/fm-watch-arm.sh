@@ -85,10 +85,7 @@ ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 # that sleep, while the retry interval stays long enough for an ordinary
 # shutdown to complete its cleanup uninterrupted.
 ARM_CHILD_REAP_POLLS=${FM_ARM_CHILD_REAP_POLLS:-600}
-ARM_CHILD_REAP_RETRY_POLLS=${FM_ARM_CHILD_REAP_RETRY_POLLS:-30}
-# Poll interval while waiting on this arm's own child watcher. Short enough that
-# a signal is handled promptly, long enough to stay idle across a long watch.
-ARM_CHILD_WAIT_POLL=${FM_ARM_CHILD_WAIT_POLL:-0.2}
+ARM_CHILD_REAP_RETRY_POLLS=${FM_ARM_CHILD_REAP_RETRY_POLLS:-100}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
 CYCLE_LOG_LOCK="$STATE/.watch-cycle-exits.lock"
 CYCLE_LOG_MAX_BYTES=${FM_WATCH_CYCLE_LOG_MAX_BYTES:-262144}
@@ -582,21 +579,6 @@ owned_child_finished() {
   return "$status"
 }
 
-# Wait for the owned child, but in short polls rather than one blocking `wait`.
-# A trap runs only between commands, so a signal arriving while this shell sits
-# in a single `wait` that spans the child's whole life cannot be handled until
-# that child exits on its own - which, for a healthy watcher, is never. Polling
-# gives the pending HUP, TERM, or INT a boundary to run on, and the final `wait`
-# still reports the child's true exit status.
-# shellcheck disable=SC2329 # Invoked indirectly below and from the signal path.
-wait_owned_child() {
-  local pid=$1
-  while fm_pid_alive "$pid"; do
-    sleep "$ARM_CHILD_WAIT_POLL"
-  done
-  wait "$pid"
-}
-
 # Verify the outcome: poll until this child is the confirmed healthy watcher, or
 # until some other watcher legitimately holds the singleton (a startup race), or
 # until the child gives up. Only then print the honest line.
@@ -620,13 +602,13 @@ while :; do
       else
         echo "watcher: started pid=$child (beacon fresh)"
       fi
-      wait_owned_child "$child"
+      wait "$child"
       rc=$?
       owned_child_finished "$rc"
       exit $?
     fi
     # Another watcher won the singleton; our child stood down.
-    wait_owned_child "$child"
+    wait "$child"
     rc=$?
     owned_child_finished "$rc"
     exit $?
