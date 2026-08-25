@@ -1626,6 +1626,154 @@ TOMLEOF
   pass "an archive unreachable through its parent directory fails loudly instead of counting zero"
 }
 
+# tasks-axi resolves its backlog from TASKS_AXI_FILE first, then the project
+# .tasks.toml, then ~/.tasks-axi/config.toml. A gate that resolves from the
+# project file alone proves a file the backend never read: the backend answers
+# NOT_FOUND for every id against the backlog it actually opened, the gate finds
+# its own unrelated file healthy, accepts that as proof of absence, and lets a
+# stale archived cycle verify a genuinely open captain call.
+test_backend_path_precedence_governs_absence_proof() {
+  local home origin hold rc
+  home=$(make_home backend-path-precedence)
+  origin=sample-precedence-review
+  hold=sample-precedence-call
+  mkdir -p "$home/data/$origin" "$home/fakehome/.tasks-axi" "$home/elsewhere"
+  tasks_in "$home" add "$origin" "Review backend path precedence" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the precedence origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Precedence review\n' > "$home/data/$origin/report.md"
+  run_captain "$home" hold "$hold" \
+    --title "Choose precedence route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route south.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the archive"
+  assert_grep "- [x] $hold -" "$home/data/done-archive.md" \
+    "the answered call did not reach the configured archive"
+
+  # The identity is genuinely OPEN again while the archive still carries the
+  # stale resolved cycle from the earlier round.
+  tasks_in "$home" add "$hold" "Reopened precedence call" --kind ship --repo sample >/dev/null \
+    || fail "could not re-open the identity"
+  tasks_in "$home" hold "$hold" --reason "captain route still pending" --kind captain >/dev/null \
+    || fail "could not re-activate the captain hold"
+  run_captain "$home" verify "$origin" >/dev/null \
+    || fail "a satisfied live hold did not verify under a healthy config"
+
+  # TASKS_AXI_FILE outranks both config files, so the backend reads that file and
+  # answers NOT_FOUND for every id when it does not exist. Proving the project
+  # backlog readable instead would accept that as "pruned" and let the stale
+  # archived cycle verify the still-open call.
+  set +e
+  TASKS_AXI_FILE="$home/elsewhere/absent-backlog.md" \
+    run_captain "$home" verify "$origin" > "$home/env-file.out" 2> "$home/env-file.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || fail "verification passed on an open captain call because TASKS_AXI_FILE named a backlog that does not exist"
+  assert_no_grep "^verified:" "$home/env-file.out" \
+    "an open captain call was reported verified from a backlog the backend could not read"
+  assert_grep "elsewhere/absent-backlog.md" "$home/env-file.err" \
+    "the failure did not name the backlog path TASKS_AXI_FILE resolved"
+  assert_grep "- [ ] $hold -" "$home/data/backlog.md" \
+    "the open captain call left the live backlog during the precedence check"
+
+  # The inverse, so the fix cannot be satisfied by refusing every override: an
+  # override naming a real backlog is authoritative, and an identity genuinely
+  # absent from THAT file still resolves from the archive.
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$home/elsewhere/backlog.md"
+  TASKS_AXI_FILE="$home/elsewhere/backlog.md" \
+    run_captain "$home" verify "$origin" > "$home/env-real.out" 2> "$home/env-real.err" \
+    || fail "a readable TASKS_AXI_FILE backlog blocked archive resolution: $(cat "$home/env-real.err")"
+
+  # The same hole through the home-level config the backend consults when the
+  # project config sets no path. HOME is redirected into the fixture so this
+  # never reads the developer's real ~/.tasks-axi/config.toml.
+  cat > "$home/.tasks.toml" <<'TOMLEOF'
+backend = "markdown"
+
+[markdown]
+done_keep = 10
+TOMLEOF
+  cat > "$home/fakehome/.tasks-axi/config.toml" <<'TOMLEOF'
+[markdown]
+path = "data/missing-backlog.md"
+TOMLEOF
+  set +e
+  HOME="$home/fakehome" \
+    run_captain "$home" verify "$origin" > "$home/home-toml.out" 2> "$home/home-toml.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || fail "verification passed on an open captain call because the home-level tasks-axi path was ignored"
+  assert_no_grep "^verified:" "$home/home-toml.out" \
+    "an open captain call was reported verified from a home-config backlog that does not exist"
+  assert_grep "data/missing-backlog.md" "$home/home-toml.err" \
+    "the failure did not name the backlog path the home-level config resolved"
+  pass "absence is proved only against the backlog tasks-axi itself resolved"
+}
+
+# The archive side of the same precedence: tasks-axi prunes into the archive its
+# own config resolution names, so a gate deriving a different path counts zero
+# archived records and re-mints an identity the retirement guard must refuse
+# permanently.
+test_backend_archive_precedence_governs_retirement() {
+  local home origin hold
+  home=$(make_home backend-archive-precedence)
+  origin=sample-archive-precedence-review
+  hold=sample-archive-precedence-call
+  mkdir -p "$home/data/$origin" "$home/fakehome/.tasks-axi"
+  cat > "$home/.tasks.toml" <<'TOMLEOF'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+done_keep = 10
+TOMLEOF
+  cat > "$home/fakehome/.tasks-axi/config.toml" <<'TOMLEOF'
+[markdown]
+archive = "data/calls-archive.md"
+TOMLEOF
+  HOME="$home/fakehome" tasks_in "$home" add "$origin" "Review archive precedence" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the archive-precedence origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Archive precedence review\n' > "$home/data/$origin/report.md"
+  HOME="$home/fakehome" run_captain "$home" hold "$hold" \
+    --title "Choose archive-precedence route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  HOME="$home/fakehome" run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route north.\n' > "$home/decision.txt"
+  HOME="$home/fakehome" run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  HOME="$home/fakehome" tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the home-configured archive"
+  assert_grep "- [x] $hold -" "$home/data/calls-archive.md" \
+    "tasks-axi did not archive into the path its home-level config names"
+  assert_absent "$home/data/done-archive.md" \
+    "tasks-axi archived to the derived default rather than the home-configured archive"
+
+  if HOME="$home/fakehome" run_captain "$home" hold "$hold" \
+    --title "Re-minted call" --reason "should refuse" --repo sample \
+    > "$home/archive-remint.out" 2> "$home/archive-remint.err"; then
+    fail "hold re-minted an identity durably resolved in the home-configured archive"
+  fi
+  assert_grep "already durably resolved" "$home/archive-remint.err" \
+    "the retirement guard did not read the archive tasks-axi actually pruned into"
+  HOME="$home/fakehome" run_captain "$home" verify "$origin" \
+    > "$home/archive-verify.out" 2> "$home/archive-verify.err" \
+    || fail "verify could not resolve the archived call from the home-configured archive: $(cat "$home/archive-verify.err")"
+  pass "the retirement guard reads the archive tasks-axi itself resolved"
+}
+
 # A read failure must never be reported as a nonexistent task: answers would
 # otherwise drop the captain's recorded words under a reason that is wrong.
 test_answers_reports_read_failure_not_absence() {
@@ -1986,6 +2134,8 @@ test_unrelated_config_error_never_proves_absence
 test_unreadable_archive_never_retires_or_re_mints
 test_missing_backlog_file_never_proves_absence
 test_unreachable_archive_directory_never_re_mints
+test_backend_path_precedence_governs_absence_proof
+test_backend_archive_precedence_governs_retirement
 test_answers_reports_read_failure_not_absence
 test_archive_config_absent_defaults_and_malformed_fails
 test_absent_tasks_toml_falls_back_to_backend_defaults

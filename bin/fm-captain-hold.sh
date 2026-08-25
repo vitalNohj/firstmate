@@ -268,7 +268,10 @@ task_show() {  # <id>
 # fail-open through a different key. The resolved backlog file must therefore be
 # readable before NOT_FOUND is accepted as proof that this identity left it, and
 # a backlog that is missing or unreachable fails loudly naming that path instead
-# of falling through to the archive.
+# of falling through to the archive. backlog_path resolves on the backend's own
+# precedence, so the file proved here is the file tasks-axi just read; proving a
+# different one would reopen the same hole through TASKS_AXI_FILE or the
+# home-level config.
 task_absent() {  # <id>; true only on a proven not-found result
   local id=$1 out rc backlog
   out=$(tasks_axi show "$id" --full 2>&1)
@@ -334,15 +337,16 @@ path_read_state() {  # <path>; prints readable, absent, or unreadable
   printf 'unreadable\n'
 }
 
-# Prints the configured value; returns 3 when the key is legitimately absent,
-# including when the whole config file is absent, which tasks-axi also reads as
-# every key defaulted. It fails loudly only when the key is present but not a
-# single unescaped quoted path. The accepted spellings track tasks-axi's own TOML
-# reader - inner-spaced section headers, a trailing inline comment after the
-# quoted value, and a repeated key whose last assignment wins all work there, so
-# this gate must not reject a home the backend itself archives correctly.
-markdown_config_value() {  # <key>
-  local key=$1 config="$FM_HOME/.tasks.toml" value rc=0
+# Prints the configured value from ONE config file; returns 3 when the key is
+# legitimately absent, including when the whole config file is absent, which
+# tasks-axi also reads as every key defaulted. It fails loudly only when the key
+# is present but not a single unescaped quoted path. The accepted spellings track
+# tasks-axi's own TOML reader - inner-spaced section headers, a trailing inline
+# comment after the quoted value, and a repeated key whose last assignment wins
+# all work there, so this gate must not reject a home the backend itself
+# archives correctly.
+markdown_config_value() {  # <key> <config-path>
+  local key=$1 config=$2 value rc=0
   [ -f "$config" ] || return 3
   value=$(awk -v wanted="$key" '
     BEGIN { sq = sprintf("%c", 39) }
@@ -382,14 +386,65 @@ home_relative_path() {  # <path>
   esac
 }
 
-# tasks-axi resolves its markdown backlog from [markdown] path, and when that key
-# is absent it takes the first existing of backlog.md and data/backlog.md under
-# the working home, falling back to backlog.md.
+# tasks-axi rejects a path override that is empty or only whitespace rather than
+# guessing, so a home the backend refuses outright must not resolve here either.
+validate_config_path() {  # <source> <value>
+  case "$2" in
+    *[![:space:]]*) : ;;
+    *) fail "tasks-axi $1 must not be empty" ;;
+  esac
+}
+
+# The home-level config tasks-axi consults after the project one. It is read from
+# the same HOME this process would hand the backend, so the gate and the backend
+# always agree on which file that is.
+tasks_axi_home_config() {
+  [ -n "${HOME:-}" ] || return 3
+  printf '%s/.tasks-axi/config.toml\n' "$HOME"
+}
+
+# The effective [markdown] <key> across BOTH TOMLs tasks-axi reads, in the
+# backend's own precedence: the project .tasks.toml first, then
+# ~/.tasks-axi/config.toml. Returns 3 only when neither file sets it.
+#
+# Consulting just one of them makes this gate resolve a file the backend never
+# read, which is the same fail-open the readability guards close: NOT_FOUND from
+# a backlog the backend resolved elsewhere would be "proved" against a healthy
+# unrelated file, and an archive resolved elsewhere would count zero records and
+# re-mint an already-answered call.
+markdown_config_key() {  # <key>
+  local key=$1 value rc=0 home_config
+  value=$(markdown_config_value "$key" "$FM_HOME/.tasks.toml") || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$value"; return 0 ;;
+    3) : ;;
+    *) exit 1 ;;
+  esac
+  home_config=$(tasks_axi_home_config) || return 3
+  rc=0
+  value=$(markdown_config_value "$key" "$home_config") || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$value"; return 0 ;;
+    3) return 3 ;;
+    *) exit 1 ;;
+  esac
+}
+
+# The backlog tasks-axi actually reads, resolved exactly as the backend resolves
+# it: an explicit TASKS_AXI_FILE outranks both config files, then [markdown] path
+# from the project config, then from the home config, and only when no key is set
+# does it take the first existing of backlog.md and data/backlog.md under the
+# working home, falling back to backlog.md.
 backlog_path() {
   local value rc=0
-  value=$(markdown_config_value path) || rc=$?
+  if [ -n "${TASKS_AXI_FILE+x}" ]; then
+    validate_config_path TASKS_AXI_FILE "$TASKS_AXI_FILE"
+    home_relative_path "$TASKS_AXI_FILE"
+    return 0
+  fi
+  value=$(markdown_config_key path) || rc=$?
   case "$rc" in
-    0) : ;;
+    0) validate_config_path markdown.path "$value" ;;
     3)
       value=backlog.md
       [ -f "$FM_HOME/backlog.md" ] || [ ! -f "$FM_HOME/data/backlog.md" ] || value=data/backlog.md
@@ -399,15 +454,22 @@ backlog_path() {
   home_relative_path "$value"
 }
 
-# The archive tasks-axi prunes into: [markdown] archive when it is set, and
-# otherwise the backend's own derived default of <backlog directory>/done-archive.md.
-# Deriving it keeps an absent optional key or an absent config file from blocking
-# this gate on a home the backend itself reads without complaint.
+# The archive tasks-axi prunes into: [markdown] archive from the project config,
+# then from the home config, and otherwise the backend's own derived default of
+# <resolved backlog directory>/done-archive.md. Deriving it keeps an absent
+# optional key or an absent config file from blocking this gate on a home the
+# backend itself reads without complaint. TASKS_AXI_FILE never names an archive,
+# but it moves the backlog the default is derived beside, which backlog_path
+# already honors.
 archive_path() {
   local value rc=0 backlog
-  value=$(markdown_config_value archive) || rc=$?
+  value=$(markdown_config_key archive) || rc=$?
   case "$rc" in
-    0) home_relative_path "$value"; return 0 ;;
+    0)
+      validate_config_path markdown.archive "$value"
+      home_relative_path "$value"
+      return 0
+      ;;
     3) : ;;
     *) exit 1 ;;
   esac
