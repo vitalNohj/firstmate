@@ -757,7 +757,7 @@ test_arm_signal_exits_when_child_ignores_term() {
   armout="$dir/arm.out"
   # A short reap budget keeps the case fast; the arm must still escalate and exit
   # rather than block forever, which is the behavior under test.
-  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CHILD_REAP_POLLS=10 "$WATCH_ARM" > "$armout" &
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CHILD_REAP_POLLS=10 FM_ARM_CHILD_REAP_RETRY_POLLS=5 "$WATCH_ARM" > "$armout" &
   armpid=$!
   i=0
   while [ "$i" -lt 80 ]; do
