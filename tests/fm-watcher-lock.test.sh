@@ -21,11 +21,11 @@ LIB="$ROOT/bin/fm-wake-lib.sh"
 ARM_FAIL_EXIT_POLLS=400
 
 # Signal-driven arm shutdown cannot beat the child watcher's current poll sleep:
-# the child only runs its TERM handler when that sleep returns, so a case using
-# FM_POLL=5 needs just over 5s before the arm can report its own exit status.
-# 80 polls (8s) left ~2.8s of headroom, which a loaded machine running the full
-# suite in parallel can consume, so these waits scale with the poll budget
-# instead of assuming a wall time that only holds on an idle host.
+# the child runs its TERM handler only when that sleep returns, so a case using
+# FM_POLL=5 measures ~5.15s before the arm can report its own exit status. The
+# previous 80 polls (8s) left under 3s of headroom on top of that, which is thin
+# for a wall-clock bound on a loaded host, so these waits scale with the poll
+# budget they actually depend on.
 ARM_SIGNAL_EXIT_POLLS=200
 
 TMP_ROOT=$(fm_test_tmproot fm-watcher-lock-tests)
