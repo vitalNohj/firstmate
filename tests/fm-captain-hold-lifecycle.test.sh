@@ -1481,6 +1481,151 @@ test_unreadable_archive_never_retires_or_re_mints() {
   pass "an unreadable archive fails loudly instead of reading as no archived record"
 }
 
+# NOT_FOUND proves absence only when the backlog it was read from actually
+# exists. tasks-axi reads a missing backlog file as an empty backlog and answers
+# NOT_FOUND for EVERY id, so a mistyped [markdown] path or a backlog moved aside
+# would prove every open captain call "pruned" and let a stale archived cycle
+# verify it - the identical fail-open, reached through the path key.
+test_missing_backlog_file_never_proves_absence() {
+  local home origin hold archive rc
+  home=$(make_home missing-backlog-absence)
+  origin=sample-missing-backlog-review
+  archive="$home/data/done-archive.md"
+  mkdir -p "$home/data/$origin"
+  tasks_in "$home" add "$origin" "Review missing backlog absence" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the missing-backlog origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Missing backlog review\n' > "$home/data/$origin/report.md"
+  hold=sample-missing-backlog-call
+  run_captain "$home" hold "$hold" \
+    --title "Choose missing-backlog route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route west.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the archive"
+  assert_grep "- [x] $hold -" "$archive" \
+    "the answered call did not reach the configured archive"
+
+  # Re-open the identity, so the captain call is genuinely OPEN while the
+  # archive still holds the stale resolved cycle from the earlier round.
+  tasks_in "$home" add "$hold" "Reopened missing-backlog call" --kind ship --repo sample >/dev/null \
+    || fail "could not re-open the identity"
+  tasks_in "$home" hold "$hold" --reason "captain route still pending" --kind captain >/dev/null \
+    || fail "could not re-activate the captain hold"
+  run_captain "$home" verify "$origin" >/dev/null \
+    || fail "a satisfied live hold did not verify under a healthy config"
+
+  # The backlog file the config resolves to is gone; the real record of the open
+  # call still exists on disk beside it.
+  mv "$home/data/backlog.md" "$home/data/backlog.md.moved"
+  set +e
+  run_captain "$home" verify "$origin" > "$home/missing-backlog.out" 2> "$home/missing-backlog.err"
+  rc=$?
+  set -e
+  mv "$home/data/backlog.md.moved" "$home/data/backlog.md"
+  [ "$rc" -ne 0 ] \
+    || fail "verification passed on an open captain call because the resolved backlog file was missing"
+  assert_no_grep "^verified:" "$home/missing-backlog.out" \
+    "an open captain call was reported verified with no backlog to read it from"
+  assert_grep "data/backlog.md" "$home/missing-backlog.err" \
+    "the failure did not name the resolved backlog path that is missing"
+
+  # The same hole through the config key rather than the file: a well-formed but
+  # wrong path resolves to a file that does not exist.
+  sed 's|^path = "data/backlog.md"|path = "data/backlogg.md"|' "$home/.tasks.toml" > "$home/.tasks.toml.tmp"
+  mv "$home/.tasks.toml.tmp" "$home/.tasks.toml"
+  set +e
+  run_captain "$home" verify "$origin" > "$home/wrong-path.out" 2> "$home/wrong-path.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || fail "verification passed on an open captain call because [markdown] path named a nonexistent file"
+  assert_no_grep "^verified:" "$home/wrong-path.out" \
+    "an open captain call was reported verified from a mistyped backlog path"
+  assert_grep "data/backlogg.md" "$home/wrong-path.err" \
+    "the failure did not name the mistyped backlog path it resolved"
+  pass "a missing resolved backlog file never proves a captain call absent"
+}
+
+# The archive-readability guard must see a file it cannot reach because of its
+# PARENT directory, not only one whose own mode denies the read: `[ -f ]` and
+# `[ -r ]` both answer false under an unsearchable directory, which reads as
+# "absent, count 0" and lets hold re-mint an already-answered captain call.
+test_unreachable_archive_directory_never_re_mints() {
+  local home origin hold archive_dir rc
+  home=$(make_home unreachable-archive-dir)
+  origin=sample-archive-dir-review
+  archive_dir="$home/arch"
+  mkdir -p "$home/data/$origin" "$archive_dir"
+  cat > "$home/.tasks.toml" <<'TOMLEOF'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+archive = "arch/done-archive.md"
+done_keep = 10
+TOMLEOF
+  tasks_in "$home" add "$origin" "Review unreachable archive directory" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the unreachable-archive-dir origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Unreachable archive directory review\n' > "$home/data/$origin/report.md"
+  hold=sample-archive-dir-call
+  run_captain "$home" hold "$hold" \
+    --title "Choose archive-dir route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route up.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the configured archive"
+  assert_grep "- [x] $hold -" "$archive_dir/done-archive.md" \
+    "the answered call did not reach the configured archive"
+
+  # Readable: the retirement guard refuses to re-mint the answered identity.
+  if run_captain "$home" hold "$hold" \
+    --title "Re-minted call" --reason "should refuse" --repo sample \
+    > "$home/dir-retire.out" 2> "$home/dir-retire.err"; then
+    fail "hold re-created an identity already durably resolved in the archive"
+  fi
+  assert_grep "already durably resolved" "$home/dir-retire.err" \
+    "the retirement guard did not name the durable archived resolution"
+
+  chmod 000 "$archive_dir"
+  set +e
+  run_captain "$home" hold "$hold" \
+    --title "Re-minted call" --reason "should refuse" --repo sample \
+    > "$home/dir-unreachable.out" 2> "$home/dir-unreachable.err"
+  rc=$?
+  set -e
+  chmod 700 "$archive_dir"
+  [ "$rc" -ne 0 ] \
+    || fail "hold re-minted an already-answered captain call while the archive directory was unreachable"
+  assert_grep "cannot read the configured tasks-axi archive" "$home/dir-unreachable.err" \
+    "an archive behind an unsearchable directory was not reported as a read failure"
+
+  chmod 000 "$archive_dir"
+  set +e
+  run_captain "$home" verify "$origin" > "$home/dir-verify.out" 2> "$home/dir-verify.err"
+  rc=$?
+  set -e
+  chmod 700 "$archive_dir"
+  [ "$rc" -ne 0 ] \
+    || fail "verify passed while the configured archive could not be reached"
+  assert_no_grep "absent from the live backlog and configured archive" "$home/dir-verify.err" \
+    "an unreachable archive was reported as a missing identity"
+  pass "an archive unreachable through its parent directory fails loudly instead of counting zero"
+}
+
 # A read failure must never be reported as a nonexistent task: answers would
 # otherwise drop the captain's recorded words under a reason that is wrong.
 test_answers_reports_read_failure_not_absence() {
@@ -1839,6 +1984,8 @@ test_unreadable_live_backlog_never_falls_back_to_archive
 test_pruned_identity_still_resolves_from_archive
 test_unrelated_config_error_never_proves_absence
 test_unreadable_archive_never_retires_or_re_mints
+test_missing_backlog_file_never_proves_absence
+test_unreachable_archive_directory_never_re_mints
 test_answers_reports_read_failure_not_absence
 test_archive_config_absent_defaults_and_malformed_fails
 test_absent_tasks_toml_falls_back_to_backend_defaults

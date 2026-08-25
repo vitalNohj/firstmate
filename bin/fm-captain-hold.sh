@@ -261,15 +261,77 @@ task_show() {  # <id>
 # config problem resolve the archive path first, so markdown_config_value still
 # reports a malformed archive key with its own precise message before this
 # helper is ever consulted.
+#
+# NOT_FOUND alone is still not enough. tasks-axi reads a backlog file that does
+# not exist as an empty backlog, so it answers NOT_FOUND for EVERY id when the
+# resolved [markdown] path is wrong or the file was moved away - the same
+# fail-open through a different key. The resolved backlog file must therefore be
+# readable before NOT_FOUND is accepted as proof that this identity left it, and
+# a backlog that is missing or unreachable fails loudly naming that path instead
+# of falling through to the archive.
 task_absent() {  # <id>; true only on a proven not-found result
-  local id=$1 out rc
+  local id=$1 out rc backlog
   out=$(tasks_axi show "$id" --full 2>&1)
   rc=$?
   [ "$rc" -eq 0 ] && return 1
   case $out in
-    *'code: NOT_FOUND'*) return 0 ;;
+    *'code: NOT_FOUND'*)
+      backlog=$(backlog_path) || exit 1
+      case "$(path_read_state "$backlog")" in
+        readable) return 0 ;;
+        absent)
+          fail "the configured tasks-axi backlog $backlog does not exist, so task $id being reported not found proves nothing"
+          ;;
+        *) fail "cannot read the live backlog $backlog for task $id" ;;
+      esac
+      ;;
   esac
   fail "cannot read the live backlog for task $id: ${out:-tasks-axi show failed with status $rc}"
+}
+
+# Whether a path can actually be opened for reading, is genuinely absent, or
+# exists-or-may-exist behind something this process cannot reach.
+#
+# `[ -f ]` and `[ -r ]` both answer false for a file that exists under a
+# directory that is not searchable, so pre-testing a read with them turns a
+# permission failure into "absent" - the same read-failure-as-absence confusion
+# task_absent closes on the live side, and the one that let `hold` re-mint an
+# identity the retirement guard must refuse permanently. Absence is proved here
+# by walking the path from its root and confirming every ancestor is searchable,
+# so only a component that genuinely does not exist reads as absent.
+path_read_state() {  # <path>; prints readable, absent, or unreadable
+  local path=$1 prefix rest component next
+  if [ -f "$path" ] && [ -r "$path" ]; then
+    printf 'readable\n'
+    return 0
+  fi
+  if [ -e "$path" ]; then
+    printf 'unreadable\n'
+    return 0
+  fi
+  case $path in
+    /*) prefix=''; rest=${path#/} ;;
+    *) prefix='.'; rest=$path ;;
+  esac
+  while [ -n "$rest" ]; do
+    component=${rest%%/*}
+    case $rest in
+      */*) rest=${rest#*/} ;;
+      *) rest='' ;;
+    esac
+    [ -n "$component" ] || continue
+    next="$prefix/$component"
+    if [ ! -e "$next" ]; then
+      printf 'absent\n'
+      return 0
+    fi
+    if [ -n "$rest" ] && [ ! -x "$next" ]; then
+      printf 'unreadable\n'
+      return 0
+    fi
+    prefix=$next
+  done
+  printf 'unreadable\n'
 }
 
 # Prints the configured value; returns 3 when the key is legitimately absent,
@@ -364,14 +426,18 @@ archive_path() {
 # expression expected" and is then taken as "no archived record" - the same
 # read-failure-as-absence confusion task_absent closes on the live side. Left
 # open it lets `hold` re-mint an identity the retirement guard must refuse
-# permanently, so fail loudly instead.
+# permanently, so fail loudly instead. Absence is classified by path_read_state
+# rather than by -f/-r, which cannot see past an unsearchable parent directory.
 archive_task_record_count() {  # <id> <archive-path>
   local id=$1 archive=$2 count
-  if [ ! -f "$archive" ]; then
-    printf '0\n'
-    return 0
-  fi
-  [ -r "$archive" ] || fail "cannot read the configured tasks-axi archive $archive"
+  case "$(path_read_state "$archive")" in
+    absent)
+      printf '0\n'
+      return 0
+      ;;
+    readable) : ;;
+    *) fail "cannot read the configured tasks-axi archive $archive" ;;
+  esac
   count=$(awk -v id="$id" '
     function starts_task(line) {
       return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
@@ -387,8 +453,11 @@ archive_task_record_count() {  # <id> <archive-path>
 
 archive_task_record() {  # <id> <archive-path> <index>
   local id=$1 archive=$2 want=$3
-  [ -f "$archive" ] || return 1
-  [ -r "$archive" ] || fail "cannot read the configured tasks-axi archive $archive"
+  case "$(path_read_state "$archive")" in
+    absent) return 1 ;;
+    readable) : ;;
+    *) fail "cannot read the configured tasks-axi archive $archive" ;;
+  esac
   awk -v id="$id" -v want="$want" '
     function starts_task(line) {
       return index(line, "- [x] " id " - ") == 1 || index(line, "- [ ] " id " - ") == 1
@@ -451,9 +520,10 @@ archived_record_defect() {  # <id> <record>
 # which would re-mint an already-answered call, so readability is asserted here
 # before the predicate's own output is discarded.
 archive_hold_is_durably_resolved() {  # <id> <archive-path>
-  if [ -f "$2" ] && [ ! -r "$2" ]; then
-    fail "cannot read the configured tasks-axi archive $2"
-  fi
+  case "$(path_read_state "$2")" in
+    absent|readable) : ;;
+    *) fail "cannot read the configured tasks-axi archive $2" ;;
+  esac
   (verify_archived_hold_resolved "$1" "$2" >/dev/null 2>&1)
 }
 

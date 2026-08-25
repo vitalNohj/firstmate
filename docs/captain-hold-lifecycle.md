@@ -39,6 +39,8 @@ The structured fields are read only from the header block, so arbitrary captain 
 Records written by the retired `bin/fm-decision-hold.sh` are accepted there on the same terms.
 `hold` reads that archive against the same predicate when it would create a new task, so a resolved-and-pruned identity is permanently retired and a new captain call needs its own task, while an identity pruned without a resolution record stays re-holdable because no command can rewrite an archived body.
 The configured archive path is read from `[markdown] archive`, accepting the same spellings tasks-axi itself accepts, and when that optional key or `.tasks.toml` itself is absent it falls back to tasks-axi's own derived default of `done-archive.md` beside the resolved `[markdown] path` backlog, so a home with a customized backlog path never blocks teardown.
+Only a proven absence may reach the archive at all: a read or configuration failure is never absence, so tasks-axi's `NOT_FOUND` counts as proof only once the resolved `[markdown] path` backlog file is itself readable, since a backlog file that does not exist reads as an empty backlog and answers `NOT_FOUND` for every id.
+A missing or unreachable backlog, and an archive that exists but cannot be opened - including one behind a directory this process cannot search - each fail loudly naming the resolved path, while a genuinely absent archive still counts zero archived records.
 
 ## Answer-time closure
 
