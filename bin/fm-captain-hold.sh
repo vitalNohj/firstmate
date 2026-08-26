@@ -265,31 +265,70 @@ task_show() {  # <id>
 # NOT_FOUND alone is still not enough. tasks-axi reads a backlog file that does
 # not exist as an empty backlog, so it answers NOT_FOUND for EVERY id when the
 # resolved [markdown] path is wrong or the file was moved away - the same
-# fail-open through a different key. The resolved backlog file must therefore be
-# readable before NOT_FOUND is accepted as proof that this identity left it, and
-# a backlog that is missing or unreachable fails loudly naming that path instead
-# of falling through to the archive. backlog_path resolves on the backend's own
-# precedence, so the file proved here is the file tasks-axi just read; proving a
-# different one would reopen the same hole through TASKS_AXI_FILE or the
-# home-level config.
-task_absent() {  # <id>; true only on a proven not-found result
+# fail-open through a different key. The state of the resolved backlog file is
+# therefore reported alongside the backend's answer, so each caller applies the
+# rule its own question needs. backlog_path resolves on the backend's own
+# precedence, so the file classified here is the file tasks-axi just read;
+# classifying a different one would reopen the same hole through TASKS_AXI_FILE
+# or the home-level config.
+#
+# Prints one of:
+#   present    - the backend returned the task
+#   absent     - a proven NOT_FOUND against a backlog file that exists and reads
+#   unwritten  - a NOT_FOUND against a backlog file that does not exist at all,
+#                which shows the id is unheld but proves nothing about whether a
+#                recorded identity ever left that file
+# Every other backend result, and a backlog that exists but cannot be read,
+# fails loudly rather than being classified.
+task_live_state() {  # <id>
   local id=$1 out rc backlog
   out=$(tasks_axi show "$id" --full 2>&1)
   rc=$?
-  [ "$rc" -eq 0 ] && return 1
+  if [ "$rc" -eq 0 ]; then
+    printf 'present\n'
+    return 0
+  fi
   case $out in
     *'code: NOT_FOUND'*)
       backlog=$(backlog_path) || exit 1
       case "$(path_read_state "$backlog")" in
-        readable) return 0 ;;
-        absent)
-          fail "the configured tasks-axi backlog $backlog does not exist, so task $id being reported not found proves nothing"
-          ;;
+        readable) printf 'absent\n'; return 0 ;;
+        absent) printf 'unwritten\n'; return 0 ;;
         *) fail "cannot read the live backlog $backlog for task $id" ;;
       esac
       ;;
   esac
   fail "cannot read the live backlog for task $id: ${out:-tasks-axi show failed with status $rc}"
+}
+
+# Proof that a recorded identity LEFT the live backlog, which is what every
+# archive fallback rests on. A backlog file that was never written cannot carry
+# that proof - NOT_FOUND is answered against it for every id alike - so it fails
+# loudly here rather than letting a stale archived cycle stand in for a captain
+# call that is still genuinely open.
+task_absent() {  # <id>; true only on a proven departure from a readable backlog
+  local id=$1 state backlog
+  state=$(task_live_state "$id") || exit 1
+  case "$state" in
+    present) return 1 ;;
+    absent) return 0 ;;
+  esac
+  backlog=$(backlog_path) || exit 1
+  fail "the configured tasks-axi backlog $backlog does not exist, so task $id being reported not found proves nothing"
+}
+
+# The opposite question, asked only where a task is about to be CREATED: does the
+# live backlog already carry this id? A home whose backlog file has not been
+# written yet answers that correctly - nothing carries the id, and `tasks-axi
+# add` creates the file - so the first captain call in a fresh home is not
+# blocked. This is never proof that a recorded identity departed, so it must not
+# be used to reach the archive fallback. A backlog that exists and cannot be read
+# still fails inside task_live_state, so a read failure is never mistaken for a
+# free identity and cannot add a second task over an existing one.
+task_identity_is_free() {  # <id>
+  local state
+  state=$(task_live_state "$1") || exit 1
+  [ "$state" != present ]
 }
 
 # Whether a path can actually be opened for reading, is genuinely absent, or
@@ -395,12 +434,45 @@ validate_config_path() {  # <source> <value>
   esac
 }
 
-# The home-level config tasks-axi consults after the project one. It is read from
-# the same HOME this process would hand the backend, so the gate and the backend
-# always agree on which file that is.
+# The home directory tasks-axi resolves its home-level config against, mirroring
+# node's os.homedir(): the HOME this process would hand the backend when it is
+# set, INCLUDING when it is set to the empty string, and otherwise this user's
+# passwd entry, which homedir() falls back to when HOME is unset. Returns 3 only
+# when neither can be determined.
+tasks_axi_homedir() {
+  local user home
+  if [ -n "${HOME+x}" ]; then
+    printf '%s\n' "$HOME"
+    return 0
+  fi
+  user=$(id -un 2>/dev/null) || return 3
+  case "$user" in
+    ''|*[!A-Za-z0-9._-]*) return 3 ;;
+  esac
+  eval "home=~$user" 2>/dev/null || return 3
+  case "$home" in
+    /*) : ;;
+    *) return 3 ;;
+  esac
+  printf '%s\n' "$home"
+}
+
+# The home-level config tasks-axi consults after the project one, resolved to the
+# same file the backend opens so the gate and the backend always agree on which
+# file that is.
+#
+# The backend joins its homedir() with .tasks-axi/config.toml, so an EMPTY home
+# yields the RELATIVE path .tasks-axi/config.toml, which it then reads against
+# its own working directory - the FM_HOME every tasks_axi call runs in. Skipping
+# the file in that case would prove a config the backend never read, which is the
+# same fail-open the path-precedence guards close.
 tasks_axi_home_config() {
-  [ -n "${HOME:-}" ] || return 3
-  printf '%s/.tasks-axi/config.toml\n' "$HOME"
+  local home
+  home=$(tasks_axi_homedir) || return 3
+  case "$home" in
+    '') home_relative_path '.tasks-axi/config.toml' ;;
+    *) printf '%s/.tasks-axi/config.toml\n' "$home" ;;
+  esac
 }
 
 # The effective [markdown] <key> across BOTH TOMLs tasks-axi reads, in the
@@ -844,9 +916,12 @@ command_hold() {
     [ -n "$title" ] || fail "--title is required to create task $id"
     validate_one_line title "$title"
     archive=$(archive_path) || exit 1
-    # An unreadable backlog must not be mistaken for a free identity, which
-    # would add a second task over an existing one.
-    task_absent "$id" || exit 1
+    # A backlog that cannot be read must not be mistaken for a free identity,
+    # which would add a second task over an existing one. A backlog file that
+    # does not exist yet is a different matter: it holds no task, so the first
+    # captain call in a fresh home creates one through `tasks-axi add`. The
+    # retirement guard below is a separate read of the archive and still applies.
+    task_identity_is_free "$id" || exit 1
     archive_hold_is_durably_resolved "$id" "$archive" \
       && fail "captain-held task $id is already durably resolved in the configured tasks-axi archive; a new captain call needs its own task"
     if [ -z "$repo" ] && [ -n "$origin" ] && [ -f "$STATE/$origin.meta" ]; then

@@ -1553,6 +1553,77 @@ test_missing_backlog_file_never_proves_absence() {
   pass "a missing resolved backlog file never proves a captain call absent"
 }
 
+# "A backlog file that does not exist proves nothing" is a rule about DEPARTURE:
+# a recorded identity reported NOT_FOUND against a file that was never written
+# may not be judged from a stale archived cycle. `hold` asks the opposite
+# question before creating a task - is this identity already carried live - and a
+# home whose backlog has not been written yet answers that correctly, because
+# `tasks-axi add` creates the file. Nothing under bin/ writes data/backlog.md for
+# a main home and data/ is gitignored, so refusing there strands a fresh clone or
+# a freshly seeded secondmate home: it cannot mint its first captain call at all.
+test_first_call_in_a_home_with_no_backlog_file() {
+  local home hold archive rc
+  home=$(make_home first-call-no-backlog)
+  hold=sample-first-call
+  archive="$home/data/done-archive.md"
+  rm -f "$home/data/backlog.md"
+  assert_absent "$home/data/backlog.md" \
+    "the fixture must start with no backlog file at all"
+
+  run_captain "$home" hold "$hold" \
+    --title "Choose the first route" --reason "captain route pending" --repo sample \
+    > "$home/first-call.out" 2> "$home/first-call.err" \
+    || fail "the first captain call in a home with no backlog file was refused: $(cat "$home/first-call.err")"
+  assert_grep "$hold" "$home/first-call.out" \
+    "hold did not print the id of the captain call it created"
+  assert_present "$home/data/backlog.md" \
+    "the first captain call did not create the configured backlog file"
+  assert_grep "- [ ] $hold -" "$home/data/backlog.md" \
+    "the created captain call is not carried by the live backlog"
+  tasks_in "$home" show "$hold" --full > "$home/first-call-show.txt" \
+    || fail "the created captain call is not readable through tasks-axi"
+  assert_grep "hold_kind: captain" "$home/first-call-show.txt" \
+    "the created task did not retain its captain hold"
+
+  # The same fresh-home path must still refuse an identity already durably
+  # resolved in a reachable archive: that guard is a separate read, and an
+  # unwritten backlog must not disable it.
+  printf 'Use the first route.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the first captain call"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered first call into the archive"
+  assert_grep "- [x] $hold -" "$archive" \
+    "the answered first call did not reach the configured archive"
+  mv "$home/data/backlog.md" "$home/data/backlog.md.moved"
+  set +e
+  run_captain "$home" hold "$hold" \
+    --title "Re-minted first call" --reason "should refuse" --repo sample \
+    > "$home/first-remint.out" 2> "$home/first-remint.err"
+  rc=$?
+  set -e
+  mv "$home/data/backlog.md.moved" "$home/data/backlog.md"
+  [ "$rc" -ne 0 ] \
+    || fail "hold re-minted an identity durably resolved in the archive because the backlog file was missing"
+  assert_grep "already durably resolved" "$home/first-remint.err" \
+    "the retirement guard did not refuse the archived resolution from a home with no backlog file"
+
+  # And a backlog that EXISTS but cannot be read is still never a free identity.
+  chmod 000 "$home/data/backlog.md"
+  set +e
+  run_captain "$home" hold sample-unreadable-first-call \
+    --title "Unreadable first call" --reason "should refuse" --repo sample \
+    > "$home/first-unreadable.out" 2> "$home/first-unreadable.err"
+  rc=$?
+  set -e
+  chmod 600 "$home/data/backlog.md"
+  [ "$rc" -ne 0 ] \
+    || fail "hold treated an unreadable backlog as a free identity"
+  assert_grep "cannot read the live backlog" "$home/first-unreadable.err" \
+    "an unreadable backlog was not reported as a read failure by hold"
+  pass "a home with no backlog file mints its first captain call and still refuses a retired one"
+}
+
 # The archive-readability guard must see a file it cannot reach because of its
 # PARENT directory, not only one whose own mode denies the read: `[ -f ]` and
 # `[ -r ]` both answer false under an unsearchable directory, which reads as
@@ -1809,6 +1880,111 @@ test_answers_reports_read_failure_not_absence() {
   assert_no_grep "no captain-held task with that id" "$home/answers.out" \
     "answers reported a read failure as a nonexistent task, dropping the captain's answer"
   pass "answers reports an unreadable backlog as a read failure rather than a missing task"
+}
+
+# tasks-axi locates its home-level config through node's os.homedir(), which is
+# NOT "$HOME or nothing": an unset HOME falls back to this user's passwd entry,
+# and an EMPTY HOME makes join("", ".tasks-axi", "config.toml") the RELATIVE path
+# the backend then reads from the directory it runs in - the home itself. A gate
+# that skips the file in either case proves a config the backend never read, the
+# same fail-open the path-precedence guards close: the backend answers NOT_FOUND
+# for every id against the backlog its home config named, the gate finds its own
+# derived backlog healthy, and a stale archived cycle verifies an open call.
+test_home_config_resolution_matches_backend() {
+  local home origin hold rc
+  home=$(make_home home-config-resolution)
+  origin=sample-home-config-review
+  hold=sample-home-config-call
+  mkdir -p "$home/data/$origin" "$home/.tasks-axi" "$home/emptyhome"
+  tasks_in "$home" add "$origin" "Review home config resolution" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create the home-config origin"
+  write_origin_meta "$home" "$origin"
+  printf 'done: report complete\n' > "$home/state/$origin.status"
+  printf '# Home config review\n' > "$home/data/$origin/report.md"
+  run_captain "$home" hold "$hold" \
+    --title "Choose home-config route" --reason "captain route pending" --repo sample >/dev/null \
+    || fail "could not create the hold"
+  run_captain "$home" complete "$origin" "$hold" >/dev/null \
+    || fail "could not record the call inventory"
+  printf 'Use route east.\n' > "$home/decision.txt"
+  run_captain "$home" answer "$hold" --decision-file "$home/decision.txt" >/dev/null \
+    || fail "could not answer the call before pruning"
+  tasks_in "$home" prune --state "done" --keep 0 >/dev/null \
+    || fail "could not prune the answered call into the archive"
+  assert_grep "- [x] $hold -" "$home/data/done-archive.md" \
+    "the answered call did not reach the configured archive"
+
+  # The identity is genuinely OPEN again while the archive keeps the stale
+  # resolved cycle from the earlier round.
+  tasks_in "$home" add "$hold" "Reopened home-config call" --kind ship --repo sample >/dev/null \
+    || fail "could not re-open the identity"
+  tasks_in "$home" hold "$hold" --reason "captain route still pending" --kind captain >/dev/null \
+    || fail "could not re-activate the captain hold"
+
+  # Only the home-level config names a backlog path, so it alone decides which
+  # file the backend reads.
+  cat > "$home/.tasks.toml" <<'TOMLEOF'
+backend = "markdown"
+
+[markdown]
+done_keep = 10
+TOMLEOF
+  cat > "$home/.tasks-axi/config.toml" <<'TOMLEOF'
+[markdown]
+path = "data/missing-home-backlog.md"
+TOMLEOF
+
+  # An EMPTY HOME: the backend reads the relative .tasks-axi/config.toml from the
+  # home it runs in, so it resolves a backlog that does not exist and reports
+  # NOT_FOUND for the still-open call.
+  HOME='' tasks_in "$home" show "$hold" --full > "$home/empty-home-show.out" 2>&1 \
+    && fail "the backend did not read the relative home config under an empty HOME"
+  assert_grep "code: NOT_FOUND" "$home/empty-home-show.out" \
+    "the backend did not resolve the empty-HOME config to a backlog without the call"
+  set +e
+  HOME='' run_captain "$home" verify "$origin" > "$home/empty-home.out" 2> "$home/empty-home.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || fail "verification passed on an open captain call because the empty-HOME config was skipped"
+  assert_no_grep "^verified:" "$home/empty-home.out" \
+    "an open captain call was reported verified from a config the backend never read"
+  assert_grep "data/missing-home-backlog.md" "$home/empty-home.err" \
+    "the failure did not name the backlog path the empty-HOME config resolved"
+  assert_grep "- [ ] $hold -" "$home/data/backlog.md" \
+    "the open captain call left the live backlog during the empty-HOME check"
+
+  # An UNSET HOME resolves against this user's passwd entry instead, so the very
+  # same relative file must NOT be read. The gate must reach whatever conclusion
+  # the backend itself reaches from that resolution, so the backend is asked
+  # first and its answer decides what verify must do - which keeps this leg
+  # correct on a machine that does happen to carry a real ~/.tasks-axi config,
+  # without ever writing to the developer's home.
+  (unset HOME; tasks_in "$home" show "$hold" --full) > "$home/unset-home-show.out" 2>&1
+  set +e
+  (unset HOME; run_captain "$home" verify "$origin") \
+    > "$home/unset-home.out" 2> "$home/unset-home.err"
+  rc=$?
+  set -e
+  if grep -F -- "hold_kind: captain" "$home/unset-home-show.out" >/dev/null; then
+    [ "$rc" -eq 0 ] \
+      || fail "verify refused a call the backend reads as open under an unset HOME: $(cat "$home/unset-home.err")"
+    assert_grep "verified:" "$home/unset-home.out" \
+      "a satisfied live hold did not verify under an unset HOME"
+  else
+    [ "$rc" -ne 0 ] \
+      || fail "verify passed on an open captain call the backend could not read under an unset HOME"
+  fi
+  assert_no_grep "data/missing-home-backlog.md" "$home/unset-home.err" \
+    "an unset HOME read the fixture's relative .tasks-axi config the backend resolved elsewhere"
+
+  # And a HOME pointing at a disposable directory with no config of its own is
+  # the ordinary case: neither file names a path, so the derived default governs.
+  HOME="$home/emptyhome" run_captain "$home" verify "$origin" \
+    > "$home/set-home.out" 2> "$home/set-home.err" \
+    || fail "a satisfied live hold did not verify under a config-free HOME: $(cat "$home/set-home.err")"
+  pass "the home-level tasks-axi config is resolved exactly as the backend resolves it"
 }
 
 # tasks-axi treats [markdown] archive as optional and derives its own default
@@ -2137,6 +2313,8 @@ test_unreachable_archive_directory_never_re_mints
 test_backend_path_precedence_governs_absence_proof
 test_backend_archive_precedence_governs_retirement
 test_answers_reports_read_failure_not_absence
+test_first_call_in_a_home_with_no_backlog_file
+test_home_config_resolution_matches_backend
 test_archive_config_absent_defaults_and_malformed_fails
 test_absent_tasks_toml_falls_back_to_backend_defaults
 test_archive_config_matches_backend_toml_spellings
