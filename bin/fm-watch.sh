@@ -101,6 +101,17 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-push-transition-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# Single owner of durable merge-outcome publication, shared with
+# bin/fm-pr-merge.sh so self and poll origins use the same role-routed outcome.
+# The watcher still owns immediate delivery of its actionable poll result and
+# poll retirement.
+# This library is a canonical lint root in its own right, and it reaches the
+# wake queue, PR identity, and secondmate parent libraries. Keep it an analysis
+# boundary here for the same reason as the transition and inbox owners above and
+# below: following its graph from this large runtime exceeds the bounded CI lint
+# worker while adding no uncovered file.
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/fm-merge-outcome-lib.sh"
 # shellcheck source=bin/fm-x-lib.sh
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-check-lib.sh
@@ -1098,6 +1109,18 @@ if ! fm_pr_poll_retirement_recover_all "$STATE" "$SCRIPT_DIR/fm-pr-poll.sh"; the
   wake "$reason"
 fi
 
+# Shared by both the first-notification and already-notified paths below so
+# the retirement sequence (bin/fm-pr-lib.sh) is stated once.
+retire_merged_pr_poll() {  # <id>
+  local id=$1
+  if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" merged; then
+    fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
+      || triage_log "merged PR poll retirement remains recoverable for $id"
+  else
+    triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
+  fi
+}
+
 resurface_after_downtime() {
   # Handling successors already have a predecessor-delivered wake on the way.
   # Re-announcing from this cycle is what turned a lost handshake into an
@@ -1218,15 +1241,23 @@ while :; do
       fi
       if [ -n "$out" ]; then
         reason="check: $c: $out"
-        fm_wake_append check "$c" "$reason" || exit 1
         if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
-          if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$out"; then
-            fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
-              || triage_log "merged PR poll retirement remains recoverable for $id"
-          else
-            triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
+          merge_outcome_rc=0
+          fm_merge_outcome_report "$FM_HOME" "$STATE" "$id" "$url" poll \
+            || merge_outcome_rc=$?
+          if [ "$merge_outcome_rc" -ne 0 ]; then
+            triage_log "merge outcome for $id could not be recorded (rc=$merge_outcome_rc)"
+            exit 1
           fi
+          retire_merged_pr_poll "$id"
+          touch "$STATE/.last-check"
+          if [ "$FM_MERGE_OUTCOME_ALREADY_RECORDED" = true ]; then
+            triage_log "absorbed duplicate merged PR poll result for $id"
+            continue
+          fi
+          wake "$reason"
         fi
+        fm_wake_append check "$c" "$reason" || exit 1
         touch "$STATE/.last-check"
         wake "$reason"
       fi
