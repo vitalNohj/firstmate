@@ -46,12 +46,15 @@
 #                          (state/<id>.turn-ended, or the spawn record before any
 #                          turn completes). Past that bound, a declared external
 #                          wait or verified captain-held transfer uses the long
-#                          pause recheck cadence; every other pane goes through
-#                          the same wedge timer and surfaces with the identical
-#                          "stale: ..." reason, escalation count, and
-#                          demand-deep-inspection marker, for human inspection
-#                          only - never an automatic interrupt, signal, or restart
-#                          of the worker or its tool process.
+#                          pause recheck cadence (under afk it is instead handed
+#                          to the daemon as this plain reason, once per
+#                          declaration; busy_turn_bound_check owns that handoff);
+#                          every other pane goes through the same wedge timer and
+#                          surfaces with the identical "stale: ..." reason,
+#                          escalation count, and demand-deep-inspection marker,
+#                          for human inspection only - never an automatic
+#                          interrupt, signal, or restart of the worker or its
+#                          tool process.
 #   stale: <window> (unread firstmate instruction: ...)
 #                          the steering-inbox ladder spent its delivery-attempt
 #                          budget on an idle pane without an acknowledgement
@@ -639,10 +642,43 @@ handle_paused_stale() {  # <window> <task> <hash>
 # alter the separate non-busy classification. handle_paused_stale keeps the
 # exception bounded by re-surfacing it once per PAUSE_RESURFACE_SECS. Away mode
 # remains daemon-owned and receives the undecorated wake identity for its own
-# classification.
+# classification, which is why the declaration is read before the afk branch
+# rather than after it.
 busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-file>
-  local win=$1 task=$2 h=$3 since_file=$4 escalation_file=$5
-  if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")"; then
+  local win=$1 task=$2 h=$3 since_file=$4 escalation_file=$5 key statusf declared
+  statusf="$STATE/$task.status"
+  if status_is_paused_or_captain_held "$(last_status_line "$statusf")"; then
+    if afk_present; then
+      # Away mode is daemon-owned, so this bound hands off the PLAIN wake identity
+      # and lets the daemon classify the declaration itself - the undecorated
+      # identity the rest of this function's contract promises. Running the wedge
+      # timer here instead would decorate the wake as a possible wedge, and that
+      # decoration overrides the daemon's own pause verdict for the pane: the
+      # ladder then climbs on every re-arm, escalating a crew that declared the
+      # wait itself once per FM_STALE_ESCALATE_SECS for as long as the wait lasts.
+      # The one-shot is keyed on the DECLARATION (the status log's signature),
+      # never on the pane hash: a busy pane's harness footer ticks on every
+      # capture, so a hash-keyed one-shot would re-fire on every poll and the
+      # daemon, which relaunches the watcher after each handled wake, would be
+      # woken in a loop for the whole declared wait. The suppressor therefore
+      # advances to the declaration rather than the hash, and the daemon is woken
+      # once per distinct declaration. The wedge timer, escalation count and
+      # write-deferral chain are cleared exactly as handle_paused_stale clears
+      # them, so an undeclared busy phase that had already started the timer does
+      # not resume its count the moment the declaration is lifted. Normal-mode
+      # pause tracking stays unwritten here, exactly as the idle away-mode handoff
+      # leaves it, because the daemon owns that bookkeeping.
+      key=$(window_key "$win")
+      rm -f "$since_file" "$escalation_file"
+      clear_write_tracking "$key"
+      declared="declared:$(fm_wake_signal_sig "$statusf" || true)"
+      if [ "$(cat "$STATE/.stale-$key" 2>/dev/null || true)" != "$declared" ]; then
+        fm_wake_append stale "$win" "stale: $win" || exit 1
+        printf '%s' "$declared" > "$STATE/.stale-$key"
+        wake "stale: $win"
+      fi
+      return 0
+    fi
     handle_paused_stale "$win" "$task" "$h"
     return 0
   fi
@@ -1331,7 +1367,8 @@ EOF
   # Layer 1 backbone: pane staleness. Two consecutive identical hashes with no busy
   # signature means the crewmate finished, is waiting, or is wedged. Each distinct
   # stale hash is surfaced, absorbed, or timed toward escalation once (.stale-*
-  # remembers the hash already classified).
+  # remembers the hash already classified, or the declaration a busy pane's
+  # crossed turn bound already handed to the away-mode daemon).
   while IFS= read -r w; do
     kind=$(window_kind "$w")
     task=$(window_to_task "$w" "$STATE")
