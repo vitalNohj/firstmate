@@ -286,13 +286,37 @@ EOF
   fetch_starts=$(grep -c '^START fleet-fetch ' "$log" || true)
   [ "$fetch_starts" -ge 1 ] \
     || fail "clone refresh did not start a fetch to overlap with secondmate probes"$'\n'"$(cat "$log")"
+  # The property is that the clone refresh is DISPATCHED concurrently with the
+  # secondmate sweeps rather than serialized before or after all of them.
+  # Instantaneous overlap proves that, but it is not the only proof and it is
+  # not guaranteed: the sweeps run in phases, and on a loaded host a fast fetch
+  # can begin and finish inside the gap between one phase ending and the next
+  # starting, with real concurrent dispatch throughout. Accept either witness -
+  # a moment when both are open, or a fetch nested inside the span of remote
+  # work. Serialization still fails, because a fetch that runs entirely before
+  # the first remote start or entirely after the last remote end satisfies
+  # neither.
   awk '
-    /^START fleet-fetch / { fleet = 1; if (remote) overlap = 1; next }
-    /^END fleet-fetch / { fleet = 0; next }
-    /^START host-/ { remote++; if (fleet) overlap = 1; next }
-    /^END host-/ { remote-- }
-    END { exit !overlap }
-  ' "$log" || fail "clone refresh did not overlap the secondmate sweeps"$'\n'"$(cat "$log")"
+    /^START fleet-fetch / {
+      fleet = 1
+      if (remote) overlap = 1
+      if (!fetch_start) fetch_start = NR
+      next
+    }
+    /^END fleet-fetch / { fleet = 0; fetch_end = NR; next }
+    /^START host-/ {
+      remote++
+      if (fleet) overlap = 1
+      if (!first_remote) first_remote = NR
+      next
+    }
+    /^END host-/ { remote--; last_remote = NR }
+    END {
+      nested = (first_remote && last_remote && fetch_start && fetch_end \
+        && fetch_start > first_remote && fetch_end < last_remote)
+      exit !(overlap || nested)
+    }
+  ' "$log" || fail "clone refresh was serialized around the secondmate sweeps instead of dispatched with them"$'\n'"$(cat "$log")"
 
   awk '
     /END .* fm-remote-secondmate-control.sh state$/ { last_liveness = NR }
