@@ -423,8 +423,13 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.setHiddenThinkingLabel(calmPresentationIsActive() ? "" : undefined);
     ctx.ui.setStatus("firstmate-calm", undefined);
     removeTerminalInputHandler?.();
+    // Pi's TerminalInputHandler returns an optional directive object; a handler
+    // that only observes returns undefined so the keystroke passes through
+    // untouched. Pi 0.84 types that return as "{...} | undefined" rather than
+    // allowing void, so every exit here is an explicit undefined: falling off
+    // the end would infer void and no longer satisfy the handler type.
     removeTerminalInputHandler = ctx.ui.onTerminalInput((data) => {
-      if (!getKeybindings().matches(data, "tui.input.submit")) return;
+      if (!getKeybindings().matches(data, "tui.input.submit")) return undefined;
 
       const input = ctx.ui.getEditorText().trim();
       if (
@@ -432,7 +437,7 @@ export default function (pi: ExtensionAPI) {
         input !== "/export" &&
         !input.startsWith("/export ")
       ) {
-        return;
+        return undefined;
       }
 
       exportRendering = true;
@@ -454,6 +459,7 @@ export default function (pi: ExtensionAPI) {
         repaintCalmToolRows();
         ctx.ui.setStatus("firstmate-calm", undefined);
       }, 0);
+      return undefined;
     });
   });
 

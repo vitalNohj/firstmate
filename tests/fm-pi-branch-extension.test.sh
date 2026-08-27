@@ -2776,7 +2776,100 @@ JS
   pass "fm_branch_outcomes hides through ToolExecutionComponent while Calm-off and HTML export stay stock"
 }
 
+# A multi-line tool result must colour every line independently, the way Pi's own
+# tool-output renderer does. Colouring the joined string once emits the reset
+# only after the last line, so each earlier line ends mid-colour and bleeds into
+# whatever the terminal draws next. The whole-row parity case above catches this
+# only while a stock row happens to be available to compare against; this case
+# states the property directly, on the rendered bytes, with more than one line.
+test_outcomes_tool_result_colours_every_line_independently() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo "skip: node not found for Pi outcomes line-colouring test"
+    return
+  fi
+  local package_dir fixture out status
+  package_dir=${FM_PI_PACKAGE_DIR:-"$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"}
+  if [ ! -f "$package_dir/package.json" ]; then
+    echo "skip: installed @earendil-works/pi-coding-agent package not found"
+    return
+  fi
+  fixture="$TMP_ROOT/outcomes-line-colours"
+  mkdir -p "$fixture/.pi/extensions/lib" "$fixture/node_modules/@earendil-works"
+  cp "$EXT" "$fixture/.pi/extensions/fm-branch-supervision.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-branch-dispatch.ts" "$fixture/.pi/extensions/lib/fm-branch-dispatch.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-branch-model-picker.ts" "$fixture/.pi/extensions/lib/fm-branch-model-picker.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$fixture/.pi/extensions/lib/fm-calm-visibility.ts"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$fixture/.pi/extensions/lib/fm-operational-input.ts"
+  ln -s "$package_dir" "$fixture/node_modules/@earendil-works/pi-coding-agent"
+  ln -s "$package_dir/node_modules/@earendil-works/pi-tui" "$fixture/node_modules/@earendil-works/pi-tui"
+  ln -s "$package_dir/node_modules/@earendil-works/pi-ai" "$fixture/node_modules/@earendil-works/pi-ai"
+  ln -s "$package_dir/node_modules/typebox" "$fixture/node_modules/typebox"
+
+  out=$(cd "$fixture" && EXT="$fixture/.pi/extensions/fm-branch-supervision.ts" PI_PACKAGE_DIR="$package_dir" node --input-type=module 2>&1 <<'JS'
+import { pathToFileURL } from "node:url";
+
+const packageRoot = process.env.PI_PACKAGE_DIR;
+const [{ ToolExecutionComponent }, { initTheme }] = await Promise.all([
+  import(pathToFileURL(`${packageRoot}/dist/modes/interactive/components/tool-execution.js`).href),
+  import(pathToFileURL(`${packageRoot}/dist/modes/interactive/theme/theme.js`).href),
+]);
+initTheme("dark");
+
+const tools = [];
+const pi = {
+  events: { on() {}, emit() {} },
+  on() {},
+  registerCommand() {},
+  registerMessageRenderer() {},
+  registerTool(tool) { tools.push(tool); },
+  sendMessage() {},
+  sendUserMessage() {},
+};
+const extension = await import(`${pathToFileURL(process.env.EXT).href}?consumer=${Date.now()}`);
+extension.default(pi);
+const definition = tools.find((tool) => tool.name === "fm_branch_outcomes");
+if (!definition) throw new Error("fm_branch_outcomes was not registered");
+
+// Three lines, so a failure cannot be carried by an off-by-one at either edge.
+const result = {
+  content: [{ type: "text", text: "ALPHA_LINE\nBRAVO_LINE\nCHARLIE_LINE" }],
+  details: { ok: true },
+  isError: false,
+};
+const row = new ToolExecutionComponent(
+  "fm_branch_outcomes", "colours", { recent: 3 }, { showImages: false }, definition,
+  { requestRender() {} }, process.cwd(),
+);
+row.markExecutionStarted();
+row.setArgsComplete();
+row.updateResult(result);
+
+const rendered = row.render(100);
+const SGR = /\u001b\[[0-9;]*m/g;
+for (const name of ["ALPHA_LINE", "BRAVO_LINE", "CHARLIE_LINE"]) {
+  const line = rendered.find((entry) => typeof entry === "string" && entry.includes(name));
+  if (line === undefined) throw new Error(`rendered row lost the ${name} line entirely`);
+  // Every colour opened on a line must also be closed on that same line.
+  const codes = line.match(SGR) ?? [];
+  let openForeground = 0;
+  for (const code of codes) {
+    if (code === "\u001b[39m") openForeground -= 1;
+    else if (/^\u001b\[38;/.test(code)) openForeground += 1;
+  }
+  if (openForeground !== 0) {
+    throw new Error(`${name} ends with an unterminated foreground colour (balance ${openForeground})`);
+  }
+}
+JS
+  )
+  status=$?
+  expect_code 0 "$status" "multi-line outcomes output must close its colour on every line: $out"
+  [ -z "$out" ] || fail "outcomes line-colouring test printed output: $out"
+  pass "fm_branch_outcomes closes its foreground colour on every rendered line"
+}
+
 test_outcomes_tool_uses_stock_execution_and_export_consumers
+test_outcomes_tool_result_colours_every_line_independently
 test_real_pi_picker_primitives_stay_bounded_and_searchable
 test_branch_dispatch_two_stage_filter_and_prefix_contract
 test_branch_dispatch_classifies_main_only_rows_and_writes_the_eligible_snapshot
