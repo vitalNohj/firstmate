@@ -405,6 +405,52 @@ test_warm_classifier_spawn_disables_extension_discovery() {
 	pass "router: the warm classifier spawns with extension discovery disabled"
 }
 
+# The primary's own model is a large reasoning model, so an unpinned classifier
+# would spend it on every captain submit. The warm child pins a free id instead,
+# and an explicit empty override is still the way back to Pi's own model.
+test_warm_classifier_pins_the_free_classifier_model() {
+	local root="$TMP_ROOT/warm-model" holder
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the classifier model test"
+		return 0
+	fi
+	make_primary "$root"
+	holder=$(serve_warm_runner "$root")
+	assert_grep ready "$root/runner.out" "the warm classifier reports itself ready"
+	kill "$holder" 2>/dev/null || true
+	assert_grep '--model' "$root/pi-args.txt" \
+		"the warm classifier pins its own model rather than inheriting Pi's"
+	assert_grep 'orcarouter/qwen/qwen3.8-27b-free' "$root/pi-args.txt" \
+		"the built-in warm classifier model is the measured free id"
+	pass "router: the warm classifier pins a free model instead of the primary's"
+}
+
+test_warm_classifier_model_override_is_honored() {
+	local root="$TMP_ROOT/warm-model-override" holder waited=0
+	if ! command -v node >/dev/null 2>&1; then
+		echo "skip: node not found for the classifier model override test"
+		return 0
+	fi
+	make_primary "$root"
+	mkdir -p "$root/state/captain-router"
+	printf '"verdict=same\\ntarget=primary\\nexplanation=Warm reply."' >"$root/reply.json"
+	holder=$(FM_FAKE_PI_LOG="$root" FM_FAKE_PI_REPLY="$root/reply.json" \
+		FM_STATE_OVERRIDE="$root/state" \
+		FM_CAPTAIN_ROUTER_RUNNER_MODEL="" \
+		FM_CAPTAIN_ROUTER_PI="$ROOT/tests/fake-pi-rpc.sh" \
+		sh -c "sleep 60 | node '$ROOT/bin/fm-captain-router-runner.mjs' serve --state '$root/state' \
+			>'$root/runner.out' 2>'$root/runner.err' & echo \$!")
+	while ! grep -q ready "$root/runner.out" 2>/dev/null && [ "$waited" -lt 100 ]; do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	assert_grep ready "$root/runner.out" "the warm classifier reports itself ready"
+	kill "$holder" 2>/dev/null || true
+	assert_no_grep '--model' "$root/pi-args.txt" \
+		"an empty override hands the child no model and inherits Pi's own"
+	pass "router: FM_CAPTAIN_ROUTER_RUNNER_MODEL overrides the pinned classifier model"
+}
+
 test_warm_classifier_never_stamps_the_watcher_marker() {
 	local root="$TMP_ROOT/warm-marker" marker holder before after
 	if ! command -v node >/dev/null 2>&1; then
@@ -2325,6 +2371,8 @@ test_submit_direct_address_stays_in_the_current_session
 test_submit_always_spawns_the_model
 test_warm_runner_serves_every_submit_from_one_process
 test_warm_classifier_spawn_disables_extension_discovery
+test_warm_classifier_pins_the_free_classifier_model
+test_warm_classifier_model_override_is_honored
 test_warm_classifier_never_stamps_the_watcher_marker
 test_warm_classifier_still_classifies_with_extensions_disabled
 test_warm_runner_absence_falls_back_to_the_ephemeral_spawn

@@ -51,6 +51,21 @@
 # only terminal verdict. A missing command, an error, or any other exit keeps the
 # registration armed, so an adapter that has no notion of ending needs no change.
 #
+# Routine no-op knowledge is adapter-owned through the same kind of seam. Some
+# sources produce a result that carries no news at all - a review surface that
+# simply closed with nothing said - and announcing it makes the handler read a
+# wake to learn that nothing happened. So before publishing, this runner calls
+# `bin/fm-procevent-<adapter>.sh silent <result-file>` and treats exit 0 as the
+# only silence verdict: the result is recorded handled and never announced, so
+# it neither wakes a handler now nor returns on a later reconcile. A missing
+# adapter command, an error, or any other exit publishes the wake exactly as
+# before, so an adapter with no notion of a no-op needs no change and an
+# unknown or degraded result always reaches its handler. This runner still
+# inspects nothing and still names no adapter-specific condition. Silence is
+# deliberately independent of the keyed-answer feed below, which runs once per
+# capture for every adapter: suppressing an announcement never suppresses the
+# captain's own answer.
+#
 # Applying a result is adapter-owned through the same kind of seam. Some results
 # carry no judgement at all - they must simply be applied idempotently to the
 # home's own durable state - and leaving that to an agent that has to remember
@@ -74,6 +89,23 @@
 # declared downstream channel an applied-and-acknowledged result would otherwise
 # go silent. An unhandled result stays eligible for bounded re-announcement on
 # every reconcile in both modes, exactly as before.
+#
+# Keyed captain answers are adapter-owned through one more seam of the same kind,
+# and this runner still decides nothing about them. Some sources carry the
+# captain's answer to a captain-held task. What such an answer MEANS is owned
+# once, by bin/fm-captain-hold.sh's keyed-answer intake, and reaching it must not
+# depend on an agent remembering. So after capture, a bound source
+# has its result passed to
+# `bin/fm-procevent-<adapter>.sh answers <result-file>`, and whatever that prints
+# is piped straight into that one intake. The adapter reports only what the
+# captain chose; the intake owns every rule about what happens next. This runner
+# names no adapter, parses no result, and knows no decision rule, so a future
+# source needs nothing here beyond an `answers` command and a binding.
+#
+# Feeding is deliberately independent of handling: it never acknowledges a result
+# and never suppresses a wake. Recording the captain's answer is transcription,
+# while ACTING on it is firstmate's judgement, so the capture stays unacknowledged
+# and its `check` wake reaches the handler exactly as it would have anyway.
 #
 # Ownership is machine-wide per canonical source, because separate Firstmate
 # homes can share one underlying source store. A live owner is never displaced;
@@ -103,7 +135,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,87p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,119p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -116,6 +148,18 @@ adapter_result_is_terminal() {  # <adapter> <result-file>
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
   "$script" terminal "$2" >/dev/null 2>&1
+}
+
+# Ask the source's own adapter whether a captured result is a routine no-op that
+# needs no wake at all. This mirrors the terminal seam above exactly: exit 0 is
+# the only silence verdict, and everything else - including a missing adapter
+# command - publishes the wake. See the routine-no-op note in the header: no
+# adapter-specific condition may appear in this runner.
+adapter_result_is_silent() {  # <adapter> <result-file>
+  local script
+  script=$(adapter_script "$1")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  "$script" silent "$2" >/dev/null 2>&1
 }
 
 # Ask the adapter whether its autohandled results announce themselves through a
@@ -152,6 +196,24 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
   # one-line outcome is the interface; an adapter that failed keeps its result
   # announced, and the handler's own call reproduces the diagnostics in full.
   "$script" autohandle "$id" "$seq" "$result" >/dev/null 2>&1
+}
+
+# Pass a bound source's captured result to the one keyed-answer intake. The
+# adapter turns its own format into keyed lines; the intake owns everything those
+# lines mean. Silenced and best-effort exactly like the seams above: an unbound
+# source, an adapter with no `answers` command, and a failure on either side all
+# leave the capture untouched and still announced, because this never
+# acknowledges anything (see the keyed-answer note in the header).
+feed_keyed_answers() {  # <adapter> <source-id> <result-file>
+  local adapter=$1 id=$2 result=$3 script origin seq
+  script=$(adapter_script "$adapter")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  origin=$("$SCRIPT_DIR/fm-captain-hold.sh" binding "$id" 2>/dev/null) || return 1
+  [ -n "$origin" ] || return 1
+  seq=$(fm_procevent_result_sequence "$result") || return 1
+  "$script" answers "$result" 2>/dev/null \
+    | "$SCRIPT_DIR/fm-captain-hold.sh" answers "$origin" \
+        --source "the captured result $id sequence $seq" >/dev/null 2>&1
 }
 
 read_adapter() {  # <source-id>
@@ -211,9 +273,26 @@ publish_result() {  # <result-file>
   [ -n "$adapter" ] || return 1
   line=$(fm_procevent_event_line "$adapter" "$id" "$seq") || return 1
   fm_procevent_source_lock_acquire "$id" || return 1
-  if ! fm_procevent_is_handled "$STATE" "$id" "$seq" \
-    && fm_wake_append check "procevent:$id:$seq" "check: $line"; then
-    status=0
+  if ! fm_procevent_is_handled "$STATE" "$id" "$seq"; then
+    # A result its own adapter declares a routine no-op is recorded as handled
+    # and never announced, so it neither wakes a handler now nor comes back on
+    # a later reconcile's re-announcement. Recording it is what makes that
+    # silence durable, so both a newly written marker (0) and one a concurrent
+    # caller already wrote (1) settle it; only an unrecordable silence (2)
+    # falls through and announces, because a silence nothing remembers would
+    # otherwise be re-evaluated on every reconcile forever.
+    if adapter_result_is_silent "$adapter" "$result"; then
+      fm_procevent_mark_handled "$STATE" "$id" "$seq"
+      case "$?" in
+        0|1)
+          fm_procevent_source_lock_release "$id"
+          return 1
+          ;;
+      esac
+    fi
+    if fm_wake_append check "procevent:$id:$seq" "check: $line"; then
+      status=0
+    fi
   fi
   fm_procevent_source_lock_release "$id"
   return "$status"
@@ -272,7 +351,7 @@ cmd_start_public() {
 }
 
 cmd_start() {
-  local id=${1-} adapter out rc claimed bound_rc published_capture=0 self_announcing=0
+  local id=${1-} adapter out rc claimed bound_rc published_capture=0 handled_capture=0 self_announcing=0
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
@@ -376,6 +455,12 @@ cmd_start() {
   STAGED_OUTPUT=
   [ "$truncated" -eq 1 ] && printf 'truncated: %s at %s bytes\n' "$id" "$MAX_OUTPUT_BYTES" >&2
 
+  # Independent of publication and acknowledgement, so it runs once per capture
+  # for every adapter and cannot change what the handler receives.
+  if feed_keyed_answers "$adapter" "$id" "$durable"; then
+    printf 'answers-fed: %s\n' "$id"
+  fi
+
   # A self-announcing adapter's autohandle announces through its own durable
   # downstream channel, so publication waits until after application and covers
   # only what remains unhandled; every other adapter keeps the strict
@@ -385,6 +470,8 @@ cmd_start() {
   else
     if publish_result "$durable"; then
       published_capture=1
+    elif fm_procevent_is_handled "$STATE" "$id" "$(fm_procevent_result_sequence "$durable")"; then
+      handled_capture=1
     fi
     publish_pending "$durable" >/dev/null
   fi
@@ -417,6 +504,8 @@ cmd_start() {
       published_capture=1
     fi
     publish_pending "$durable" >/dev/null
+  elif [ "$handled_capture" -eq 1 ]; then
+    :
   elif [ "$published_capture" -eq 1 ] && adapter_autohandle "$adapter" "$id" "$durable"; then
     printf 'autohandled: %s\n' "$id"
   else
@@ -666,6 +755,10 @@ cmd_retire() {
   rm -f -- "$(source_file "$id")"
   rm -f -- "$(runner_file "$id")"
   fm_procevent_source_lock_release "$id"
+  # A retired source produces no further answer, so drop any decision binding it
+  # carried. Generic and idempotent: the binding owner is asked to forget this
+  # source id, and an unbound source is unaffected.
+  "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 || true
   printf 'retired: %s\n' "$id"
 }
 
