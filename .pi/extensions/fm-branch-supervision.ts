@@ -1332,15 +1332,7 @@ ${context.command}
         .map((item) => normalizeOutcomesToolOutput(item.text))
         .join("\n");
       const shellState = context.state as OutcomesToolShellState;
-      // Colour each line on its own, exactly as Pi's stock tool-output renderer
-      // does. Wrapping the joined string in one span emits the reset only after
-      // the final line, so every earlier line carries an unterminated colour and
-      // the row stops matching stock byte-for-byte.
-      const coloured = output
-        .split("\n")
-        .map((line) => theme.fg("toolOutput", line))
-        .join("\n");
-      shellState.result = output ? new Text(coloured, 0, 0) : new Container();
+      shellState.result = output ? new Text(theme.fg("toolOutput", output), 0, 0) : new Container();
       refreshOutcomesToolShell(shellState, theme, context);
       return new Container();
     },

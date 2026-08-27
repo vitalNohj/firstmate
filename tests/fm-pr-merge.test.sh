@@ -220,13 +220,6 @@ mirror_path_without() {
       [ -e "$entry" ] || continue
       name=${entry##*/}
       [ "$name" = "$omit" ] && continue
-      # Mirror only what a PATH search could actually resolve: an executable,
-      # non-directory file. Some PATH entries are package-symlink directories
-      # rather than bindirs (Homebrew's /opt/homebrew/opt is one), where an entry
-      # such as "bash" points at a package DIRECTORY. Mirroring that shadows the
-      # real interpreter with something that cannot be executed, and every script
-      # run through this path then dies with 126 instead of its own exit code.
-      [ -f "$entry" ] && [ -x "$entry" ] || continue
       [ -e "$dir/$name" ] || ln -s "$entry" "$dir/$name" 2>/dev/null
     done
   done <<EOF

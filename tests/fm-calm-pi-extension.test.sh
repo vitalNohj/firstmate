@@ -50,27 +50,6 @@ wait_for_text() {
   return 1
 }
 
-# Browsers installed by a tool manager (puppeteer, playwright, the chromium npm
-# package) are versioned under a cache directory and deliberately never placed on
-# PATH, so a PATH-only search reports "no browser" on a host that has several.
-# Each glob is newest-first so a refreshed cache is preferred over a stale one.
-chrome_cache_candidates() {
-  local base
-  # chrome-headless-shell entries stay ahead of full Chrome for the reason above.
-  for base in \
-    "${PUPPETEER_CACHE_DIR:-$HOME/.cache/puppeteer}/chrome-headless-shell/"*/chrome-headless-shell-*/chrome-headless-shell \
-    "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}/chromium_headless_shell-"*/chrome-*/headless_shell \
-    "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}/chromium_headless_shell-"*/chrome-*/headless_shell \
-    "${PUPPETEER_CACHE_DIR:-$HOME/.cache/puppeteer}/chrome/"*/chrome-*/"Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" \
-    "${PUPPETEER_CACHE_DIR:-$HOME/.cache/puppeteer}/chrome/"*/chrome-*/chrome \
-    "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}/chromium-"*/chrome-mac/"Chromium.app/Contents/MacOS/Chromium" \
-    "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}/chromium-"*/chrome-linux/chrome
-  do
-    [ -x "$base" ] || continue
-    printf '%s\n' "$base"
-  done
-}
-
 find_chrome() {
   local candidate
   if [ -n "${FM_CHROME_BIN:-}" ] && [ -x "$FM_CHROME_BIN" ]; then
@@ -93,18 +72,6 @@ find_chrome() {
       return 0
     fi
   done
-  # Only after PATH, so an operator's own browser still wins.
-  candidate=$(chrome_cache_candidates | head -n 1)
-  if [ -n "$candidate" ]; then
-    printf '%s\n' "$candidate"
-    return 0
-  fi
-  # The chromium npm package records its own resolved binary path.
-  candidate=$(node -e 'try{process.stdout.write(require("chromium").path)}catch(e){}' 2>/dev/null) || candidate=""
-  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-    printf '%s\n' "$candidate"
-    return 0
-  fi
   return 1
 }
 
