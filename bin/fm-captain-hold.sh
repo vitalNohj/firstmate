@@ -461,17 +461,21 @@ tasks_axi_homedir() {
 # same file the backend opens so the gate and the backend always agree on which
 # file that is.
 #
-# The backend joins its homedir() with .tasks-axi/config.toml, so an EMPTY home
-# yields the RELATIVE path .tasks-axi/config.toml, which it then reads against
-# its own working directory - the FM_HOME every tasks_axi call runs in. Skipping
-# the file in that case would prove a config the backend never read, which is the
-# same fail-open the path-precedence guards close.
+# The backend joins its homedir() with .tasks-axi/config.toml and reads the
+# result against its own working directory - the FM_HOME every tasks_axi call
+# runs in. That join is relative whenever the home is, so an EMPTY home yields
+# .tasks-axi/config.toml and a RELATIVE home yields <home>/.tasks-axi/config.toml.
+# Both must resolve against FM_HOME here too. Resolving either one against this
+# process's own cwd instead would prove a config the backend never read, which is
+# the same fail-open the path-precedence guards close, and this gate runs from
+# wherever its caller was invoked because bin/fm-teardown.sh and this script never
+# chdir. home_relative_path is a no-op for the ordinary absolute home.
 tasks_axi_home_config() {
   local home
   home=$(tasks_axi_homedir) || return 3
   case "$home" in
     '') home_relative_path '.tasks-axi/config.toml' ;;
-    *) printf '%s/.tasks-axi/config.toml\n' "$home" ;;
+    *) home_relative_path "$home/.tasks-axi/config.toml" ;;
   esac
 }
 

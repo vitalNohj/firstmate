@@ -1979,6 +1979,37 @@ TOMLEOF
   assert_no_grep "data/missing-home-backlog.md" "$home/unset-home.err" \
     "an unset HOME read the fixture's relative .tasks-axi config the backend resolved elsewhere"
 
+  # A RELATIVE HOME is the same fail-open as the empty one: node's join keeps it
+  # relative, the backend resolves it against the FM_HOME it runs in, and this
+  # gate must not resolve it against its own caller's cwd instead. Running from a
+  # cwd that is NOT the home is what separates the two resolutions, so the check
+  # below would pass vacuously from inside $home.
+  mkdir -p "$home/relhome/.tasks-axi"
+  cat > "$home/relhome/.tasks-axi/config.toml" <<'TOMLEOF'
+[markdown]
+path = "data/missing-rel-backlog.md"
+TOMLEOF
+  HOME=relhome tasks_in "$home" show "$hold" --full > "$home/rel-home-show.out" 2>&1 \
+    && fail "the backend did not read the relative home config under a relative HOME"
+  assert_grep "code: NOT_FOUND" "$home/rel-home-show.out" \
+    "the backend did not resolve the relative-HOME config to a backlog without the call"
+  set +e
+  (cd / && PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" HOME=relhome \
+    "$ROOT/bin/fm-captain-hold.sh" verify "$origin") \
+    > "$home/rel-home.out" 2> "$home/rel-home.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] \
+    || fail "verification passed on an open captain call because a relative HOME resolved against the caller's cwd"
+  assert_no_grep "verified:" "$home/rel-home.out" \
+    "an open captain call was reported verified from a config the backend never read"
+  assert_grep "data/missing-rel-backlog.md" "$home/rel-home.err" \
+    "the failure did not name the backlog path the relative-HOME config resolved"
+  assert_grep "- [ ] $hold -" "$home/data/backlog.md" \
+    "the open captain call left the live backlog during the relative-HOME check"
+
   # And a HOME pointing at a disposable directory with no config of its own is
   # the ordinary case: neither file names a path, so the derived default governs.
   HOME="$home/emptyhome" run_captain "$home" verify "$origin" \
