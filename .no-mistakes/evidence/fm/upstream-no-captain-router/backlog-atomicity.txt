@@ -1,0 +1,79 @@
+ok - dispatch publishes the record and moves the backlog item In flight in one run
+ok - dispatch omits the markdown file when probing a Beads backlog
+ok - dispatch refuses to supersede a pending authoritative close
+ok - dispatch refuses held rows before creating resources
+ok - dispatch refuses dependency-blocked rows before creating resources
+ok - dispatch refuses held In-flight rows before relaunch
+ok - dispatch reads backlog rows from the backlog addressing root
+ok - recovery uses the parent of a trailing-slash data record
+ok - completion targets nested relative data from the caller directory
+ok - an immediate-child absolute data path keeps one paired backlog
+ok - bare relative data addresses one backlog through dispatch and completion
+ok - dispatch refuses symlinked backlogs without crossing homes
+ok - automatic homes refuse lifecycle mutation without compatible tasks-axi
+ok - dispatch refuses an unresolvable backlog data directory
+ok - completion refuses before mutation when backlog data is unresolvable
+ok - dispatch refuses, before creating anything, when the home has no item for the id
+ok - dispatch distinguishes backlog read failures from missing items
+ok - dispatch refuses a closed item instead of silently reopening it
+ok - dispatch cannot commit without a verified task-record publication
+ok - a failed backlog transition fails the dispatch loudly and leaves no record
+ok - dispatch reports when failed-transition rollback cannot remove its record
+ok - dispatch verifies both task and busy records during rollback
+ok - dispatch commits neither record nor backlog state before launch delivery succeeds
+ok - dispatch retries interrupted transitions before honoring termination
+ok - Kimi readiness interruptions fail before backlog commit
+ok - dispatch does not resurrect a row closed after preflight
+ok - dispatch fails when its backlog row vanishes after preflight
+ok - completion closes a local-only ship, with its landing note, before reporting success
+ok - completion closes a scout item against its report
+ok - completion leaves legacy records open when no incarnation can be recorded
+ok - completion refuses ambiguous task incarnations
+ok - completion records relocated scout reports relative to the backlog root
+ok - space-containing scout report paths round-trip through recovery
+ok - control-byte data paths fail closed before paired transitions
+ok - unreplayable data paths are refused before destructive cleanup
+ok - completion preserves recovery state when task-record removal fails
+ok - completion refuses to report success while its item is still open, and records what it owes
+ok - restart recovers closes recorded before destructive cleanup
+ok - completion refuses directory-symlink close targets
+ok - completion reports failure until its durable close marker is removed
+ok - session start retries a close whose marker could not be removed
+ok - session start reports owned backlog rows it cannot read
+ok - Orca cleanup recovery is excluded from backlog lifecycle transitions
+ok - session start marks an item In flight when this home already owns a worker for it
+ok - session start rejects internal worker-record symlinks
+ok - session start rejects symlinked worker records
+ok - session start finishes a close an interrupted cleanup recorded but never landed
+ok - recovery backfills recorded links onto already Done items
+ok - session start preserves a pending close across a transient backlog read failure
+ok - recovery preserves incomplete-cleanup evidence across a failed replay
+ok - session start finishes a close for the matching meta incarnation
+ok - recovery preserves closes for ambiguous task incarnations
+ok - recovery preserves both records when meta removal fails
+ok - recovery preserves closes beside symlinked metadata
+ok - recovery binds close-marker identity to its locked filename
+ok - recovery rejects close markers targeting another home's data
+ok - recovery validates an unterminated final marker field
+ok - recovery rejects lexical traversal before resolving marker data
+ok - recovery rejects marker control bytes before parsing
+ok - recovery rejects malformed PR URL values
+ok - a retained pending close is never started by reconciliation
+ok - recovery rejects close-marker arguments outside its protocol
+ok - recovery reports and rejects dangling symlink close markers
+ok - session start drops a close recorded for an older meta incarnation
+ok - session start rejects an unversioned close marker
+ok - bootstrap rechecks worker-record containment after locking
+ok - lifecycle files reject ancestor symlinks outside home roots
+ok - same-home state overrides remain supported
+ok - bootstrap refuses symlinked state before reconciliation
+ok - bootstrap stops when backlog data disappears before reconciliation
+ok - bootstrap preserves secondmate, manual, and absent-backlog exemptions
+ok - session start leaves a captain-held item where the captain put it
+ok - no-backlog teardown refuses symlinked records before resource actions
+ok - teardown rechecks record parents after locking
+ok - teardown refuses symlinked state before resource actions
+ok - a home with no backlog remains exempt from lifecycle transitions
+ok - a manual-backlog home dispatches and completes without a hard failure
+ok - a secondmate home keeps its own books paired through dispatch and completion
+ok - dispatching a persistent secondmate needs no backlog item

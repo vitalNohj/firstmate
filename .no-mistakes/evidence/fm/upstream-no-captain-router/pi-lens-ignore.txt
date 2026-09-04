@@ -1,0 +1,5 @@
+ok - config/ is ignored as a directory, covering unlisted and nested paths
+ok - an unrelated path outside config/ remains visible to git
+ok - names starting with scratchpad are gitignored
+ok - no currently tracked path starts with scratchpad
+ok - scratchpad2/ does not make git status --porcelain dirty

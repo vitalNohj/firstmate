@@ -1,0 +1,41 @@
+ok - report-only unresolved captain call is reproduced and completion refuses before loss
+ok - the completion gate attests captain-held inventory and transfers open status decisions
+ok - archived answered calls verify on any complete structured archived cycle
+ok - an unreadable live backlog fails loudly instead of falling back to a stale archived cycle
+ok - a proven-absent identity still verifies from the configured archive
+ok - a rejected config never proves an identity absent from the live backlog
+ok - an unreadable archive fails loudly instead of reading as no archived record
+ok - a missing resolved backlog file never proves a captain call absent
+ok - an archive unreachable through its parent directory fails loudly instead of counting zero
+ok - absence is proved only against the backlog tasks-axi itself resolved
+ok - the retirement guard reads the archive tasks-axi itself resolved
+ok - row probes resolve empty, relative, and unset HOME like tasks-axi
+ok - answers reports an unreadable backlog as a read failure rather than a missing task
+ok - a home with no backlog file mints its first captain call and still refuses a retired one
+ok - the home-level tasks-axi config is resolved exactly as the backend resolves it
+ok - an absent archive key derives the backend default while a malformed one fails verify
+ok - an absent .tasks.toml falls back to the backend's own resolved defaults
+ok - archive config spellings the backend honors also resolve for verify
+ok - archived pr, report, unheld, and prose-heavy closes keep verifying after pruning
+ok - hold retires only durably resolved archived ids and leaves the rest recoverable
+ok - answer records the captain's words, closes idempotently, and releases routed work
+ok - release frees held work with the captain's words recorded and the body preserved
+ok - a deferred captain call leaves the live Captain's Call until its date and stays answerable
+ok - an out-of-band close is recordable with the captain's word and nothing else
+ok - ended visual review follows the same captain-hold completion owner
+ok - resolved findings and decision-like prose do not create captain-held tasks
+ok - terminal single-owner stale status decisions do not block empty inventory
+ok - main-home and secondmate-home captain calls remain correctly routed
+ok - a secondmate home publishes each hold occurrence and its answer on the parent channel
+ok - a bound channel's captured answers close their captain-held tasks at answer time
+ok - a channel source with no decision binding closes nothing
+ok - legacy identities, metadata, bindings, and the shim keep working
+ok - the chat channel feeds the same keyed-answer intake a captured review does
+ok - completion and verification validate origins before constructing paths
+ok - a status resolution over a still-open captain-held task is signalled, not closed
+ok - a captain call with no routed work, a verified transfer, an open decision, and an answered call all stay silent
+ok - cleanup leaves a captain-held work item open with its deliverable, and only an answer closes it
+ok - an interrupted cleanup keeps the captain call recoverable and session start retains it
+ok - cleanup retains captain calls in the configured backlog
+ok - relocated calls verify and retire from the same archive the backend writes
+ok - cleanup refuses a ship row when its captain hold cannot be read
