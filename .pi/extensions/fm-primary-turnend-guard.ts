@@ -482,13 +482,6 @@ function runCdCheck(command: string): Promise<{ code: number; stderr: string }> 
   return runChecker("fm-cd-pretool-check.sh", command);
 }
 
-// A pane opened by the captain-message router's delivery is an ordinary captain
-// conversation, not a Firstmate taking the helm: it exists to answer one routed
-// message in its own session. Injecting the session-start digest there would
-// hand it supervision instructions it must not act on, and would refill the very
-// context the delivery just asked it to compact.
-const deliveredPane = process.env.FM_CAPTAIN_ROUTER_DELIVERED === "1";
-
 export default function (pi: ExtensionAPI) {
   let sessionstartGeneration: SessionstartGeneration | null = null;
   let sessionstartExitListenerRegistered = false;
@@ -522,7 +515,6 @@ export default function (pi: ExtensionAPI) {
   registerSessionstartExitListener();
 
   pi.on?.("session_start", (event, ctx) => {
-    if (deliveredPane) return;
     const reason = String((event as { reason?: unknown }).reason ?? "");
     const source = reason === "startup"
       ? startupRebuildSource(ctx) ?? "startup"
@@ -547,7 +539,6 @@ export default function (pi: ExtensionAPI) {
   // may retry without another before_agent_start, so the event keeps its
   // existing delivery path while sharing generation ownership and cancellation.
   pi.on?.("session_compact", async (_event, ctx) => {
-    if (deliveredPane) return;
     registerSessionstartExitListener();
     const generation = createSessionstartGeneration("compact", sessionIdFromContext(ctx));
     sessionstartGeneration = generation;

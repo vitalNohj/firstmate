@@ -419,64 +419,6 @@ JS
   pass "Pi distinguishes header-proven restored CLI sessions from named create-if-missing startups"
 }
 
-# A pane opened by the captain-message router's delivery answers one routed
-# message in its own session. It is not a Firstmate taking the helm, so the
-# digest must not reach it: doing so would hand it supervision instructions it
-# must not act on, and refill the context the delivery just asked it to compact.
-test_pi_delivered_router_pane_never_takes_the_helm() {
-  local fixture out status=0
-  command -v node >/dev/null 2>&1 || {
-    echo "skip: node not found for the delivered-pane inertness test"
-    return 0
-  }
-  fixture="$TMP_ROOT/pi-delivered-pane"
-  mkdir -p "$fixture/.pi/extensions/lib" "$fixture/bin" "$fixture/state"
-  cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$fixture/.pi/extensions/"
-  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" \
-    "$ROOT/.pi/extensions/lib/fm-sessionstart-supervisor.mjs" "$fixture/.pi/extensions/lib/"
-  cat > "$fixture/bin/fm-sessionstart-run.sh" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "${FM_HOME:?}/state/sources"
-SH
-  chmod +x "$fixture/bin/"*.sh
-
-  out=$(EXT="$fixture/.pi/extensions/fm-primary-turnend-guard.ts" \
-    FM_HOME="$fixture" FM_ROOT_OVERRIDE="$fixture" FM_CAPTAIN_ROUTER_DELIVERED=1 \
-    node --input-type=module 2>&1 <<'JS'
-import { pathToFileURL } from "node:url";
-const handlers = new Map();
-const sent = [];
-const pi = {
-  on(event, handler) { handlers.set(event, handler); },
-  sendMessage(message) { sent.push(message); },
-};
-const extension = await import(`${pathToFileURL(process.env.EXT).href}?delivered=${Date.now()}`);
-extension.default(pi);
-const context = {
-  sessionManager: {
-    getEntries: () => [],
-    getHeader: () => ({ timestamp: new Date().toISOString() }),
-    getSessionId: () => "delivered-pane",
-  },
-};
-handlers.get("session_start")({ reason: "startup" }, context);
-handlers.get("session_start")({ reason: "resume" }, context);
-// The digest reaches an ordinary pane through before_agent_start, so a
-// delivered pane must claim nothing there either.
-const claimed = await handlers.get("before_agent_start")({ prompt: "test" }, context);
-// A resumed pane compacts itself as the delivery seed asked, and that
-// compaction must not be what pulls the digest back in.
-await handlers.get("session_compact")({}, context);
-console.log(JSON.stringify({ sent: sent.length, claimed: claimed ?? null }));
-JS
-  ) || status=$?
-  expect_code 0 "$status" "delivered-pane inertness exit ($out)"
-  assert_contains "$out" '"sent":0' "a delivered pane is never injected with a session-start digest"
-  assert_contains "$out" '"claimed":null' "a delivered pane claimed a session-start digest on its first agent start"
-  assert_absent "$fixture/state/sources" "a delivered pane never runs the session-start hook at all"
-  pass "sessionstart: a delivered captain-router pane never takes the helm"
-}
-
 test_pi_sessionstart_generation_prerequisite() {
   local fixture out status=0
   command -v node >/dev/null 2>&1 || {
@@ -1116,7 +1058,6 @@ test_run_unknown_source_takes_the_helm
 test_run_gate_and_scope_are_silent
 test_run_reports_a_failed_session_start_as_digest_text
 test_pi_startup_classifies_cli_continuations
-test_pi_delivered_router_pane_never_takes_the_helm
 test_pi_sessionstart_generation_prerequisite
 test_pi_reload_releases_sessionstart_exit_listener
 test_pi_large_sessionstart_digest_is_delivered_loudly
