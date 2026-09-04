@@ -49,11 +49,8 @@ The primary watcher protocol also requires `.pi/extensions/fm-primary-pi-watch.t
 The Pi engine auto-discovers both tracked project-local extensions once the project is trusted.
 The model arms through the `fm_watch_arm_pi` tool, never through a foreground shell arm.
 The tool result and clean-exit fallback are owned by `../../../docs/supervision-protocols/pi.md`.
+`../../../bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both extensions and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
 
-A third tracked project-local extension, `.pi/extensions/fm-primary-captain-message-router.ts`, is discovered the same way and owns the separate Pi-only captain-message continuity path; `../../../docs/captain-message-router.md` owns its contract.
-A pane the router opens for a delivered message sets `FM_CAPTAIN_ROUTER_DELIVERED=1`, and the turn-end guard's session-start, first-agent-start, and compaction paths all stand down there, because that pane answers one routed message rather than taking the helm.
-`../../../bin/fm-session-start.sh` reports when the live Pi-family session has not loaded the turn-end guard, watcher, and captain-message router extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
-
-When a secondmate is launched on Pi or Pi-signed, `../../../bin/fm-spawn.sh --secondmate` launches the selected executable with all three of `-e .pi/extensions/fm-primary-turnend-guard.ts`, `-e .pi/extensions/fm-primary-pi-watch.ts`, and `-e .pi/extensions/fm-primary-captain-message-router.ts`.
-All three files already exist in the secondmate home's git worktree.
+When a secondmate is launched on Pi or Pi-signed, `../../../bin/fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`.
+Both files already exist in the secondmate home's git worktree.
 The PreToolUse-equivalent watcher-arm seatbelt returns `{block: true}` from the `tool_call` event.

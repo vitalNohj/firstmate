@@ -24,11 +24,11 @@
 #   - composition: the script invokes the real fm-lock.sh/fm-bootstrap.sh/
 #     fm-wake-drain.sh (their real, distinctive output appears verbatim), it
 #     does not reimplement their logic
-#   - the deferred network stage: an unreachable host delays a reported check
-#     rather than the digest, the sweeps it defers still run and land, a result
-#     surfaces exactly once (inline or as a wake, never both), a read-only
-#     session declares the checks it skipped, and the tasks-axi compatibility
-#     verdict is paid for once per session start
+#   - the deferred startup stage: slow network and inactive current-state reads
+#     do not delay the digest, the work still runs and lands durable findings, a
+#     network result surfaces exactly once (inline or as a wake, never both), a
+#     read-only session declares the checks it skipped, and the tasks-axi
+#     compatibility verdict is paid for once per session start
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -679,12 +679,6 @@ install_pi_watch_extension_fixture() {
   cp "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" "$root/.pi/extensions/fm-primary-pi-watch.ts"
 }
 
-install_pi_router_extension_fixture() {
-  local root=$1
-  mkdir -p "$root/.pi/extensions"
-  cp "$ROOT/.pi/extensions/fm-primary-captain-message-router.ts" "$root/.pi/extensions/fm-primary-captain-message-router.ts"
-}
-
 write_pi_watch_loaded_marker() {
   local home=$1 root=$2 pid=$3 version
   version=$(hash_file_for_test "$root/.pi/extensions/fm-primary-pi-watch.ts")
@@ -697,17 +691,10 @@ write_pi_turnend_loaded_marker() {
   printf '%s\n%s\n' "$version" "$pid" > "$home/state/.pi-turnend-extension-loaded"
 }
 
-write_pi_router_loaded_marker() {
-  local home=$1 root=$2 pid=$3 version
-  version=$(hash_file_for_test "$root/.pi/extensions/fm-primary-captain-message-router.ts")
-  printf '%s\n%s\n' "$version" "$pid" > "$home/state/.pi-captain-router-extension-loaded"
-}
-
 write_pi_loaded_markers() {
   local home=$1 root=$2 pid=$3
   write_pi_watch_loaded_marker "$home" "$root" "$pid"
   write_pi_turnend_loaded_marker "$home" "$root" "$pid"
-  write_pi_router_loaded_marker "$home" "$root" "$pid"
 }
 
 # --- context digest: absent vs empty vs present -----------------------------
@@ -1388,7 +1375,7 @@ EOF
   pass "fm-session-start.sh composes the real fm-lock.sh, fm-bootstrap.sh, and fm-wake-drain.sh output verbatim"
 }
 
-test_branch_outcome_replay_and_lease_sweep() {
+test_branch_outcome_replay_respects_captain_barrier_and_lease_sweep() {
   local rec root home fakebin out
   rec=$(new_world branch-recovery)
   IFS='|' read -r root home fakebin <<EOF
@@ -1397,9 +1384,12 @@ EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_harness "$fakebin" pi
 
-  # A crash window the locked start must close: the supervision branch stored
-  # an outcome durably that never reached main, plus one lease whose
+  # A crash window the locked start must preserve: the supervision branch
+  # stored a leading routine row and a captain row that never reached Pi, plus one lease whose
   # supervising process died and one still held by a live process.
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
+    --task task-a --verdict routine --summary 'worker recovered automatically' >/dev/null \
+    || fail "could not seed the unread routine branch outcome"
   FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append \
     --task task-b --verdict captain --summary 'PR https://example.com/pr/b checks green' >/dev/null \
     || fail "could not seed the unread branch outcome"
@@ -1409,18 +1399,24 @@ EOF
 
   out=$(run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "BRANCH OUTCOMES (handled by the supervision branch, not yet seen by this session):" \
-    "locked start did not replay the unread branch outcome"
-  assert_contains "$out" "https://example.com/pr/b" "replayed outcome lost its content"
+    "locked start did not replay the leading routine branch outcome"
+  assert_contains "$out" "worker recovered automatically" "replayed routine outcome lost its content"
+  assert_not_contains "$out" "https://example.com/pr/b" "locked start crossed the captain delivery barrier"
+  assert_contains "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)" \
+    "https://example.com/pr/b" "locked start marked the unrendered captain outcome read"
+  [ "$(cat "$home/state/.branch-outcomes-cursor")" = 1 ] || fail "locked start advanced past the captain row"
   [ ! -e "$home/state/.lease-task-dead" ] || fail "locked start left a provably dead lease in place"
   [ -e "$home/state/.lease-task-live" ] || fail "locked start swept a live lease"
 
-  # Replay is one-shot: presenting the digest is the delivery, so the next
-  # locked start stays silent about the same outcome.
+  # Routine replay is one-shot, while the captain row remains held for Pi's
+  # sequence-keyed visible-entry reconciliation.
   out=$(run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   case "$out" in
     *"BRANCH OUTCOMES"*) fail "second start re-presented already-replayed branch outcomes" ;;
   esac
-  pass "locked Pi session start replays unread branch outcomes once and sweeps only dead leases"
+  assert_contains "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)" \
+    "https://example.com/pr/b" "second start consumed the captain row without a Pi entry"
+  pass "locked Pi session start replays leading routine outcomes, preserves the captain barrier, and sweeps only dead leases"
 }
 
 test_non_pi_session_start_leaves_branch_state_untouched() {
@@ -1465,6 +1461,98 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/gh"
+}
+
+# The locked startup scan may need the same expensive current-state read that a
+# busy validation makes slow. It belongs to the detached startup worker, so the
+# digest must finish while that read is still outstanding; the answer then has to
+# create the ordinary durable inactive-outcome wake rather than disappear
+# off-path. The slow read is held open by this case rather than by a fixed sleep,
+# so "the digest did not wait for it" is decided by what had happened when the
+# digest returned and not by how fast the host was.
+test_inactive_reconcile_never_blocks_the_digest() {
+  local rec root home fakebin world worktree crew_state calls out waited=0
+  local release_gate read_finished
+  rec=$(new_world inactive-reconcile-deferred)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  world=${root%/root}
+  worktree="$world/child-worktree"
+  crew_state="$world/slow-crew-state.sh"
+  calls="$world/no-mistakes-state.calls"
+  ln -s "$ROOT/bin" "$root/bin"
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  fm_git_init_commit "$worktree"
+
+  release_gate="$world/slow-state-read.release"
+  read_finished="$world/slow-state-read.finished"
+  cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' 'no-mistakes version v1.46.0 (fake) 2026-06-27T00:02:18Z'
+  exit 0
+fi
+if [ "${1:-} ${2:-}" = 'axi status' ]; then
+  if [ "${FM_BOOTSTRAP_NETWORK:-}" = only ]; then
+    printf '%s\n' 'deferred' >> "${FM_FAKE_NM_CALLS:?}"
+  else
+    printf '%s\n' 'blocking' >> "${FM_FAKE_NM_CALLS:?}"
+  fi
+  # Stay outstanding until the case releases this read. A caller that waits for
+  # it therefore waits indefinitely rather than for a fixed interval a loaded
+  # host could out-run. The tick bound only stops a broken case hanging forever.
+  ticks=0
+  while [ ! -e "${FM_FAKE_NM_RELEASE:?}" ] && [ "$ticks" -lt 300 ]; do
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  : > "${FM_FAKE_NM_READ_FINISHED:?}"
+  printf '%s\n' 'slow validation state answered'
+fi
+exit 0
+SH
+  cat > "$crew_state" <<'SH'
+#!/usr/bin/env bash
+set -u
+no-mistakes axi status >/dev/null
+printf '%s\n' 'state: done · source: run-step · passed'
+SH
+  chmod +x "$fakebin/no-mistakes" "$crew_state"
+
+  fm_write_meta "$home/state/slow-child.meta" \
+    'window=firstmate:fm-slow-child' "worktree=$worktree" 'project=firstmate' \
+    'harness=pi' 'kind=scout' 'mode=no-mistakes' 'yolo=off' 'spawn_gen=slow-child.1'
+  printf '%s\n' 'working: validating' > "$home/state/slow-child.status"
+  : > "$home/state/slow-child.turn-ended"
+  touch -t 202001010000 "$home/state/slow-child.meta" \
+    "$home/state/slow-child.status" "$home/state/slow-child.turn-ended"
+
+  out=$(FM_BACKEND=tmux FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+    FM_FAKE_NM_CALLS="$calls" FM_FAKE_NM_RELEASE="$release_gate" \
+    FM_FAKE_NM_READ_FINISHED="$read_finished" FM_INACTIVE_RECONCILE_SECS=60 \
+    FM_INACTIVE_RECONCILE_BUDGET_SECS=30 FM_INACTIVE_CREW_STATE_BIN="$crew_state" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "SESSION START" "the digest did not complete"
+  assert_absent "$read_finished" \
+    "the digest waited for inactive reconciliation's still-unreleased state read"
+  [ "$(grep -c '^blocking$' "$calls" 2>/dev/null || true)" -eq 0 ] \
+    || fail "the digest called the slow state reader on its blocking path"
+  : > "$release_gate"
+
+  while ! grep -Fq $'\tcheck\tinactive-outcome:' "$home/state/.wake-queue" 2>/dev/null \
+    && [ "$waited" -lt 150 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  assert_grep 'check	inactive-outcome:' "$home/state/.wake-queue" \
+    "the deferred scan's terminal finding never reached the durable wake queue (calls=$(cat "$calls" 2>/dev/null), report=$(network_stage_report "$home" "$root" 2>/dev/null), queue=$(cat "$home/state/.wake-queue" 2>/dev/null))"
+  [ "$(grep -c '^deferred$' "$calls" 2>/dev/null || true)" -eq 1 ] \
+    || fail "the deferred scan did not make exactly one slow state read"
+  pass "session start: inactive reconciliation runs after the digest and retains its durable wake"
 }
 
 # The headline guarantee: an unreachable host delays a reported CHECK, never the
@@ -2337,7 +2425,7 @@ EOF
   assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: pi" "pi supervision block missing"
   assert_contains "$out" "Mode: Pi extension background wake." "pi snippet missing from session start"
   assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi extension load diagnostic missing"
-  assert_contains "$out" "restart plain pi so $root/.pi/extensions/fm-primary-captain-message-router.ts, $root/.pi/extensions/fm-primary-turnend-guard.ts, and $root/.pi/extensions/fm-primary-pi-watch.ts auto-load" "pi extension load diagnostic omits a required extension"
+  assert_contains "$out" "restart plain pi so $root/.pi/extensions/fm-primary-turnend-guard.ts and $root/.pi/extensions/fm-primary-pi-watch.ts auto-load" "pi extension load diagnostic omits the turn-end guard extension"
 
   wake_line=$(printf '%s\n' "$out" | grep -n '^WAKE QUEUE$' | head -1 | cut -d: -f1)
   sup_line=$(printf '%s\n' "$out" | grep -n '^SUPERVISION OPERATING INSTRUCTIONS' | head -1 | cut -d: -f1)
@@ -2365,7 +2453,7 @@ EOF
     "pi-signed primary did not reuse Pi's supervision protocol"
   assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" \
     "pi-signed primary skipped Pi extension validation"
-  assert_contains "$out" "restart pi-signed so $root/.pi/extensions/fm-primary-captain-message-router.ts, $root/.pi/extensions/fm-primary-turnend-guard.ts, and $root/.pi/extensions/fm-primary-pi-watch.ts auto-load" \
+  assert_contains "$out" "restart pi-signed so $root/.pi/extensions/fm-primary-turnend-guard.ts and $root/.pi/extensions/fm-primary-pi-watch.ts auto-load" \
     "pi-signed extension diagnostic did not preserve the executable identity"
 
   pass "session start preserves pi-signed primary identity while applying Pi extension guarantees"
@@ -2384,11 +2472,9 @@ EOF
   make_fake_ps_pi_holder "$fakebin" "$holder_pid"
   install_pi_turnend_extension_fixture "$root"
   install_pi_watch_extension_fixture "$root"
-  install_pi_router_extension_fixture "$root"
   marker="$home/state/.pi-watch-extension-loaded"
   printf 'stale-extension-version\n%s\n' "$holder_pid" > "$marker"
   write_pi_turnend_loaded_marker "$home" "$root" "$holder_pid"
-  write_pi_router_loaded_marker "$home" "$root" "$holder_pid"
   touch -t 203001010000 "$marker" 2>/dev/null || touch "$marker"
 
   out=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
@@ -2413,7 +2499,6 @@ EOF
   make_fake_ps_pi_holder "$fakebin" "$holder_pid"
   install_pi_turnend_extension_fixture "$root"
   install_pi_watch_extension_fixture "$root"
-  install_pi_router_extension_fixture "$root"
 
   write_pi_loaded_markers "$home" "$root" "$holder_pid"
 
@@ -2439,10 +2524,8 @@ EOF
   make_fake_ps_pi_holder "$fakebin" "$holder_pid"
   install_pi_turnend_extension_fixture "$root"
   install_pi_watch_extension_fixture "$root"
-  install_pi_router_extension_fixture "$root"
 
   write_pi_watch_loaded_marker "$home" "$root" "$holder_pid"
-  write_pi_router_loaded_marker "$home" "$root" "$holder_pid"
 
   out=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   kill "$holder_pid" 2>/dev/null || true
@@ -2466,12 +2549,10 @@ EOF
   make_fake_ps_pi_holder "$fakebin" "$holder_pid"
   install_pi_turnend_extension_fixture "$root"
   install_pi_watch_extension_fixture "$root"
-  install_pi_router_extension_fixture "$root"
   marker="$home/state/.pi-watch-extension-loaded"
   version=$(hash_file_for_test "$root/.pi/extensions/fm-primary-pi-watch.ts")
   printf '%s\n999999\n' "$version" > "$marker"
   write_pi_turnend_loaded_marker "$home" "$root" "$holder_pid"
-  write_pi_router_loaded_marker "$home" "$root" "$holder_pid"
 
   out=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   kill "$holder_pid" 2>/dev/null || true
@@ -2480,62 +2561,6 @@ EOF
   assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi diagnostic trusted a marker from a previous Pi process"
 
   pass "session start rejects Pi loaded markers from previous sessions"
-}
-
-test_pi_diagnostic_rejects_missing_router_marker() {
-  local rec root home fakebin out holder_pid
-  rec=$(new_world pi-missing-router-marker)
-  IFS='|' read -r root home fakebin <<EOF
-$rec
-EOF
-  make_fake_toolchain "$fakebin"
-
-  sleep 300 &
-  holder_pid=$!
-  make_fake_ps_pi_holder "$fakebin" "$holder_pid"
-  install_pi_turnend_extension_fixture "$root"
-  install_pi_watch_extension_fixture "$root"
-  install_pi_router_extension_fixture "$root"
-
-  write_pi_watch_loaded_marker "$home" "$root" "$holder_pid"
-  write_pi_turnend_loaded_marker "$home" "$root" "$holder_pid"
-
-  out=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  kill "$holder_pid" 2>/dev/null || true
-  wait "$holder_pid" 2>/dev/null || true
-
-  assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi diagnostic trusted the former two-extension fallback"
-
-  pass "session start rejects Pi sessions missing the captain router marker"
-}
-
-test_pi_diagnostic_rejects_stale_router_marker() {
-  local rec root home fakebin out marker holder_pid
-  rec=$(new_world pi-stale-router-marker)
-  IFS='|' read -r root home fakebin <<EOF
-$rec
-EOF
-  make_fake_toolchain "$fakebin"
-
-  sleep 300 &
-  holder_pid=$!
-  make_fake_ps_pi_holder "$fakebin" "$holder_pid"
-  install_pi_turnend_extension_fixture "$root"
-  install_pi_watch_extension_fixture "$root"
-  install_pi_router_extension_fixture "$root"
-
-  write_pi_watch_loaded_marker "$home" "$root" "$holder_pid"
-  write_pi_turnend_loaded_marker "$home" "$root" "$holder_pid"
-  marker="$home/state/.pi-captain-router-extension-loaded"
-  printf 'stale-extension-version\n%s\n' "$holder_pid" > "$marker"
-
-  out=$(FM_FAKE_HARNESS=pi run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  kill "$holder_pid" 2>/dev/null || true
-  wait "$holder_pid" 2>/dev/null || true
-
-  assert_contains "$out" "PI_WATCH_EXTENSION: not loaded" "pi diagnostic trusted a stale captain router marker"
-
-  pass "session start rejects stale Pi captain router markers"
 }
 
 test_context_digest_absent_empty_present
@@ -2548,6 +2573,7 @@ test_read_once_contract_is_stated_once_before_its_subject
 test_herdr_backend_diagnostics_follow_real_session_start
 test_session_start_relaunches_missing_pi_secondmate
 test_deferred_relaunch_is_always_reported
+test_inactive_reconcile_never_blocks_the_digest
 test_unreachable_network_never_blocks_the_digest
 test_deferred_result_reaches_the_agent_when_the_digest_cannot_print_it
 test_read_only_session_declares_skipped_network_checks
@@ -2562,7 +2588,7 @@ test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
-test_branch_outcome_replay_and_lease_sweep
+test_branch_outcome_replay_respects_captain_barrier_and_lease_sweep
 test_non_pi_session_start_leaves_branch_state_untouched
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_discloses_its_remainder
@@ -2576,8 +2602,6 @@ test_pi_signed_primary_uses_pi_extensions_without_identity_normalization
 test_pi_diagnostic_rejects_stale_loaded_marker
 test_pi_diagnostic_accepts_prelock_loaded_marker
 test_pi_diagnostic_rejects_missing_turnend_guard_marker
-test_pi_diagnostic_rejects_missing_router_marker
-test_pi_diagnostic_rejects_stale_router_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker
 test_runtime_bound_truncates_loudly_and_exits_zero
 test_portable_timeout_escalates_term_resistant_process

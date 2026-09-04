@@ -15,6 +15,8 @@
 # backlog mutations, but validated secondmate handoffs always use `tasks-axi mv`.
 # Absent or any other value keeps the default tasks-axi backend path, falling
 # back to manual mutation when the tool is not compatible.
+# fm_tasks_axi_backend mirrors tasks-axi's environment, project, home-config,
+# and default backend precedence for callers that need backend-specific flags.
 #
 # This file is the single owner of FM_TASKS_AXI_MIN. bin/fm-bootstrap.sh turns a
 # failing check into the operator-facing MISSING diagnostic.
@@ -97,6 +99,85 @@ fm_tasks_axi_mv_has_multi_id() {
   command -v tasks-axi >/dev/null 2>&1 || return 1
   output=$(tasks-axi mv --help 2>&1) || return 1
   printf '%s\n' "$output" | grep -F -- '[<id>...]' >/dev/null
+}
+
+fm_tasks_axi_backend_from_toml() {  # <toml-path>
+  local toml=$1
+  [ -f "$toml" ] || return 1
+  LC_ALL=C awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    BEGIN { root=1; found=0; single=sprintf("%c", 39) }
+    {
+      line=$0
+      sub(/[[:space:]]*#.*/, "", line)
+      line=trim(line)
+      if (line ~ /^\[[^]]+\]$/) {
+        root=0
+        next
+      }
+      if (root && line ~ /^backend[[:space:]]*=/) {
+        sub(/^backend[[:space:]]*=[[:space:]]*/, "", line)
+        line=trim(line)
+        if ((substr(line, 1, 1) == "\"" && substr(line, length(line), 1) == "\"") ||
+            (substr(line, 1, 1) == single && substr(line, length(line), 1) == single)) {
+          print substr(line, 2, length(line) - 2)
+          found=1
+          exit
+        }
+      }
+    }
+    END { if (!found) exit 1 }
+  ' "$toml"
+}
+
+fm_tasks_axi_homedir() {
+  local user home
+  if [ "${HOME+x}" = x ]; then
+    printf '%s\n' "$HOME"
+    return 0
+  fi
+  user=$(id -un 2>/dev/null) || return 1
+  case "$user" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  eval "home=~$user" 2>/dev/null || return 1
+  case "$home" in
+    /*) printf '%s\n' "$home" ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_tasks_axi_home_config() {  # <tasks-axi-working-directory>
+  local root=$1 home
+  home=$(fm_tasks_axi_homedir) || return 1
+  case "$home" in
+    /*) printf '%s/.tasks-axi/config.toml\n' "$home" ;;
+    '') printf '%s/.tasks-axi/config.toml\n' "$root" ;;
+    *) printf '%s/%s/.tasks-axi/config.toml\n' "$root" "$home" ;;
+  esac
+}
+
+# Resolve the active tasks-axi backend with the same precedence as tasks-axi.
+fm_tasks_axi_backend() {  # <tasks-axi-working-directory>
+  local root=$1 backend home_config
+  if [ "${TASKS_AXI_BACKEND+x}" = x ]; then
+    printf '%s\n' "$TASKS_AXI_BACKEND"
+    return 0
+  fi
+  if backend=$(fm_tasks_axi_backend_from_toml "$root/.tasks.toml"); then
+    printf '%s\n' "$backend"
+    return 0
+  fi
+  if home_config=$(fm_tasks_axi_home_config "$root") \
+    && backend=$(fm_tasks_axi_backend_from_toml "$home_config"); then
+    printf '%s\n' "$backend"
+    return 0
+  fi
+  printf '%s\n' markdown
 }
 
 fm_backlog_backend_value() {
