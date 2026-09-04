@@ -1335,10 +1335,9 @@ ${context.command}
       Date.now() >= providerRecovery.retryNotBefore
     );
     if (branchBroken && !recoveryProbe) return; // main owns every wake inside the cooldown window
-    if (!reconcileUnreadOutcomes(generation)) {
-      branchBroken = "could not reconcile unread supervision outcomes into main";
-      return;
-    }
+    // Store reads can fail transiently. Decline this wake without changing
+    // the provider latch so the next eligible offer can retry reconciliation.
+    if (!reconcileUnreadOutcomes(generation)) return;
     if (!collectCurrentMainDialog()) return;
     if (recoveryProbe && providerRecovery) providerRecovery.probeInFlight = true;
     offer.accept(enqueueWake(offer.message, generation, recoveryProbe));
@@ -1394,10 +1393,7 @@ ${context.command}
     rememberMainModel(ctx);
     currentMainSession = ctx.sessionManager;
     if (!actingAsOwner()) return;
-    if (!reconcileUnreadOutcomes(generation, false)) {
-      branchBroken = "could not reconcile unread supervision outcomes into main";
-      return;
-    }
+    if (!reconcileUnreadOutcomes(generation, false)) return;
     if (!collectCurrentMainDialog()) return;
     enqueueMirrorFlush();
   });
@@ -1428,9 +1424,7 @@ ${context.command}
     mirrorCollection.pendingCursor = null;
     mirrorCollection.stagedCaptain = null;
     mirrorCollection.reanchor = true;
-    if (actingAsOwner(generation) && !reconcileUnreadOutcomes(generation)) {
-      branchBroken = "could not reconcile unread supervision outcomes into main";
-    }
+    if (actingAsOwner(generation)) reconcileUnreadOutcomes(generation);
   });
 
   // Pi emits this for /model, Ctrl+P cycling, and session restore, so it is

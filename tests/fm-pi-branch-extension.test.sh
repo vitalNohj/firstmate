@@ -1818,6 +1818,85 @@ EOF
   pass "a settled branch turn without a durable outcome falls back and releases its grant for main replay"
 }
 
+test_outcome_read_failure_recovers_without_replacing_the_session() {
+  local trigger repo home out status
+  for trigger in dispatch turn_end session_start; do
+    repo="$TMP_ROOT/outcome-read-$trigger-root"
+    home="$TMP_ROOT/outcome-read-$trigger-home"
+    mkdir -p "$home/state" "$home/config"
+    install_pi_branch_extension_fixture "$repo"
+    PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+      FM_TEST_RECONCILE_TRIGGER="$trigger" DRIVER_PRELUDE="$DRIVER_PRELUDE" \
+      node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+const prelude = process.env.DRIVER_PRELUDE;
+await eval(`(async () => { ${prelude}; globalThis.__t = { fire, dispatch, home, realRoot, outcomeScript, mainEntries, defaultSessionCtx, mainUserMessages }; })()`);
+const { fire, dispatch, home, realRoot, outcomeScript, mainEntries, defaultSessionCtx, mainUserMessages } = globalThis.__t;
+import { existsSync, mkdirSync, readFileSync, rmdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+
+const trigger = process.env.FM_TEST_RECONCILE_TRIGGER;
+if (trigger !== "session_start") fire("session_start", {}, defaultSessionCtx);
+outcomeScript(["processed-init"]);
+outcomeScript(["append", "--task", "branch-driver", "--verdict", "captain", "--summary", "pending outcome survives a temporary read failure"]);
+const cursor = `${home}/state/.branch-outcomes-cursor`;
+// Exercise the real outcome CLI's unreadable-cursor path, then repair only
+// that filesystem fault. No extension internals or provider state are reset.
+mkdirSync(cursor);
+const failedRead = spawnSync("bash", [`${realRoot}/bin/fm-branch-outcome.sh`, "unread"], {
+  encoding: "utf8",
+  env: { ...process.env, FM_STATE_OVERRIDE: `${home}/state` },
+});
+if (failedRead.status === 0 || !failedRead.stderr.includes("outcome cursor is unreadable")) {
+  throw new Error(`the real outcome store did not reproduce a read failure: ${failedRead.stderr}`);
+}
+if (trigger !== "dispatch") fire(trigger, {}, defaultSessionCtx);
+for (let attempt = 0; attempt < 2; attempt += 1) {
+  if (dispatch("signal: main must retain this wake while the outcome store is unreadable").accepted) {
+    throw new Error(`${trigger}: an unreadable outcome store accepted branch work`);
+  }
+}
+if ((globalThis.__fmPrompts ?? []).length !== 0 || existsSync(`${home}/state/.branch-eligible-rows`)) {
+  throw new Error(`${trigger}: a failed read prompted the branch or claimed its wake rows`);
+}
+if (!readFileSync(`${home}/state/.wake-queue`, "utf8").includes("branch-driver.status")) {
+  throw new Error(`${trigger}: a failed read lost the wake that main must handle`);
+}
+if (mainEntries.some((entry) => entry.customType === "fm-branch-visible-outcome")) {
+  throw new Error(`${trigger}: an unreadable outcome was presented or acknowledged`);
+}
+rmdirSync(cursor);
+const unread = JSON.parse(outcomeScript(["unread"]));
+if (unread.seq !== 1 || unread.verdict !== "captain") {
+  throw new Error(`${trigger}: the pending captain outcome did not survive the read failure`);
+}
+globalThis.__fmOnBranchPrompt = async ({ session }) => {
+  const report = session.options.customTools.find((tool) => tool.name === "fm_branch_report");
+  const result = await report.execute("after-store-recovery", {
+    task: "branch-driver", verdict: "routine", summary: "branch resumed after the outcome store recovered",
+  }, undefined, undefined, {});
+  if (result.isError) throw new Error(`recovered branch could not report: ${JSON.stringify(result)}`);
+  session.messages.push({ role: "assistant", content: [], stopReason: "stop" });
+};
+const recovered = dispatch("signal: outcome reads work again in the same session");
+if (!recovered.accepted) throw new Error(`${trigger}: a temporary outcome read failure permanently disabled branch supervision`);
+await recovered.settlement;
+const visible = mainEntries.filter((entry) => entry.customType === "fm-branch-visible-outcome");
+if (visible.length !== 1 || visible[0].data.seq !== 1 || visible[0].data.summary !== unread.summary) {
+  throw new Error(`${trigger}: recovery did not present the exact pending outcome once: ${JSON.stringify(visible)}`);
+}
+if (outcomeScript(["unread"]) !== "") throw new Error(`${trigger}: recovery did not advance the delivered cursor`);
+const unprocessed = JSON.parse(outcomeScript(["unprocessed"]));
+if (unprocessed.seq !== 1) throw new Error(`${trigger}: recovery acknowledged the captain outcome without main processing it`);
+if (mainUserMessages.length !== 0) throw new Error(`${trigger}: branch bypassed watcher-owned fallback delivery`);
+process.exit(0);
+EOF
+    status=$?
+    out=$(cat "$TMP_ROOT/node-output")
+    expect_code 0 "$status" "outcome read failures at $trigger must recover without replacing the session: $out"
+    pass "outcome read failure at $trigger preserves main ownership and recovers in the same session"
+  done
+}
+
 test_post_construction_provider_error_falls_back_latches_and_recovers_on_cooldown() {
   local repo home out status
   repo="$TMP_ROOT/provider-error-root"
@@ -1829,7 +1908,7 @@ test_post_construction_provider_error_falls_back_latches_and_recovers_on_cooldow
 const prelude = process.env.DRIVER_PRELUDE;
 await eval(`(async () => { ${prelude}; globalThis.__t = { pi, makeOffer, dispatch, fire, settle, home, mainUserMessages, sentToMain }; })()`);
 const { pi, makeOffer, dispatch, fire, settle, home, mainUserMessages, sentToMain } = globalThis.__t;
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmdirSync } from "node:fs";
 
 let now = 1_000_000;
 Date.now = () => now;
@@ -1936,6 +2015,20 @@ if (pauseNotes.length !== 1 || pauseNotes[0].message.content.includes("\n")) {
   throw new Error(`the first latch must surface exactly one one-line note: ${JSON.stringify(pauseNotes)}`);
 }
 
+// A separate outcome-store fault at turn_end neither clears this provider
+// latch nor counts as another provider failure that extends its cooldown.
+const cursor = `${home}/state/.branch-outcomes-cursor`;
+renameSync(cursor, `${cursor}.saved`);
+mkdirSync(cursor);
+fire("turn_end", {}, {
+  sessionManager: { getSessionFile: () => `${home}/main.jsonl`, getEntries: () => entries },
+});
+rmdirSync(cursor);
+renameSync(`${cursor}.saved`, cursor);
+if (dispatch("signal: store recovery must not clear the provider cooldown").accepted) {
+  throw new Error("successful outcome reads cleared an independent provider-error latch");
+}
+
 // No provider attempt occurs inside the first five-minute cooldown. Exactly
 // one probe is accepted when it elapses, and all other wakes remain on main
 // even while that probe is still in flight.
@@ -1944,6 +2037,15 @@ if (dispatch("signal: still inside first cooldown").accepted) {
   throw new Error("the latched branch re-probed before its first cooldown elapsed");
 }
 now += 1;
+// A read fault when a probe becomes eligible leaves its allowance available
+// for the next offer instead of consuming a probe or extending the backoff.
+renameSync(cursor, `${cursor}.saved`);
+mkdirSync(cursor);
+if (dispatch("signal: the outcome store is unavailable at probe time").accepted) {
+  throw new Error("a recovery probe bypassed outcome reconciliation");
+}
+rmdirSync(cursor);
+renameSync(`${cursor}.saved`, cursor);
 const failedProbe = dispatch("signal: first cooldown probe");
 if (!failedProbe.accepted) throw new Error("the branch did not accept one probe after its cooldown elapsed");
 await settle(() => attempt === 5 && typeof releaseFailedProbe === "function", "in-flight failed cooldown probe");
@@ -3995,6 +4097,7 @@ test_branch_predrain_recheck_keeps_a_heartbeat_a_co_present_check_arrives_under
 test_branch_report_refuses_a_task_the_wake_did_not_name
 test_branch_predrain_recheck_excludes_new_main_owned_row_without_deferring_eligible_work
 test_settled_branch_prompt_releases_unacknowledged_grant
+test_outcome_read_failure_recovers_without_replacing_the_session
 test_post_construction_provider_error_falls_back_latches_and_recovers_on_cooldown
 test_selection_change_does_not_corrupt_inflight_provider_state
 test_main_owned_grant_result_falls_back_to_main
