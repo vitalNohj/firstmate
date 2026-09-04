@@ -134,9 +134,36 @@ fm_tasks_axi_backend_from_toml() {  # <toml-path>
   ' "$toml"
 }
 
+fm_tasks_axi_homedir() {
+  local user home
+  if [ "${HOME+x}" = x ]; then
+    printf '%s\n' "$HOME"
+    return 0
+  fi
+  user=$(id -un 2>/dev/null) || return 1
+  case "$user" in
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  eval "home=~$user" 2>/dev/null || return 1
+  case "$home" in
+    /*) printf '%s\n' "$home" ;;
+    *) return 1 ;;
+  esac
+}
+
+fm_tasks_axi_home_config() {  # <tasks-axi-working-directory>
+  local root=$1 home
+  home=$(fm_tasks_axi_homedir) || return 1
+  case "$home" in
+    /*) printf '%s/.tasks-axi/config.toml\n' "$home" ;;
+    '') printf '%s/.tasks-axi/config.toml\n' "$root" ;;
+    *) printf '%s/%s/.tasks-axi/config.toml\n' "$root" "$home" ;;
+  esac
+}
+
 # Resolve the active tasks-axi backend with the same precedence as tasks-axi.
 fm_tasks_axi_backend() {  # <tasks-axi-working-directory>
-  local root=$1 backend
+  local root=$1 backend home_config
   if [ "${TASKS_AXI_BACKEND+x}" = x ]; then
     printf '%s\n' "$TASKS_AXI_BACKEND"
     return 0
@@ -145,8 +172,8 @@ fm_tasks_axi_backend() {  # <tasks-axi-working-directory>
     printf '%s\n' "$backend"
     return 0
   fi
-  if [ -n "${HOME:-}" ] \
-    && backend=$(fm_tasks_axi_backend_from_toml "$HOME/.tasks-axi/config.toml"); then
+  if home_config=$(fm_tasks_axi_home_config "$root") \
+    && backend=$(fm_tasks_axi_backend_from_toml "$home_config"); then
     printf '%s\n' "$backend"
     return 0
   fi

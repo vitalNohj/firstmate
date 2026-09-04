@@ -1945,6 +1945,74 @@ TOMLEOF
   pass "the retirement guard reads the archive tasks-axi itself resolved"
 }
 
+test_row_probe_backend_resolution_matches_tasks_axi() {
+  local home id calls rc direct
+  home=$(make_home row-probe-backend-resolution)
+  id=sample-row-probe-backend-resolution
+  calls="$home/tasks-axi-calls"
+  mkdir -p "$home/.tasks-axi" "$home/relhome/.tasks-axi" "$home/caller"
+  cat > "$home/.tasks.toml" <<'TOMLEOF'
+[markdown]
+path = "data/backlog.md"
+TOMLEOF
+  printf 'backend = "empty-home-probe"\n' > "$home/.tasks-axi/config.toml"
+  printf 'backend = "relative-home-probe"\n' > "$home/relhome/.tasks-axi/config.toml"
+  cat > "$home/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${TASKS_AXI_CALLS:?}"
+exec "${REAL_TASKS_AXI:?}" "$@"
+SH
+  chmod +x "$home/fakebin/tasks-axi"
+
+  direct=$(cd "$home" && HOME='' "$TASKS_AXI_BIN" show "$id" 2>&1) || :
+  assert_contains "$direct" 'empty-home-probe' \
+    "tasks-axi did not resolve an empty HOME from its working directory"
+  : > "$calls"
+  set +e
+  (cd "$home/caller" && HOME='' TASKS_AXI_CALLS="$calls" run_captain "$home" open "$id") \
+    > "$home/empty-open.out" 2> "$home/empty-open.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "the empty-HOME open probe did not report its backend failure"
+  assert_grep "show $id" "$calls" "the empty-HOME open predicate did not probe its exact row"
+  assert_no_grep "--file" "$calls" \
+    "the empty-HOME row probe disagreed with tasks-axi's non-markdown backend"
+
+  direct=$(cd "$home" && HOME=relhome "$TASKS_AXI_BIN" show "$id" 2>&1) || :
+  assert_contains "$direct" 'relative-home-probe' \
+    "tasks-axi did not resolve a relative HOME from its working directory"
+  : > "$calls"
+  set +e
+  (cd "$home/caller" && HOME=relhome TASKS_AXI_CALLS="$calls" run_captain "$home" open "$id") \
+    > "$home/relative-open.out" 2> "$home/relative-open.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "the relative-HOME open probe did not report its backend failure"
+  assert_grep "show $id" "$calls" "the relative-HOME open predicate did not probe its exact row"
+  assert_no_grep "--file" "$calls" \
+    "the relative-HOME row probe resolved HOME against the caller's directory"
+
+  direct=$(cd "$home" && unset HOME && "$TASKS_AXI_BIN" show "$id" 2>&1) || :
+  : > "$calls"
+  set +e
+  (cd "$home/caller" && unset HOME && TASKS_AXI_CALLS="$calls" run_captain "$home" open "$id") \
+    > "$home/unset-open.out" 2> "$home/unset-open.err"
+  rc=$?
+  set -e
+  case "$direct" in
+    *'code: UNSUPPORTED'*)
+      assert_no_grep "--file" "$calls" \
+        "the unset-HOME row probe ignored tasks-axi's passwd-home backend"
+      ;;
+    *)
+      assert_grep "show $id --file" "$calls" \
+        "the unset-HOME row probe did not preserve tasks-axi's markdown backend"
+      ;;
+  esac
+  [ "$rc" -ne 0 ] || fail "the missing unset-HOME row was reported open"
+  pass "row probes resolve empty, relative, and unset HOME like tasks-axi"
+}
+
 # A read failure must never be reported as a nonexistent task: answers would
 # otherwise drop the captain's recorded words under a reason that is wrong.
 test_answers_reports_read_failure_not_absence() {
@@ -2758,6 +2826,7 @@ test_missing_backlog_file_never_proves_absence
 test_unreachable_archive_directory_never_re_mints
 test_backend_path_precedence_governs_absence_proof
 test_backend_archive_precedence_governs_retirement
+test_row_probe_backend_resolution_matches_tasks_axi
 test_answers_reports_read_failure_not_absence
 test_first_call_in_a_home_with_no_backlog_file
 test_home_config_resolution_matches_backend
