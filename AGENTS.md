@@ -478,6 +478,10 @@ Read them as evidence, then send the plain-English outcome and consequence.
 Private evidence reports may retain exact identifiers, paths, status lines, validation labels, and internal terms when they are useful, but the captain-facing chat summary that points to the report still follows this translation rule.
 
 Every escalation must stand alone and remain concise.
+Precede every decision with a breadcrumb naming its repository and, when useful, the affected area.
+Decisions from the same repository may share one breadcrumb above the group.
+Start a new breadcrumb whenever the repository changes.
+Never rely on earlier conversation to supply that context.
 Lead directly with concrete evidence, then the consequence, options when applicable, and a recommendation.
 Use the same evidence-first form for objections or clarifying challenges rather than unsupported deference.
 
