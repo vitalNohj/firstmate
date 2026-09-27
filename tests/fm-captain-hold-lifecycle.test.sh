@@ -3079,12 +3079,9 @@ TOMLEOF
   pass "an archive unreachable through its parent directory fails loudly instead of counting zero"
 }
 
-# tasks-axi resolves its backlog from TASKS_AXI_FILE first, then the project
-# .tasks.toml, then ~/.tasks-axi/config.toml. A gate that resolves from the
-# project file alone proves a file the backend never read: the backend answers
-# NOT_FOUND for every id against the backlog it actually opened, the gate finds
-# its own unrelated file healthy, accepts that as proof of absence, and lets a
-# stale archived cycle verify a genuinely open captain call.
+# The markdown wrapper passes the home's own backlog as --file for row reads.
+# A stale archived cycle must never hide a still-open captain call merely
+# because TASKS_AXI_FILE or a home config names another markdown path.
 test_backend_path_precedence_governs_absence_proof() {
   local home origin hold rc
   home=$(make_home backend-path-precedence)
@@ -3315,14 +3312,10 @@ test_answers_reports_read_failure_not_absence() {
   pass "answers reports an unreadable backlog as a read failure rather than a missing task"
 }
 
-# tasks-axi locates its home-level config through node's os.homedir(), which is
-# NOT "$HOME or nothing": an unset HOME falls back to this user's passwd entry,
-# and an EMPTY HOME makes join("", ".tasks-axi", "config.toml") the RELATIVE path
-# the backend then reads from the directory it runs in - the home itself. A gate
-# that skips the file in either case proves a config the backend never read, the
-# same fail-open the path-precedence guards close: the backend answers NOT_FOUND
-# for every id against the backlog its home config named, the gate finds its own
-# derived backlog healthy, and a stale archived cycle verifies an open call.
+# tasks-axi locates its home-level config through node's os.homedir(): an unset
+# HOME falls back to the passwd entry, while empty and relative HOME resolve
+# against its execution directory. Markdown row reads still use the explicit
+# home backlog; the config remains relevant to archive-path resolution.
 test_home_config_resolution_matches_backend() {
   local home origin hold rc
   home=$(make_home home-config-resolution)
@@ -3432,9 +3425,8 @@ TOMLEOF
 }
 
 # tasks-axi treats [markdown] archive as optional and derives its own default
-# from the resolved backlog path - done-archive.md beside that file, not a fixed
-# data/ location. The gate must derive the same path, and must never silently
-# accept a malformed key, which would disable the archive guards entirely.
+# beside the explicit --file backlog. The gate must derive the same path and
+# never silently accept a malformed key that disables archive guards.
 test_archive_config_absent_defaults_and_malformed_fails() {
   local home id hold
   home=$(make_home malformed-archive-config)
