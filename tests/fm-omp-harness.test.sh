@@ -478,7 +478,8 @@ SH
   chmod +x "$repo/bin/"*.sh
   out=$(FM_GUARD_LOG="$TMP_ROOT/guard/guard.log" FM_HOME="$home" EXT="$repo/.omp/extensions/fm-primary-turnend-guard.ts" node --input-type=module 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
-import { readFileSync, existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { readFileSync, existsSync, chmodSync } from "node:fs";
 const handlers = new Map();
 const pi = { on(e, h) { handlers.set(e, h); }, sendMessage() {} };
 const mod = await import(pathToFileURL(process.env.EXT).href);
@@ -508,6 +509,20 @@ const r2 = await handlers.get("session_stop")({ type: "session_stop", stop_hook_
 if (r2 !== undefined) throw new Error(`the flagged second stop must stand down, got ${JSON.stringify(r2)}`);
 const payloads = readFileSync(process.env.FM_GUARD_LOG, "utf8").trim().split("\n");
 if (payloads.join("|") !== '{"stop_hook_active":false}|{"stop_hook_active":true}') throw new Error(`guard payloads were ${payloads.join("|")}`);
+// Simulate a script launch error without relying on Windows in portable CI.
+// If a guard cannot start, commands must be blocked and turns must continue.
+const bin = resolve(dirname(process.env.EXT), "../../bin");
+chmodSync(`${bin}/fm-cd-pretool-check.sh`, 0o600);
+const noCdGuard = await handlers.get("tool_call")({ type: "tool_call", toolName: "bash", input: { command: "ls" } }, {});
+if (noCdGuard.block !== true || !noCdGuard.reason.includes("could not start")) throw new Error(`failed cd-guard launch allowed a command: ${JSON.stringify(noCdGuard)}`);
+chmodSync(`${bin}/fm-cd-pretool-check.sh`, 0o700);
+chmodSync(`${bin}/fm-arm-pretool-check.sh`, 0o600);
+const noArmGuard = await handlers.get("tool_call")({ type: "tool_call", toolName: "bash", input: { command: "ls" } }, {});
+if (noArmGuard.block !== true || !noArmGuard.reason.includes("could not start")) throw new Error(`failed arm-guard launch allowed a command: ${JSON.stringify(noArmGuard)}`);
+chmodSync(`${bin}/fm-arm-pretool-check.sh`, 0o700);
+chmodSync(`${bin}/fm-turnend-guard.sh`, 0o600);
+const noTurnendGuard = await handlers.get("session_stop")({ type: "session_stop", stop_hook_active: false }, {});
+if (noTurnendGuard?.continue !== true || !noTurnendGuard.additionalContext.includes("could not start")) throw new Error(`failed turn-end guard launch allowed the turn to settle: ${JSON.stringify(noTurnendGuard)}`);
 if (!existsSync(`${process.env.FM_HOME}/state/.omp-turnend-extension-loaded`)) throw new Error("loaded marker was not written");
 await handlers.get("session_shutdown")({}, {});
 EOF

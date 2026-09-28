@@ -462,15 +462,16 @@ async function claimSessionstartMessage(
 // forced continuation per turn.
 function runGuard(stopHookActive: boolean): Promise<{ code: number; stderr: string }> {
   return new Promise((resolveResult) => {
-    const child = spawn(`${root}/bin/fm-turnend-guard.sh`, {
-      stdio: ["pipe", "ignore", "pipe"],
-    });
+    const script = `${root}/bin/fm-turnend-guard.sh`;
+    const child = process.platform === "win32"
+      ? spawn("bash", [script], { stdio: ["pipe", "ignore", "pipe"] })
+      : spawn(script, { stdio: ["pipe", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", () => resolveResult({ code: 0, stderr: "" }));
-    child.on("close", (code) => resolveResult({ code: code ?? 0, stderr }));
+    child.on("error", (error) => resolveResult({ code: 2, stderr: `turn-end guard could not start: ${error.message}` }));
+    child.on("close", (code) => resolveResult({ code: code ?? 2, stderr }));
     child.stdin.end(JSON.stringify({ stop_hook_active: stopHookActive }));
   });
 }
@@ -484,15 +485,16 @@ function runGuard(stopHookActive: boolean): Promise<{ code: number; stderr: stri
 // decision and is inert outside the real primary checkout.
 function runChecker(script: string, command: string): Promise<{ code: number; stderr: string }> {
   return new Promise((resolveResult) => {
-    const child = spawn(`${root}/bin/${script}`, ["--command", command], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
+    const path = `${root}/bin/${script}`;
+    const child = process.platform === "win32"
+      ? spawn("bash", [path, "--command", command], { stdio: ["ignore", "ignore", "pipe"] })
+      : spawn(path, ["--command", command], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", () => resolveResult({ code: 0, stderr: "" }));
-    child.on("close", (code) => resolveResult({ code: code ?? 0, stderr }));
+    child.on("error", (error) => resolveResult({ code: 2, stderr: `${script} could not start: ${error.message}` }));
+    child.on("close", (code) => resolveResult({ code: code ?? 2, stderr }));
   });
 }
 
