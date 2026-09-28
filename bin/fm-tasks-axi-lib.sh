@@ -142,16 +142,16 @@ fm_tasks_axi_backend_from_toml() {  # <toml-path>
 }
 
 fm_tasks_axi_homedir() {
-  local user home
+  local login_name home
   if [ "${HOME+x}" = x ]; then
     printf '%s\n' "$HOME"
     return 0
   fi
-  user=$(id -un 2>/dev/null) || return 1
-  case "$user" in
+  login_name=$(id -un 2>/dev/null) || return 1
+  case "$login_name" in
     ''|*[!A-Za-z0-9._-]*) return 1 ;;
   esac
-  eval "home=~$user" 2>/dev/null || return 1
+  eval "home=~$login_name" 2>/dev/null || return 1
   case "$home" in
     /*) printf '%s\n' "$home" ;;
     *) return 1 ;;
