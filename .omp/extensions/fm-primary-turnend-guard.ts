@@ -274,7 +274,7 @@ function runSessionstartHook(generation: SessionstartGeneration): Promise<Sessio
     let child: ChildProcess;
     try {
       child = spawn(
-        supervised ? "node" : runner,
+        supervised ? "node" : "bash",
         supervised
           ? [
               `${root}/.pi/extensions/lib/fm-sessionstart-supervisor.mjs`,
@@ -283,7 +283,7 @@ function runSessionstartHook(generation: SessionstartGeneration): Promise<Sessio
               generation.source,
               "--pi-prerequisite",
             ]
-          : ["--source", generation.source, "--pi-prerequisite"],
+          : [runner, "--source", generation.source, "--pi-prerequisite"],
         {
           detached: supervised,
           stdio: supervised
