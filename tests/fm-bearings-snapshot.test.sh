@@ -90,7 +90,7 @@ make_home() {  # <name>
 record_claude_state() {  # <state-dir> <id> <busy|idle>
   local state=$1 id=$2 semantic_state=$3 gen event
   case "$semantic_state" in
-    busy) event=user-prompt-submit ;;
+    busy) event='user-prompt-submit' ;;
     idle) event=stop ;;
     *) fail "unsupported semantic fixture state: $semantic_state" ;;
   esac
