@@ -763,6 +763,7 @@ chmod +x "$TMP_ROOT/observe"
 export FM_OBSERVE_LOG="$OBSERVE_LOG" FM_OBSERVE_ROOT="$ROOT"
 export FM_PENDING_REPLY_REMOTE_OBSERVE_BIN="$TMP_ROOT/observe"
 export FM_PENDING_REPLY_REMOTE_OBSERVE=1
+# shellcheck disable=SC2016 # Positional parameters expand in the inner shell.
 remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
 rm -f "$PARENT/state/remote-replies/ios.caught-up"
 remote_env "$ADAPTER" source ios > "$TMP_ROOT/cadence-source.out" 2>&1 &
@@ -771,6 +772,7 @@ CADENCE_SOURCE=$!
 # leave the lane free, even when the caller opts in on every pass.
 for _ in 1 2 3; do
   sleep 1
+  # shellcheck disable=SC2016 # Positional parameters expand in the inner shell.
   remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
 done
 set +e
