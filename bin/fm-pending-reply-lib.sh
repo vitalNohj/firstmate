@@ -104,6 +104,15 @@
 #   FM_PENDING_REPLY_SEND_HOOK    optional command template for recovery delivery
 #                                 (tests); receives task_id and full message as args
 #   FM_PENDING_REPLY_NOW          optional fixed epoch for deterministic tests
+#   FM_PENDING_REPLY_REMOTE_OBSERVE
+#                                 1 when this pass may check in on a remote mate;
+#                                 any other value, including unset, skips it
+#   FM_PENDING_REPLY_OBSERVE_MARGIN_SECS
+#                                 seconds added to the reply quiet window between
+#                                 remote check-ins (default 5)
+#   FM_PENDING_REPLY_REMOTE_OBSERVE_BIN
+#                                 optional replacement for fm-on.sh on that
+#                                 check-in (tests)
 
 # shellcheck source=bin/fm-marker-lib.sh
 _FM_PENDING_REPLY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd 2>/dev/null)" || _FM_PENDING_REPLY_LIB_DIR="."
@@ -855,6 +864,17 @@ fm_pending_reply_mark_turn_completed() {  # <state-dir> <corr_id> [which: reques
 # owns the channel), and only this library reads it. A channel that is behind,
 # unarmed, or broken simply never advances the watermark, so the request stays
 # durably open and un-nagged; the mirror escalates its own continuity failures.
+#
+# A remote observe check-in is a job on that mate's one remote lane.
+# The reader publishes the watermark only after a full quiet window
+# (FM_REMOTE_REPLY_WAIT_SECONDS, default 55) finishes with exit 75.
+# Any other job on the lane ends that read early and the watermark stays put.
+# The watcher asks for a check-in only on the pass that is already probing
+# endpoint liveness, and this library still refuses another until that window
+# plus FM_PENDING_REPLY_OBSERVE_MARGIN_SECS (default 5) has elapsed.
+# A skipped check-in leaves busy/idle unknown, which does not prove the turn
+# finished.
+# Per-record grace remains the bound on how long that lag can delay recovery.
 fm_pending_reply_remote_channel_watermark_path() {  # <state-dir> <task_id>
   printf '%s/remote-replies/%s.caught-up' "$1" "$2"
 }
@@ -1431,12 +1451,70 @@ fm_pending_reply_tick_one() {  # <state-dir> <corr_id> <busy_state> [secondmate-
   return 0
 }
 
+# Seconds that must separate remote observe check-ins so one quiet reply
+# window can finish between them.
+fm_pending_reply_remote_observe_gap_secs() {
+  local wait=${FM_REMOTE_REPLY_WAIT_SECONDS:-55}
+  local margin=${FM_PENDING_REPLY_OBSERVE_MARGIN_SECS:-5}
+  case "$wait" in ''|*[!0-9]*) wait=55 ;; esac
+  case "$margin" in ''|*[!0-9]*) margin=5 ;; esac
+  printf '%s' $((wait + margin))
+}
+
+fm_pending_reply_remote_observe_stamp_path() {  # <state-dir> <task_id>
+  case "$2" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s/.remote-observe-%s' "$(fm_pending_reply_dir "$1")" "$2"
+}
+
+# Print the epoch of the last remote observe check-in, or nothing.
+fm_pending_reply_remote_observe_epoch() {  # <state-dir> <task_id>
+  local path epoch
+  path=$(fm_pending_reply_remote_observe_stamp_path "$1" "$2") || return 0
+  [ -f "$path" ] && [ ! -L "$path" ] || return 0
+  epoch=$(sed -n 's/^observe_epoch=//p' "$path" 2>/dev/null | head -1)
+  case "$epoch" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$epoch"
+}
+
+# Record that a remote observe check-in just occupied this mate's lane.
+fm_pending_reply_note_remote_observe() {  # <state-dir> <task_id>
+  local state=$1 task_id=$2 path dir tmp epoch
+  path=$(fm_pending_reply_remote_observe_stamp_path "$state" "$task_id") || return 1
+  epoch=$(fm_pending_reply_now)
+  dir=$(dirname "$path")
+  mkdir -p "$dir" || return 1
+  chmod 700 "$dir" 2>/dev/null || true
+  [ ! -L "$path" ] || return 1
+  tmp="$dir/.remote-observe.$task_id.$$"
+  printf 'observe_epoch=%s\n' "$epoch" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f -- "$tmp" "$path"
+}
+
+# 0 when this pass may run a remote observe check-in for <task_id>.
+# The caller opts in with FM_PENDING_REPLY_REMOTE_OBSERVE=1, and a check-in
+# still inside the quiet-window gap is refused.
+fm_pending_reply_remote_observe_due() {  # <state-dir> <task_id>
+  local stamp now gap
+  case "${FM_PENDING_REPLY_REMOTE_OBSERVE:-}" in
+    1) ;;
+    *) return 1 ;;
+  esac
+  fm_pending_reply_remote_observe_stamp_path "$1" "$2" >/dev/null || return 1
+  stamp=$(fm_pending_reply_remote_observe_epoch "$1" "$2")
+  [ -n "$stamp" ] || return 0
+  now=$(fm_pending_reply_now)
+  gap=$(fm_pending_reply_remote_observe_gap_secs)
+  [ $((now - stamp)) -ge "$gap" ]
+}
+
 # Scan every pending record for this parent state. Safe to call every poll.
 # Never scrapes secondmate conversation; uses only parent status, backend busy
 # state, and optional secondmate-home wrong-home path checks.
+# Remote observe check-ins are the exception: see the freshness section above.
 fm_pending_reply_tick() {  # <state-dir>
   local state=$1 dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host
-  local observation observation_task found i
+  local observation observation_task found i observe_bin
   local -a observation_tasks=() observation_values=()
   dir=$(fm_pending_reply_dir "$state")
   [ -d "$dir" ] || return 0
@@ -1530,8 +1608,14 @@ fm_pending_reply_tick() {  # <state-dir>
         done
         if [ "$found" = 0 ]; then
           if [ -n "$remote_host" ]; then
-            observation=$("$_FM_PENDING_REPLY_LIB_DIR/fm-on.sh" "$task_id" \
-              fm-remote-secondmate-control.sh observe "$task_id" < /dev/null 2>/dev/null || printf 'unknown')
+            if fm_pending_reply_remote_observe_due "$state" "$task_id"; then
+              fm_pending_reply_note_remote_observe "$state" "$task_id" || true
+              observe_bin=${FM_PENDING_REPLY_REMOTE_OBSERVE_BIN:-$_FM_PENDING_REPLY_LIB_DIR/fm-on.sh}
+              observation=$("$observe_bin" "$task_id" \
+                fm-remote-secondmate-control.sh observe "$task_id" < /dev/null 2>/dev/null || printf 'unknown')
+            else
+              observation=unknown
+            fi
             case "$observation" in busy|idle|fallback-idle|unknown) ;; *) observation=unknown ;; esac
           else
             observation=$(fm_pending_reply_backend_observation "$backend" "$target" "$label" "$harness")

@@ -1009,6 +1009,14 @@ EOF
   return 0
 }
 
+# 0 when this supervision pass is the endpoint-liveness pass.
+# A remote reply check-in is allowed only then. bin/fm-pending-reply-lib.sh
+# owns the further gap that keeps that check-in from cutting the reply
+# reader's quiet window short.
+pending_reply_remote_observe_this_pass() {
+  [ "$(age_of "$STATE/.secondmate-liveness-tick")" -ge "$SECONDMATE_LIVENESS_SECS" ]
+}
+
 # The ordinary-supervision half of the secondmate liveness guarantee, paired
 # with bin/fm-bootstrap.sh's session-start sweep over the shared library in
 # bin/fm-secondmate-liveness-lib.sh (which owns the state contract, the remote
@@ -2639,7 +2647,13 @@ while :; do
   # parent reports, observe backend busy/idle turn completion, send one recovery
   # repost after grace, and escalate once if the recovery turn is also missed.
   # No conversation scraping; unresolved records are never silently expired.
-  fm_pending_reply_tick "$STATE" || true
+  # Remote check-ins are limited to the endpoint-liveness pass; the
+  # pending-reply library owns the quiet-window gap on top of that.
+  if pending_reply_remote_observe_this_pass; then
+    FM_PENDING_REPLY_REMOTE_OBSERVE=1 fm_pending_reply_tick "$STATE" || true
+  else
+    FM_PENDING_REPLY_REMOTE_OBSERVE=0 fm_pending_reply_tick "$STATE" || true
+  fi
 
   # Endpoint liveness runs before queue observation: a positively dead or
   # missing secondmate endpoint is relaunched here on a bounded cadence, which
