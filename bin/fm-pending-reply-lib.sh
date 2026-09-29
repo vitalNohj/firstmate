@@ -107,9 +107,6 @@
 #   FM_PENDING_REPLY_REMOTE_OBSERVE
 #                                 1 when this pass may check in on a remote mate;
 #                                 any other value, including unset, skips it
-#   FM_PENDING_REPLY_OBSERVE_MARGIN_SECS
-#                                 seconds added to the reply quiet window between
-#                                 remote check-ins (default 5)
 #   FM_PENDING_REPLY_REMOTE_OBSERVE_BIN
 #                                 optional replacement for fm-on.sh on that
 #                                 check-in (tests)
@@ -871,7 +868,7 @@ fm_pending_reply_mark_turn_completed() {  # <state-dir> <corr_id> [which: reques
 # Any other job on the lane ends that read early and the watermark stays put.
 # The watcher asks for a check-in only on the pass that is already probing
 # endpoint liveness, and this library still refuses another until that window
-# plus FM_PENDING_REPLY_OBSERVE_MARGIN_SECS (default 5) has elapsed.
+# plus an internal ten-percent margin (at least one second) has elapsed.
 # A skipped check-in leaves busy/idle unknown, which does not prove the turn
 # finished.
 # Per-record grace remains the bound on how long that lag can delay recovery.
@@ -1455,9 +1452,10 @@ fm_pending_reply_tick_one() {  # <state-dir> <corr_id> <busy_state> [secondmate-
 # window can finish between them.
 fm_pending_reply_remote_observe_gap_secs() {
   local wait=${FM_REMOTE_REPLY_WAIT_SECONDS:-55}
-  local margin=${FM_PENDING_REPLY_OBSERVE_MARGIN_SECS:-5}
+  local margin
   case "$wait" in ''|*[!0-9]*) wait=55 ;; esac
-  case "$margin" in ''|*[!0-9]*) margin=5 ;; esac
+  margin=$((wait / 10))
+  [ "$margin" -ge 1 ] || margin=1
   printf '%s' $((wait + margin))
 }
 

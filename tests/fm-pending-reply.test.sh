@@ -1619,8 +1619,11 @@ SH
   export FM_OBSERVE_LOG="$log"
   export FM_PENDING_REPLY_REMOTE_OBSERVE_BIN="$bin"
   export FM_PENDING_REPLY_NOW=10000
-  export FM_REMOTE_REPLY_WAIT_SECONDS=8
-  export FM_PENDING_REPLY_OBSERVE_MARGIN_SECS=2
+  [ "$(FM_REMOTE_REPLY_WAIT_SECONDS=55 fm_pending_reply_remote_observe_gap_secs)" = 60 ] \
+    || fail "the default quiet window must retain a five-second internal margin"
+  [ "$(FM_REMOTE_REPLY_WAIT_SECONDS=8 fm_pending_reply_remote_observe_gap_secs)" = 9 ] \
+    || fail "short quiet windows must retain at least a one-second margin"
+  export FM_REMOTE_REPLY_WAIT_SECONDS=20
 
   fm_write_meta "$state/ios.meta" \
     "window=fm-remote:w1:p1" "harness=claude" "kind=secondmate" "mode=secondmate" \
@@ -1645,23 +1648,22 @@ SH
   [ "$(fm_pending_reply_remote_observe_epoch "$state" ios)" = 10000 ] \
     || fail "the check-in must record the epoch that occupied the lane"
 
-  export FM_PENDING_REPLY_NOW=10009
+  export FM_PENDING_REPLY_NOW=10021
   fm_pending_reply_tick "$state" || fail "in-gap tick should succeed"
   calls=$(wc -l < "$log" | tr -d ' ')
   [ "$calls" = 1 ] || fail "a check-in inside the quiet-window gap must not run, got $calls"
 
-  export FM_PENDING_REPLY_NOW=10010
+  export FM_PENDING_REPLY_NOW=10022
   fm_pending_reply_tick "$state" || fail "post-gap tick should succeed"
   calls=$(wc -l < "$log" | tr -d ' ')
   [ "$calls" = 2 ] || fail "a check-in after the quiet-window gap should run once more, got $calls"
-  [ "$(fm_pending_reply_remote_observe_epoch "$state" ios)" = 10010 ] \
+  [ "$(fm_pending_reply_remote_observe_epoch "$state" ios)" = 10022 ] \
     || fail "the later check-in must move the recorded epoch"
 
   unset FM_PENDING_REPLY_REMOTE_OBSERVE
   unset FM_PENDING_REPLY_REMOTE_OBSERVE_BIN
   unset FM_OBSERVE_LOG
   unset FM_REMOTE_REPLY_WAIT_SECONDS
-  unset FM_PENDING_REPLY_OBSERVE_MARGIN_SECS
   unset FM_PENDING_REPLY_NOW
   pass "a remote observe check-in waits out the reply quiet window"
 }
