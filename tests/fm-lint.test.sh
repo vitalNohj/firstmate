@@ -179,7 +179,7 @@ test_list_files_reports_the_shell_inventory() {
 }
 
 test_canonical_partitions_preserve_full_lint() {
-  local tmp fakebin all part selected log flags mode rc option
+  local tmp fakebin all part selected log flags mode rc option invocation_count root_count
   tmp=$(fm_test_tmproot fm-lint-partitions)
   fakebin="$tmp/bin"
   mkdir -p "$fakebin"
@@ -203,6 +203,10 @@ test_canonical_partitions_preserve_full_lint() {
       || fail "partition $part executed a different root set than it listed"
     [ "$(LC_ALL=C sort -u "$flags")" = "$(printf 'exclude=none\nexternal-sources=yes')" ] \
       || fail "partition $part weakened source-aware analysis"
+    invocation_count=$(grep -c '^external-sources=' "$flags" || true)
+    root_count=$(printf '%s\n' "$selected" | grep -c .)
+    [ "$invocation_count" -eq "$root_count" ] \
+      || fail "partition $part ran $invocation_count ShellCheck processes for $root_count roots"
     [ "$(LC_ALL=C sort -u "$mode")" = on ] || fail "partition $part disabled full analysis"
   done
   [ "$(LC_ALL=C sort "$tmp/union")" = "$all" ] || fail "lint partitions lose or duplicate canonical roots"
@@ -1404,9 +1408,87 @@ SH
   pass "seeded dispatcher, adapter, production-owner, and test-local diagnostics preserve parity"
 }
 
+
+test_rss_bound_stops_a_shellcheck_process_and_fails() {
+  local tmp fakebin fixture out rc
+  tmp=$(fm_test_tmproot fm-lint-rss)
+  fakebin=$(fm_fakebin "$tmp")
+  fixture="$tmp/slow.sh"
+  cat > "$fixture" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' ok
+SH
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+  exit 0
+fi
+exec sleep 5
+SH
+  chmod +x "$fakebin/shellcheck"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_LINT_JOBS=1 FM_LINT_RSS_LIMIT_KIB=1 \
+    "$LINT" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "a ShellCheck process over the memory bound exited $rc"$'\n'"$out"
+  assert_contains "$out" "lint infrastructure failure" \
+    "a memory-bound failure did not report a lint infrastructure failure"
+  assert_contains "$out" "$fixture" \
+    "a memory-bound failure did not name the root being checked"
+
+  rc=0
+  out=$(FM_LINT_RSS_LIMIT_KIB=0 "$LINT" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "a zero memory bound was accepted (exit $rc)"$'\n'"$out"
+  assert_contains "$out" "FM_LINT_RSS_LIMIT_KIB" \
+    "a zero memory bound did not name the rejected setting"
+
+  rc=0
+  out=$(FM_LINT_RSS_LIMIT_KIB=lots "$LINT" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "a non-numeric memory bound was accepted (exit $rc)"$'\n'"$out"
+  pass "fm-lint.sh stops a ShellCheck process that exceeds its memory bound and fails the run"
+}
+
+
+test_source_following_runs_one_shellcheck_at_a_time() {
+  local tmp fakebin first second dir out
+  tmp=$(fm_test_tmproot fm-lint-one-shellcheck)
+  fakebin=$(fm_fakebin "$tmp")
+  dir="$tmp/held-dir"
+  mkdir -p "$dir"
+  first="$tmp/first.sh"
+  second="$tmp/second.sh"
+  printf '#!/usr/bin/env bash\nprintf ok\n' > "$first"
+  printf '#!/usr/bin/env bash\nprintf ok\n' > "$second"
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+  exit 0
+fi
+dir=${FM_TEST_CONCURRENCY_DIR:?}
+if ! mkdir "$dir/held" 2>/dev/null; then
+  printf 'overlap\n' >> "$dir/overlap"
+else
+  sleep 0.3
+  rmdir "$dir/held"
+fi
+exit 0
+SH
+  chmod +x "$fakebin/shellcheck"
+  out=$(PATH="$fakebin:$PATH" FM_LINT_JOBS=2 FM_TEST_CONCURRENCY_DIR="$dir" \
+    "$LINT" "$first" "$second" 2>&1) \
+    || fail "serialized source-following lint failed"$'\n'"$out"
+  [ ! -s "$dir/overlap" ] \
+    || fail "source-following lint ran two ShellCheck processes at once"
+  pass "fm-lint.sh runs one source-following ShellCheck process at a time"
+}
+
 test_help_reports_the_complete_interface
 test_list_files_reports_the_shell_inventory
 test_canonical_partitions_preserve_full_lint
+test_rss_bound_stops_a_shellcheck_process_and_fails
+test_source_following_runs_one_shellcheck_at_a_time
 test_fast_mode_disables_extended_analysis
 test_ci_defaults_to_full_analysis
 test_ci_rejects_explicit_fast_mode
