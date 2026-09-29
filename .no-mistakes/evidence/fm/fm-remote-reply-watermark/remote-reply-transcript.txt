@@ -1,9 +1,9 @@
 Isolated local SSH transport; real fm-on remote queue, worker and reply reader.
 Interactive file read interrupted active reply reader: exit=76
 Interrupted reader published no caught-up watermark (asserted before quiet read).
-Quiet reader exit=75; initial caught_up_epoch=1790662400
+Quiet reader exit=75; initial caught_up_epoch=1790667502
 One initial remote observe plus three opted-in supervision ticks during the next read.
 Actual observe calls=1; reader exit=75
 Persisted watermark after repeated supervision ticks:
-caught_up_epoch=1790662414
+caught_up_epoch=1790667515
 Previously answered request phase=resolved
