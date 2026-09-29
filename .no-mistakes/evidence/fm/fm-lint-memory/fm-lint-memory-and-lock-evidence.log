@@ -1,0 +1,218 @@
+Focused executable-interface evidence from bash -x tests/fm-lint.test.sh
+Run inside systemd scope: CPUQuota=200%, MemoryMax=4G.
+ShellCheck doubles intentionally exercise the memory monitor and delayed lock-owner publication without multi-GiB allocation.
+
++ test_rss_bound_stops_a_shellcheck_process_and_fails
++ local tmp fakebin fixture out rc
+++ fm_test_tmproot fm-lint-rss
+++ local prefix=fm-lint-rss root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-rss.XXXXXX
+++ root=/tmp/fm-lint-rss.bSQqvX
++++ cd -P -- /tmp/fm-lint-rss.bSQqvX
++++ pwd -P
+++ root=/tmp/fm-lint-rss.bSQqvX
+++ printf '%s\n%s\n' 3335842 'linux-starttime=311997449 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f666d2d6c696e742e746573742e736800'
+++ printf '%s\n' /tmp/fm-lint-rss.bSQqvX
+++ printf '%s\n' /tmp/fm-lint-rss.bSQqvX
++ tmp=/tmp/fm-lint-rss.bSQqvX
+++ fm_fakebin /tmp/fm-lint-rss.bSQqvX
+++ local dir=/tmp/fm-lint-rss.bSQqvX fakebin=/tmp/fm-lint-rss.bSQqvX/fakebin
+++ mkdir -p /tmp/fm-lint-rss.bSQqvX/fakebin
+++ printf '%s\n' /tmp/fm-lint-rss.bSQqvX/fakebin
++ fakebin=/tmp/fm-lint-rss.bSQqvX/fakebin
++ fixture=/tmp/fm-lint-rss.bSQqvX/slow.sh
++ cat
++ cat
++ chmod +x /tmp/fm-lint-rss.bSQqvX/fakebin/shellcheck
++ rc=0
+++ PATH=/tmp/fm-lint-rss.bSQqvX/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_JOBS=1
+++ FM_LINT_RSS_LIMIT_KIB=1
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss.bSQqvX/slow.sh
++ out=$'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full ShellCheck extended analysis enabled\nfm-lint.sh: lint infrastructure failure: ShellCheck exceeded the 1 KiB memory bound while checking /tmp/fm-lint-rss.bSQqvX/slow.sh'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full ShellCheck extended analysis enabled\nfm-lint.sh: lint infrastructure failure: ShellCheck exceeded the 1 KiB memory bound while checking /tmp/fm-lint-rss.bSQqvX/slow.sh' 'lint infrastructure failure' 'a memory-bound failure did not report a lint infrastructure failure'
++ case "$1" in
++ :
++ assert_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full ShellCheck extended analysis enabled\nfm-lint.sh: lint infrastructure failure: ShellCheck exceeded the 1 KiB memory bound while checking /tmp/fm-lint-rss.bSQqvX/slow.sh' /tmp/fm-lint-rss.bSQqvX/slow.sh 'a memory-bound failure did not name the root being checked'
++ case "$1" in
++ :
++ rc=0
+++ FM_LINT_RSS_LIMIT_KIB=0
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss.bSQqvX/slow.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' FM_LINT_RSS_LIMIT_KIB 'a zero memory bound did not name the rejected setting'
++ case "$1" in
++ :
++ rc=0
+++ FM_LINT_RSS_LIMIT_KIB=lots
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss.bSQqvX/slow.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ pass 'fm-lint.sh stops a ShellCheck process that exceeds its memory bound and fails the run'
++ printf 'ok - %s\n' 'fm-lint.sh stops a ShellCheck process that exceeds its memory bound and fails the run'
+ok - fm-lint.sh stops a ShellCheck process that exceeds its memory bound and fails the run
++ test_rss_bound_cannot_be_raised
++ local tmp fakebin value out rc
+++ fm_test_tmproot fm-lint-rss-ceiling
+++ local prefix=fm-lint-rss-ceiling root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-rss-ceiling.XXXXXX
+++ root=/tmp/fm-lint-rss-ceiling.KICHOs
++++ cd -P -- /tmp/fm-lint-rss-ceiling.KICHOs
++++ pwd -P
+++ root=/tmp/fm-lint-rss-ceiling.KICHOs
+++ printf '%s\n%s\n' 3335842 'linux-starttime=311997449 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f666d2d6c696e742e746573742e736800'
+++ printf '%s\n' /tmp/fm-lint-rss-ceiling.KICHOs
+++ printf '%s\n' /tmp/fm-lint-rss-ceiling.KICHOs
++ tmp=/tmp/fm-lint-rss-ceiling.KICHOs
+++ fm_fakebin /tmp/fm-lint-rss-ceiling.KICHOs
+++ local dir=/tmp/fm-lint-rss-ceiling.KICHOs fakebin=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin
+++ mkdir -p /tmp/fm-lint-rss-ceiling.KICHOs/fakebin
+++ printf '%s\n' /tmp/fm-lint-rss-ceiling.KICHOs/fakebin
++ fakebin=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin
++ fm_lint_stub_shellcheck /tmp/fm-lint-rss-ceiling.KICHOs/fakebin /tmp/fm-lint-rss-ceiling.KICHOs/calls
++ local fakebin=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin log=/tmp/fm-lint-rss-ceiling.KICHOs/calls
++ :
++ cat
++ chmod +x /tmp/fm-lint-rss-ceiling.KICHOs/fakebin/shellcheck
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=5242881
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.KICHOs/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.KICHOs/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=11534336
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.KICHOs/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.KICHOs/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=18446744073709551617
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.KICHOs/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.KICHOs/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.KICHOs/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.KICHOs/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=-1
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.KICHOs/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.KICHOs/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=1.5
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.KICHOs/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.KICHOs/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=0001
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.KICHOs/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.KICHOs/calls ']'
++ PATH=/tmp/fm-lint-rss-ceiling.KICHOs/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
++ FM_LINT_RSS_LIMIT_KIB=5242880
++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.KICHOs/fixture.sh
++ '[' -s /tmp/fm-lint-rss-ceiling.KICHOs/calls ']'
++ pass 'fm-lint.sh refuses memory bounds above the fixed ceiling or malformed values'
++ printf 'ok - %s\n' 'fm-lint.sh refuses memory bounds above the fixed ceiling or malformed values'
+ok - fm-lint.sh refuses memory bounds above the fixed ceiling or malformed values
++ test_source_following_runs_one_shellcheck_at_a_time
++ local tmp fakebin first second dir out
+++ fm_test_tmproot fm-lint-one-shellcheck
+++ local prefix=fm-lint-one-shellcheck root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-one-shellcheck.XXXXXX
+++ root=/tmp/fm-lint-one-shellcheck.JjmUTA
++++ cd -P -- /tmp/fm-lint-one-shellcheck.JjmUTA
++++ pwd -P
+++ root=/tmp/fm-lint-one-shellcheck.JjmUTA
+++ printf '%s\n%s\n' 3335842 'linux-starttime=311997449 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f666d2d6c696e742e746573742e736800'
+++ printf '%s\n' /tmp/fm-lint-one-shellcheck.JjmUTA
+++ printf '%s\n' /tmp/fm-lint-one-shellcheck.JjmUTA
++ tmp=/tmp/fm-lint-one-shellcheck.JjmUTA
+++ fm_fakebin /tmp/fm-lint-one-shellcheck.JjmUTA
+++ local dir=/tmp/fm-lint-one-shellcheck.JjmUTA fakebin=/tmp/fm-lint-one-shellcheck.JjmUTA/fakebin
+++ mkdir -p /tmp/fm-lint-one-shellcheck.JjmUTA/fakebin
+++ printf '%s\n' /tmp/fm-lint-one-shellcheck.JjmUTA/fakebin
++ fakebin=/tmp/fm-lint-one-shellcheck.JjmUTA/fakebin
++ dir=/tmp/fm-lint-one-shellcheck.JjmUTA/held-dir
++ mkdir -p /tmp/fm-lint-one-shellcheck.JjmUTA/held-dir
++ first=/tmp/fm-lint-one-shellcheck.JjmUTA/first.sh
++ second=/tmp/fm-lint-one-shellcheck.JjmUTA/second.sh
++ printf '#!/usr/bin/env bash\nprintf ok\n'
++ printf '#!/usr/bin/env bash\nprintf ok\n'
++ cat
++ chmod +x /tmp/fm-lint-one-shellcheck.JjmUTA/fakebin/shellcheck
++ cat
+++ PATH=/tmp/fm-lint-one-shellcheck.JjmUTA/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_JOBS=2
+++ FM_TEST_CONCURRENCY_DIR=/tmp/fm-lint-one-shellcheck.JjmUTA/held-dir
+++ BASH_ENV=/tmp/fm-lint-one-shellcheck.JjmUTA/delay-owner.sh
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3PGB6N1W6SEV65CMV9ZANZZ/bin/fm-lint.sh /tmp/fm-lint-one-shellcheck.JjmUTA/first.sh /tmp/fm-lint-one-shellcheck.JjmUTA/second.sh
++ out=$'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full ShellCheck extended analysis enabled'
+++ wc -l
+++ tr -d '[:space:]'
++ '[' 2 -eq 2 ']'
++ '[' '!' -s /tmp/fm-lint-one-shellcheck.JjmUTA/held-dir/overlap ']'
++ pass 'fm-lint.sh runs one source-following ShellCheck process at a time'
++ printf 'ok - %s\n' 'fm-lint.sh runs one source-following ShellCheck process at a time'
+ok - fm-lint.sh runs one source-following ShellCheck process at a time
