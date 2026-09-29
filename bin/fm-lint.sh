@@ -48,9 +48,13 @@
 # following is on, so one process never analyzes a whole shard.
 # Source-following runs one of those processes at a time, so one lint
 # invocation cannot hold two sourced graphs at once.
-# A process whose resident set exceeds 5 GiB (5242880 KiB) is stopped, and
-# the run fails as a lint infrastructure error instead of passing.
-# FM_LINT_RSS_LIMIT_KIB may only lower that per-process KiB bound.
+# Workers sample each child's RSS (and Linux high-water RSS) every 0.1 seconds
+# and kill it when a sample exceeds 5 GiB (5242880 KiB), failing the run as a
+# lint infrastructure error. This is a sampled backstop, not an OS-enforced
+# allocation cap; memory can exceed the threshold between samples.
+# FM_LINT_RSS_LIMIT_KIB may only lower that per-process KiB threshold: accept
+# decimal integers from 1 through 5242880 without leading zeros; reject other
+# values before starting ShellCheck. Unset keeps the fixed 5 GiB default.
 # --partition 1of2/2of2 splits the entire canonical inventory across
 # two CI runners, each with those same bounded workers. Partitions are complete,
 # disjoint, and byte-weight balanced; --list-files exposes their actual roots.
@@ -897,7 +901,8 @@ else
 fi
 
 # Replay both stable shards in deterministic order and select the first nonzero
-# shard status. ShellCheck processes every root in a shard after earlier findings.
+# shard status. Ordinary findings do not skip later roots; a memory-bound
+# failure stops the affected shard before its remaining roots.
 overall_rc=0
 worker=0
 while [ "$worker" -lt "$SHARD_COUNT" ]; do
