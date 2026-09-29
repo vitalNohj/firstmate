@@ -50,7 +50,7 @@
 # invocation cannot hold two sourced graphs at once.
 # A process whose resident set exceeds 5 GiB (5242880 KiB) is stopped, and
 # the run fails as a lint infrastructure error instead of passing.
-# FM_LINT_RSS_LIMIT_KIB overrides that per-process KiB bound.
+# FM_LINT_RSS_LIMIT_KIB may only lower that per-process KiB bound.
 # --partition 1of2/2of2 splits the entire canonical inventory across
 # two CI runners, each with those same bounded workers. Partitions are complete,
 # disjoint, and byte-weight balanced; --list-files exposes their actual roots.
@@ -146,17 +146,19 @@ EOF
 # Exclusive lock across the lint invocation's workers. The owner pid lets a
 # later worker take the lock when the holder has already exited.
 fm_lint_acquire_shellcheck_lock() {  # <lock>
-  local lock=$1 owner
+  local lock=$1 owner candidate=$1.$$
+  printf '%s\n' "$$" > "$candidate" || return 2
   while true; do
-    if (set -C; printf '%s\n' "$$" > "$lock") 2>/dev/null; then
+    if ln "$candidate" "$lock" 2>/dev/null; then
+      rm -f "$candidate"
       return 0
     fi
     owner=$(cat "$lock" 2>/dev/null || printf '')
     case "$owner" in
       ''|*[!0-9]*)
-        rm -f "$lock"
         ;;
       "$$")
+        rm -f "$candidate"
         return 0
         ;;
       *)
@@ -190,9 +192,9 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
   done < "$manifest"
   output="$output_dir/shard.$shard_index"
   if [ "${#roots[@]}" -gt 0 ]; then
-    trap 'fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; fm_lint_worker_stop; exit 129' HUP
-    trap 'fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; fm_lint_worker_stop; exit 130' INT
-    trap 'fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; fm_lint_worker_stop; exit 143' TERM
+    trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 129' HUP
+    trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 130' INT
+    trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 143' TERM
     shellcheck_args=(--norc)
     if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
       shellcheck_args+=(--external-sources)
@@ -209,7 +211,7 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
     for path in "${roots[@]}"; do
       invocation_rc=0
       if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
-        fm_lint_acquire_shellcheck_lock "$FM_LINT_SHELLCHECK_LOCK"
+        fm_lint_acquire_shellcheck_lock "$FM_LINT_SHELLCHECK_LOCK" || return 2
       fi
       "$FM_LINT_SHELLCHECK" "${shellcheck_args[@]}" -- "$path" >> "$output.out" 2>&1 &
       FM_LINT_WORKER_SHELLCHECK_PID=$!
@@ -561,15 +563,9 @@ case "$JOBS" in
   *) printf 'fm-lint.sh: jobs must be 1 or 2, got %s.\n' "$JOBS" >&2; exit 2 ;;
 esac
 
-RSS_LIMIT_KIB=${FM_LINT_RSS_LIMIT_KIB:-$DEFAULT_RSS_LIMIT_KIB}
-case "$RSS_LIMIT_KIB" in
-  ''|*[!0-9]*)
-    printf 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be a positive number of KiB.\n' >&2
-    exit 2
-    ;;
-esac
-if [ "$RSS_LIMIT_KIB" -lt 1 ]; then
-  printf 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be a positive number of KiB.\n' >&2
+RSS_LIMIT_KIB=${FM_LINT_RSS_LIMIT_KIB-$DEFAULT_RSS_LIMIT_KIB}
+if [[ ! "$RSS_LIMIT_KIB" =~ ^[1-9][0-9]{0,6}$ ]] || [ "$RSS_LIMIT_KIB" -gt "$DEFAULT_RSS_LIMIT_KIB" ]; then
+  printf 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to %s KiB.\n' "$DEFAULT_RSS_LIMIT_KIB" >&2
   exit 2
 fi
 

@@ -1450,6 +1450,26 @@ SH
 }
 
 
+test_rss_bound_cannot_be_raised() {
+  local tmp fakebin value out rc
+  tmp=$(fm_test_tmproot fm-lint-rss-ceiling)
+  fakebin=$(fm_fakebin "$tmp")
+  fm_lint_stub_shellcheck "$fakebin" "$tmp/calls"
+  for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001; do
+    rc=0
+    out=$(PATH="$fakebin:$PATH" FM_LINT_RSS_LIMIT_KIB="$value" \
+      "$LINT" "$tmp/fixture.sh" 2>&1) || rc=$?
+    [ "$rc" -eq 2 ] || fail "unsafe memory bound '$value' was accepted (exit $rc)"
+    assert_contains "$out" '1 to 5242880 KiB' "invalid bound did not report the fixed ceiling"
+    [ ! -s "$tmp/calls" ] || fail "invalid bound started ShellCheck"
+  done
+  PATH="$fakebin:$PATH" FM_LINT_RSS_LIMIT_KIB=5242880 \
+    "$LINT" "$tmp/fixture.sh" > "$tmp/out" 2>&1 \
+    || fail "fixed ceiling was rejected: $(cat "$tmp/out")"
+  [ -s "$tmp/calls" ] || fail "valid ceiling did not start ShellCheck"
+  pass "fm-lint.sh refuses memory bounds above the fixed ceiling or malformed values"
+}
+
 test_source_following_runs_one_shellcheck_at_a_time() {
   local tmp fakebin first second dir out
   tmp=$(fm_test_tmproot fm-lint-one-shellcheck)
@@ -1476,9 +1496,20 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/shellcheck"
+  cat > "$tmp/delay-owner.sh" <<'SH'
+printf() {
+  if [ "$#" -eq 2 ] && [ "$1" = '%s\n' ] && [ "$2" = "$$" ]; then
+    builtin printf 'delayed\n' >> "$FM_TEST_CONCURRENCY_DIR/delays"
+    sleep 0.3
+  fi
+  builtin printf "$@"
+}
+SH
   out=$(PATH="$fakebin:$PATH" FM_LINT_JOBS=2 FM_TEST_CONCURRENCY_DIR="$dir" \
-    "$LINT" "$first" "$second" 2>&1) \
+    BASH_ENV="$tmp/delay-owner.sh" "$LINT" "$first" "$second" 2>&1) \
     || fail "serialized source-following lint failed"$'\n'"$out"
+  [ "$(wc -l < "$dir/delays" | tr -d '[:space:]')" -eq 2 ] \
+    || fail "lock-owner publication was not delayed for both workers"
   [ ! -s "$dir/overlap" ] \
     || fail "source-following lint ran two ShellCheck processes at once"
   pass "fm-lint.sh runs one source-following ShellCheck process at a time"
@@ -1488,6 +1519,7 @@ test_help_reports_the_complete_interface
 test_list_files_reports_the_shell_inventory
 test_canonical_partitions_preserve_full_lint
 test_rss_bound_stops_a_shellcheck_process_and_fails
+test_rss_bound_cannot_be_raised
 test_source_following_runs_one_shellcheck_at_a_time
 test_fast_mode_disables_extended_analysis
 test_ci_defaults_to_full_analysis
