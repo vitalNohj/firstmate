@@ -745,6 +745,63 @@ caught_up=$(FM_STATE_OVERRIDE="$PARENT/state" bash -c '
   || fail "the caught-up watermark ($caught_up) is outside the quiet window"
 pass "a quiet reply window publishes the caught-up watermark the reply guard reads"
 
+# Exercise repeated supervision ticks against the real queued remote reader.
+# Only SSH is local: fm-on, the worker, delta reader and watermark writer run.
+fm_write_meta "$PARENT/state/ios.meta" \
+  'kind=secondmate' 'mode=secondmate' 'harness=claude' \
+  'remote_host=remote-mac' "remote_root=$ROOT" 'remote_backend=herdr'
+CADENCE_CORR=$(fm_pending_reply_create "$PARENT" "$PARENT/state" ios 'cadence probe')
+fm_pending_reply_mark_delivered "$PARENT/state" "$CADENCE_CORR"
+OBSERVE_LOG="$TMP_ROOT/observe.log"
+: > "$OBSERVE_LOG"
+cat > "$TMP_ROOT/observe" <<'SH'
+#!/usr/bin/env bash
+printf 'observe\n' >> "$FM_OBSERVE_LOG"
+exec "$FM_OBSERVE_ROOT/bin/fm-on.sh" "$@"
+SH
+chmod +x "$TMP_ROOT/observe"
+export FM_OBSERVE_LOG="$OBSERVE_LOG" FM_OBSERVE_ROOT="$ROOT"
+export FM_PENDING_REPLY_REMOTE_OBSERVE_BIN="$TMP_ROOT/observe"
+export FM_PENDING_REPLY_REMOTE_OBSERVE=1
+remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
+rm -f "$PARENT/state/remote-replies/ios.caught-up"
+remote_env "$ADAPTER" source ios > "$TMP_ROOT/cadence-source.out" 2>&1 &
+CADENCE_SOURCE=$!
+# Ten-second reader, eleven-second observe gap: ticks inside that gap must
+# leave the lane free, even when the caller opts in on every pass.
+for _ in 1 2 3; do
+  sleep 1
+  remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
+done
+set +e
+wait "$CADENCE_SOURCE"
+cadence_rc=$?
+set -e
+[ "$cadence_rc" -eq 75 ] || fail "supervision interrupted the quiet reader: $cadence_rc"
+[ "$(wc -l < "$OBSERVE_LOG" | tr -d ' ')" = 1 ] \
+  || fail "repeated supervision ticks occupied the remote lane"
+assert_present "$PARENT/state/remote-replies/ios.caught-up" \
+  "supervision left the caught-up watermark frozen"
+if [ -n "${FM_REPLY_EVIDENCE_DIR:-}" ]; then
+  mkdir -p "$FM_REPLY_EVIDENCE_DIR"
+  {
+    printf 'Isolated local SSH transport; real fm-on remote queue, worker and reply reader.\n'
+    printf 'Interactive file read interrupted active reply reader: exit=%s\n' "$preempted_rc"
+    printf 'Interrupted reader published no caught-up watermark (asserted before quiet read).\n'
+    printf 'Quiet reader exit=%s; initial caught_up_epoch=%s\n' "$quiet_rc" "$caught_up"
+    printf 'One initial remote observe plus three opted-in supervision ticks during the next read.\n'
+    printf 'Actual observe calls=%s; reader exit=%s\n' "$(wc -l < "$OBSERVE_LOG" | tr -d ' ')" "$cadence_rc"
+    printf 'Persisted watermark after repeated supervision ticks:\n'
+    cat "$PARENT/state/remote-replies/ios.caught-up"
+    printf 'Previously answered request phase=%s\n' "$(fm_pending_reply_get "$PARENT/state/pending-replies/$ESCALATED_CORR" phase)"
+  } > "$FM_REPLY_EVIDENCE_DIR/remote-reply-transcript.txt"
+fi
+printf 'done [corr=%s]: cadence probe complete\n' "$CADENCE_CORR" > "$TMP_ROOT/cadence-done.status"
+fm_pending_reply_try_resolve "$PARENT/state" "$CADENCE_CORR" "$TMP_ROOT/cadence-done.status"
+unset FM_PENDING_REPLY_REMOTE_OBSERVE FM_PENDING_REPLY_REMOTE_OBSERVE_BIN
+unset FM_OBSERVE_LOG FM_OBSERVE_ROOT
+pass "repeated supervision ticks leave the real remote reader time to publish freshness"
+
 # The observed already-handled replay class: a lost cursor (an update or
 # convergence retire) makes the next armed source recapture the WHOLE remote
 # log from offset 0. Every line is already mirrored, so the at-most-once

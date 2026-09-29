@@ -871,7 +871,8 @@ fm_pending_reply_mark_turn_completed() {  # <state-dir> <corr_id> [which: reques
 # plus an internal ten-percent margin (at least one second) has elapsed.
 # A skipped check-in leaves busy/idle unknown, which does not prove the turn
 # finished.
-# Per-record grace remains the bound on how long that lag can delay recovery.
+# Per-record grace does not override unknown turn completion or the channel
+# freshness requirement; neither permits a recovery repost without evidence.
 fm_pending_reply_remote_channel_watermark_path() {  # <state-dir> <task_id>
   printf '%s/remote-replies/%s.caught-up' "$1" "$2"
 }
