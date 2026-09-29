@@ -315,6 +315,24 @@ test_guard_warnings() {
   pass "guard banner leads when down with pending wakes (repair-after-drain) and stays silent when live and fresh"
 }
 
+test_lock_missing_parent_refuses() {
+  local dir state pid
+  dir=$(make_case lock-missing-parent)
+  state="$dir/state"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    lock="$2/removed/lock"
+    if fm_lock_try_acquire "$lock"; then exit 1; fi
+    if fm_lock_acquire_wait "$lock"; then exit 1; fi
+    [ ! -e "$2/removed" ] || exit 1
+    printf "refused\n" > "$2/result"
+  ' _ "$LIB" "$dir" &
+  pid=$!
+  wait_for_exit "$pid" 50
+  [ -s "$dir/result" ] || fail "lock acquisition did not refuse a missing parent"
+  pass "missing lock parents refuse without recursive stealing or endless waiting"
+}
+
 test_lock_single_winner_under_concurrency() {
   local dir state lockdir marker i pids pid wins
   dir=$(make_case lock-concurrency)
@@ -1267,6 +1285,7 @@ test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_live_stalled_watch_lock_is_replaced_past_hard_bound
 test_guard_warnings
+test_lock_missing_parent_refuses
 test_lock_single_winner_under_concurrency
 test_lock_steals_dead_pid_lock
 test_lock_stale_steal_single_winner_under_concurrency

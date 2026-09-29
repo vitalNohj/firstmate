@@ -972,6 +972,9 @@ fm_lock_try_acquire() {
     return 1
   fi
 
+  # A failed create without an existing lock is not stale ownership.
+  # In particular, a removed parent cannot be repaired by recursive stealing.
+  [ -e "$lockdir" ] || [ -L "$lockdir" ] || return 1
   steal="$lockdir.steal"
   if ! fm_lock_try_acquire "$steal"; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
@@ -1038,6 +1041,7 @@ fm_lock_try_acquire() {
 fm_lock_acquire_wait() {
   local lockdir=$1
   while ! fm_lock_try_acquire "$lockdir"; do
+    [ -d "$(dirname "$lockdir")" ] || return 1
     sleep 0.1
   done
 }

@@ -2582,6 +2582,7 @@ resurface_after_downtime() {
   fi
   if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
     if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
+      watcher_require_home
       echo "watcher: recovery state could not be consumed safely" >&2
       exit 1
     fi
@@ -2590,7 +2591,7 @@ resurface_after_downtime() {
   wake "check: rearm-resurface"
 }
 
-while :; do
+watcher_require_home() {
   # Home-gone exit: a deleted home, state directory, or code root means this
   # watcher's world is gone (a torn-down temporary home or a discarded
   # disposable checkout). Exit with a logged reason rather than writing state
@@ -2613,6 +2614,10 @@ while :; do
     echo "watcher: exiting - code root no longer exists: $SCRIPT_DIR" >&2
     exit 1
   fi
+}
+
+while :; do
+  watcher_require_home
 
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand
