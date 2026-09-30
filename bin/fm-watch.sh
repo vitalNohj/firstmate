@@ -158,7 +158,8 @@
 # evicted with TERM after its recorded identity is re-verified, and this arm
 # starts in its place, printing "watcher: replaced stalled pid <N> (...)". A
 # holder that survives TERM keeps the refusal and the nonzero exit.
-# Once per poll the watcher also checks that its home (when it existed at
+# At each poll, before recovery-state consumption, and on lock-wait retries
+# outside EXIT cleanup, the watcher checks that its home (when it existed at
 # start), its state directory, and its own bin directory still exist; when one
 # is gone it logs "watcher: exiting - <what> no longer exists: <path>" to stderr
 # and exits 1, so a watcher whose temporary home or disposable checkout was
@@ -2640,6 +2641,9 @@ watcher_install_lock_wait() {
 }
 watcher_install_lock_wait
 
+# Pending-reply reconciliation reloads fm-wake-lib.sh through dot-sourcing.
+# Restore the process-local wait after each reload so a contended correlation
+# lock cannot strand this watcher after its home disappears.
 .() {
   local watcher_source_status=0
   builtin . "$@" || watcher_source_status=$?
