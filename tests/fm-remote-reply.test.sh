@@ -763,17 +763,18 @@ chmod +x "$TMP_ROOT/observe"
 export FM_OBSERVE_LOG="$OBSERVE_LOG" FM_OBSERVE_ROOT="$ROOT"
 export FM_PENDING_REPLY_REMOTE_OBSERVE_BIN="$TMP_ROOT/observe"
 export FM_PENDING_REPLY_REMOTE_OBSERVE=1
+cadence_epoch=$(date +%s)
 # shellcheck disable=SC2016 # Positional parameters expand in the inner shell.
-remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
+FM_PENDING_REPLY_NOW="$cadence_epoch" remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
 rm -f "$PARENT/state/remote-replies/ios.caught-up"
 remote_env "$ADAPTER" source ios > "$TMP_ROOT/cadence-source.out" 2>&1 &
 CADENCE_SOURCE=$!
-# Ten-second reader, eleven-second observe gap: ticks inside that gap must
-# leave the lane free, even when the caller opts in on every pass.
-for _ in 1 2 3; do
-  sleep 1
+# Ten-second reader, eleven-second observe gap: advance only the supervision
+# clock so slow ticks on constrained hosts cannot become eligible check-ins.
+# The queued reader and its quiet-window timeout still use real time.
+for cadence_offset in 1 2 10; do
   # shellcheck disable=SC2016 # Positional parameters expand in the inner shell.
-  remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
+  FM_PENDING_REPLY_NOW=$((cadence_epoch + cadence_offset)) remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
 done
 set +e
 wait "$CADENCE_SOURCE"
@@ -791,13 +792,19 @@ if [ -n "${FM_REPLY_EVIDENCE_DIR:-}" ]; then
     printf 'Interactive file read interrupted active reply reader: exit=%s\n' "$preempted_rc"
     printf 'Interrupted reader published no caught-up watermark (asserted before quiet read).\n'
     printf 'Quiet reader exit=%s; initial caught_up_epoch=%s\n' "$quiet_rc" "$caught_up"
-    printf 'One initial remote observe plus three opted-in supervision ticks during the next read.\n'
+    printf 'One initial remote observe plus opted-in ticks at logical offsets 1, 2, and 10 seconds; reader uses real time.\n'
     printf 'Actual observe calls=%s; reader exit=%s\n' "$(wc -l < "$OBSERVE_LOG" | tr -d ' ')" "$cadence_rc"
     printf 'Persisted watermark after repeated supervision ticks:\n'
     cat "$PARENT/state/remote-replies/ios.caught-up"
     printf 'Previously answered request phase=%s\n' "$(fm_pending_reply_get "$PARENT/state/pending-replies/$ESCALATED_CORR" phase)"
   } > "$FM_REPLY_EVIDENCE_DIR/remote-reply-transcript.txt"
 fi
+# Once the quiet reader has finished, the exact gap boundary must allow a
+# check-in again; pinning the clock must not make this a never-observe test.
+# shellcheck disable=SC2016 # Positional parameters expand in the inner shell.
+FM_PENDING_REPLY_NOW=$((cadence_epoch + 11)) remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
+[ "$(wc -l < "$OBSERVE_LOG" | tr -d ' ')" = 2 ] \
+  || fail "supervision did not resume remote observes at the quiet-window boundary"
 printf 'done [corr=%s]: cadence probe complete\n' "$CADENCE_CORR" > "$TMP_ROOT/cadence-done.status"
 fm_pending_reply_try_resolve "$PARENT/state" "$CADENCE_CORR" "$TMP_ROOT/cadence-done.status"
 unset FM_PENDING_REPLY_REMOTE_OBSERVE FM_PENDING_REPLY_REMOTE_OBSERVE_BIN
