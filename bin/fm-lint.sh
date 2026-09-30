@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # fm-lint.sh - the single owner of firstmate's lint definition.
 #
-# Runs its file set with ShellCheck's default severity, extended analysis,
-# ambient configuration disabled, and one exact ShellCheck version. CI selects
-# canonical partitions; no-mistakes invokes the context-selected default, so
-# both use this owner without duplicating lint configuration.
-# The explicit --fast mode is local-only and disables ShellCheck's extended
-# dataflow analysis while preserving ordinary shell lint checks and source
-# following. CI, main, and merge-base-less runs keep --norc --external-sources
-# with full dataflow over the whole canonical set. An ordinary local branch
-# (changed-file mode, including the no-mistakes lint step) drops
-# --external-sources, keeps dataflow, and excludes SC1091, SC2034, SC2153,
-# and SC2329, the codes that need library context. Those codes still run in
-# CI over the whole set. Explicit paths keep --external-sources with the
-# selected dataflow mode.
+# Runs its file set with ShellCheck's default severity, extended analysis
+# disabled, ambient configuration disabled, and one exact ShellCheck version.
+# CI selects canonical partitions; no-mistakes invokes the context-selected
+# default, so both use this owner without duplicating lint configuration.
+# Every mode passes --extended-analysis=false, including local runs, CI,
+# partitions, and explicit paths. Ordinary shell lint checks stay on.
+# Diagnostics that exist only under extended analysis, such as SC2329, are
+# not part of this definition.
+# The explicit --fast mode is local-only. It keeps source following and the
+# same disabled extended analysis. CI, main, and merge-base-less runs keep
+# --norc --external-sources over the whole canonical set. An ordinary local
+# branch (changed-file mode, including the no-mistakes lint step) drops
+# --external-sources and excludes SC1091, SC2034, SC2153, and SC2329, the
+# codes that need library context. Explicit paths keep --external-sources
+# with extended analysis disabled.
 # Tests stop source analysis at imported production modules because CI analyzes
 # every production shell separately as a canonical, source-aware root.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
@@ -25,8 +27,8 @@
 #   - In CI (GITHUB_ACTIONS=true or CI=true), on the main branch, or when no
 #     merge-base against origin/main (or local main) can be found, it lints
 #     the full canonical set: bin/*.sh bin/backends/*.sh tests/*.sh, with
-#     --external-sources and full dataflow. This is what CI always runs, so
-#     CI coverage never depends on a local diff.
+#     --external-sources and extended analysis disabled. This is what CI
+#     always runs, so CI coverage never depends on a local diff.
 #   - Otherwise (an ordinary local branch with a real merge-base) it lints
 #     only the canonical-set files changed since that merge-base, including
 #     uncommitted local edits, via plain local `git diff` (no network, no
@@ -58,16 +60,18 @@
 # --partition 1of2/2of2 splits the entire canonical inventory across
 # two CI runners, each with those same bounded workers. Partitions are complete,
 # disjoint, and byte-weight balanced; --list-files exposes their actual roots.
-# Partition mode is always full source-aware analysis, never changed-only or
-# --fast, and does not accept explicit paths. Each partition also runs workflow
-# lint and backend-purity checks, keeping either invocation independently useful.
+# Partition mode is always source-aware canonical analysis with extended
+# analysis disabled, never changed-only or --fast, and does not accept
+# explicit paths.
+# Each partition also runs workflow lint and backend-purity checks, keeping
+# either invocation independently useful.
 #
 # Optional quiet telemetry writes one bounded TSV snapshot of content and source
 # graph identity, wall/CPU/RSS, shard load, and competing ShellCheck processes.
 #
 # Usage:
 #   fm-lint.sh                         lint the context-selected file set (see above)
-#   fm-lint.sh --fast [path]...       local lint with extended analysis disabled
+#   fm-lint.sh --fast [path]...       local lint; source following stays on and extended analysis stays disabled
 #   fm-lint.sh <path>...               lint explicit roots with the same config
 #   fm-lint.sh --jobs <1|2> [path]...  override bounded worker count
 #   fm-lint.sh --partition <1of2|2of2> lint one full-rigor canonical CI partition
@@ -199,15 +203,12 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
     trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 129' HUP
     trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 130' INT
     trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 143' TERM
-    shellcheck_args=(--norc)
+    shellcheck_args=(--norc --extended-analysis=false)
     if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
       shellcheck_args+=(--external-sources)
     fi
     if [ -n "${FM_LINT_INTERNAL_EXCLUDE:-}" ]; then
       shellcheck_args+=(--exclude="$FM_LINT_INTERNAL_EXCLUDE")
-    fi
-    if [ "${FM_LINT_INTERNAL_FAST:-0}" -eq 1 ]; then
-      shellcheck_args+=(--extended-analysis=false)
     fi
     : > "$output.out"
     FM_LINT_PEAK_RSS_KIB=0
@@ -590,7 +591,7 @@ case "$PARTITION" in
 esac
 
 if [ "$FAST" -eq 1 ] && { [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]; }; then
-  printf 'fm-lint.sh: --fast is local-only; CI uses full ShellCheck analysis.\n' >&2
+  printf 'fm-lint.sh: --fast is local-only; CI already disables extended analysis.\n' >&2
   exit 2
 fi
 
@@ -731,7 +732,7 @@ if [ "$FAST" -eq 1 ]; then
 elif [ "$FOLLOW_SOURCES" -eq 0 ]; then
   printf 'fm-lint.sh: local changed-file mode; ShellCheck source following disabled\n' >&2
 else
-  printf 'fm-lint.sh: full ShellCheck extended analysis enabled\n' >&2
+  printf 'fm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\n' >&2
 fi
 
 if [ "$CHANGED_MODE" -eq 1 ] && [ "$ROOT_COUNT" -eq 0 ]; then
@@ -848,14 +849,14 @@ fm_lint_run_worker() {  # <worker-index>
     if [ "$(uname)" = Darwin ]; then
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -lp -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
+        env FM_LINT_INTERNAL=1 \
         FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
         FM_LINT_INTERNAL_RSS_LIMIT_KIB="$RSS_LIMIT_KIB" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     else
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
+        env FM_LINT_INTERNAL=1 \
         FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
         FM_LINT_INTERNAL_RSS_LIMIT_KIB="$RSS_LIMIT_KIB" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
@@ -863,7 +864,7 @@ fm_lint_run_worker() {  # <worker-index>
   else
     [ -z "$TELEMETRY" ] || printf 'timing_unavailable=1\n' > "$timing"
     exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
-      env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
+      env FM_LINT_INTERNAL=1 \
       FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
       FM_LINT_INTERNAL_RSS_LIMIT_KIB="$RSS_LIMIT_KIB" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
       "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"

@@ -207,7 +207,7 @@ test_canonical_partitions_preserve_full_lint() {
     root_count=$(printf '%s\n' "$selected" | grep -c .)
     [ "$invocation_count" -eq "$root_count" ] \
       || fail "partition $part ran $invocation_count ShellCheck processes for $root_count roots"
-    [ "$(LC_ALL=C sort -u "$mode")" = on ] || fail "partition $part disabled full analysis"
+    [ "$(LC_ALL=C sort -u "$mode")" = off ] || fail "partition $part left extended analysis enabled"
   done
   [ "$(LC_ALL=C sort "$tmp/union")" = "$all" ] || fail "lint partitions lose or duplicate canonical roots"
   for option in 0of2 3of2 1of3; do
@@ -372,9 +372,9 @@ SH
   out=$(PATH="$fakebin:$PATH" CI=true GITHUB_ACTIONS=true FM_LINT_FAST=1 FM_LINT_JOBS=1 \
     FM_TEST_MODE_LOG="$mode_log" "$LINT" "$fixture" 2>&1) \
     || fail "CI full lint mode failed"$'\n'"$out"
-  [ "$(cat "$mode_log")" = on ] \
-    || fail "CI default did not keep full ShellCheck analysis"
-  pass "fm-lint.sh keeps full ShellCheck analysis by default in CI"
+  [ "$(cat "$mode_log")" = off ] \
+    || fail "CI default left extended analysis enabled"
+  pass "fm-lint.sh disables extended analysis by default in CI"
 }
 
 test_ci_rejects_explicit_fast_mode() {
@@ -569,8 +569,8 @@ test_changed_mode_drops_external_sources_and_excludes_cross_file_codes() {
     || fail "changed-mode local lint failed"$'\n'"$out"
   [ "$(cat "$log")" = "$target" ] \
     || fail "changed-mode lint did not run ShellCheck on exactly the changed file"$'\n'"logged: $(cat "$log")"
-  [ "$(cat "$mode_log")" = on ] \
-    || fail "changed-mode local lint disabled dataflow analysis"
+  [ "$(cat "$mode_log")" = off ] \
+    || fail "changed-mode local lint left extended analysis enabled"
   fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
   assert_contains "$out" "source following disabled" \
     "changed-mode local lint did not disclose dropped source following"
@@ -627,8 +627,8 @@ SH
     FM_TEST_FLAG_LOG="$flag_log" FM_TEST_MODE_LOG="$mode_log" \
     "$LINT" "$fixture" 2>&1) \
     || fail "CI lint with explicit path failed"$'\n'"$out"
-  [ "$(cat "$mode_log")" = on ] \
-    || fail "CI lint disabled dataflow analysis"
+  [ "$(cat "$mode_log")" = off ] \
+    || fail "CI lint left extended analysis enabled"
   fm_lint_assert_flag_log "$flag_log" yes none
   pass "fm-lint.sh CI keeps source following without the local exclusion list"
 }
@@ -752,16 +752,18 @@ SH
   out=$("$LINT" "$fixture" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "explicit-path lint passed a cross-file-only fixture"$'\n'"$out"
   assert_contains "$out" "SC2034" "explicit-path lint did not keep SC2034"
-  assert_contains "$out" "SC2329" "explicit-path lint did not keep SC2329"
+  assert_not_contains "$out" "SC2329" \
+    "explicit-path lint still reported extended-analysis-only SC2329"
   rm -f "$fixture"
-  pass "fm-lint.sh changed mode excludes cross-file codes that explicit paths still report"
+  pass "fm-lint.sh changed mode excludes cross-file codes, and explicit paths keep ordinary ones with extended analysis off"
 }
 
-# One ShellCheck process per root. Passing the whole canonical set in a
-# single invocation still follows in-set sources and is not the no-x posture.
+# One ShellCheck process per root, with the same extended analysis the lint
+# owner disables. Passing the whole canonical set in a single invocation
+# still follows in-set sources and is not the no-x posture.
 fm_lint_nox_one_root() {
   local index=$1 path=$2 outdir=$3
-  shellcheck --norc --format gcc -- "$path" > "$outdir/$index" || true
+  shellcheck --norc --extended-analysis=false --format gcc -- "$path" > "$outdir/$index" || true
 }
 
 test_local_exclusion_list_covers_every_no_external_sources_code() {
