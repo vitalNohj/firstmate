@@ -4433,11 +4433,15 @@ JS
   assert_contains "$(cat "$export_settled_snapshot")" "The deterministic tool example is complete." \
     "/export removed genuine assistant conversation from the Calm transcript"
 
-  # A bare /export lets Pi choose the filename. The filter has to follow that file.
-  # The decoy holds Pi's hidden-message export script and must stay byte-identical.
-  local decoy_export decoy_hash export_default_snapshot export_default_file export_default_dom
+  # A bare /export lets Pi choose the filename. The filter has to follow the
+  # path Pi prints, not whichever other HTML file changed. The decoy stays
+  # byte-identical. The sibling is rewritten while the export is in flight and
+  # must keep that rewrite, including Pi's hidden-message export script.
+  local decoy_export decoy_hash changing_export changing_hash
+  local export_default_snapshot export_default_file export_default_dom
   local export_default_announced export_default_wait
   decoy_export="$project/decoy-export.html"
+  changing_export="$project/changing-export.html"
   export_default_snapshot="$TMP_ROOT/export-default.txt"
   export_default_dom="$TMP_ROOT/calm-export-default-dom.html"
   cat >"$decoy_export" <<'HTML'
@@ -4450,9 +4454,30 @@ DECOY_EXPORT_UNTOUCHED
           </div>`;
         }
 HTML
+  cat >"$changing_export" <<'HTML'
+CHANGING_EXPORT_BEFORE
+        if (entry.type === 'custom_message') {
+          const hidden = entry.display === false;
+          return `<div class="hook-message${hidden ? ' hook-message-hidden' : ''}" id="${entryDomId}">${tsHtml}
+            <div class="hook-type">[${escapeHtml(entry.customType)}]${hidden ? ' · Hidden in terminal' : ''}</div>
+            <div class="markdown-content">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>
+          </div>`;
+        }
+HTML
   decoy_hash=$(shasum -a 256 "$decoy_export" | awk '{print $1}')
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/export"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
+  cat >"$changing_export" <<'HTML'
+CHANGING_EXPORT_DURING
+        if (entry.type === 'custom_message') {
+          const hidden = entry.display === false;
+          return `<div class="hook-message${hidden ? ' hook-message-hidden' : ''}" id="${entryDomId}">${tsHtml}
+            <div class="hook-type">[${escapeHtml(entry.customType)}]${hidden ? ' · Hidden in terminal' : ''}</div>
+            <div class="markdown-content">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>
+          </div>`;
+        }
+HTML
+  changing_hash=$(shasum -a 256 "$changing_export" | awk '{print $1}')
   export_default_file=""
   export_default_wait=0
   while [ "$export_default_wait" -lt 120 ]; do
@@ -4478,10 +4503,15 @@ HTML
   done
   [ -n "$export_default_file" ] || fail "default /export did not announce a new file while calm mode was on"
   [ "$export_default_file" != "$decoy_export" ] || fail "default /export announced the unrelated decoy"
+  [ "$export_default_file" != "$changing_export" ] || fail "default /export announced the html file that changed during export"
   # Pi prints the confirmation, then Calm's filter runs on the next macrotask.
   sleep 0.2
   [ "$(shasum -a 256 "$decoy_export" | awk '{print $1}')" = "$decoy_hash" ] \
     || fail "default /export rewrote an unrelated html file"
+  [ "$(shasum -a 256 "$changing_export" | awk '{print $1}')" = "$changing_hash" ] \
+    || fail "default /export rewrote an html file that changed during export"
+  grep -F 'hook-message-hidden' "$changing_export" >/dev/null \
+    || fail "default /export rewrote the hidden-message script in the html file that changed during export"
   node - "$export_default_file" <<'JS' || fail "default-name HTML export lost tool data or persisted synthetic provenance"
 const html = require("node:fs").readFileSync(process.argv[2], "utf8");
 const match = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/);

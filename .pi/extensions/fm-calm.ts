@@ -21,7 +21,6 @@
 import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -96,9 +95,9 @@ type ExportStamp = {
   size: number;
 };
 
-type ExportSnapshot = {
-  directoryScanned: boolean;
-  stamps: Map<string, ExportStamp | undefined>;
+type ExportTreeNode = {
+  children?: ExportTreeNode[];
+  build?: () => string;
 };
 
 // Pi splits `/export` arguments the same way: a bare command has no path, quotes
@@ -141,58 +140,75 @@ function exportStamp(filePath: string): ExportStamp | undefined {
   }
 }
 
-function snapshotHtmlExports(cwd: string, explicitPath: string | undefined): ExportSnapshot {
-  const stamps = new Map<string, ExportStamp | undefined>();
-  if (explicitPath) {
-    stamps.set(explicitPath, exportStamp(explicitPath));
-    return { directoryScanned: false, stamps };
-  }
-  try {
-    for (const name of readdirSync(cwd)) {
-      if (!name.endsWith(".html")) continue;
-      const filePath = resolve(cwd, name);
-      stamps.set(filePath, exportStamp(filePath));
-    }
-    return { directoryScanned: true, stamps };
-  } catch {
-    return { directoryScanned: false, stamps };
-  }
-}
-
 function exportFileChanged(prior: ExportStamp | undefined, stamp: ExportStamp | undefined): boolean {
   if (!stamp) return false;
   if (!prior) return true;
   return prior.mtimeMs !== stamp.mtimeMs || prior.size !== stamp.size;
 }
 
-// The filtered file is the one Pi's export just wrote. An explicit path is that
-// argument alone. A bare `/export` is the single html file that appeared or
-// changed in the session directory. Zero or several changes select nothing, so
-// a reconstructed session filename can never rewrite an unrelated file.
-function htmlExportsWrittenSince(
-  before: ExportSnapshot,
-  cwd: string,
-  explicitPath: string | undefined,
-): string[] {
-  if (explicitPath) {
-    return exportFileChanged(before.stamps.get(explicitPath), exportStamp(explicitPath))
-      ? [explicitPath]
-      : [];
-  }
-  if (!before.directoryScanned) return [];
-  let names: string[];
+function stripTerminalStyles(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+// Pi's status line is a ThemedText whose build() closes over the message
+// showStatus just set. The widget factory receives the live TUI, which owns
+// that chat tree. A missing widget API or an unreadable path selects nothing.
+function exportUiRoot(ui: ExtensionUIContext): ExportTreeNode | undefined {
+  if (typeof ui.setWidget !== "function") return undefined;
+  const key = "firstmate-calm-export-root";
+  let root: ExportTreeNode | undefined;
   try {
-    names = readdirSync(cwd);
+    ui.setWidget(key, (tui) => {
+      root = tui as ExportTreeNode;
+      return new Container();
+    });
+    ui.setWidget(key, undefined);
   } catch {
-    return [];
+    return undefined;
   }
-  const changed: string[] = [];
-  for (const name of names) {
-    if (!name.endsWith(".html")) continue;
-    const filePath = resolve(cwd, name);
-    if (exportFileChanged(before.stamps.get(filePath), exportStamp(filePath))) changed.push(filePath);
+  return root;
+}
+
+function visitExportTree(node: ExportTreeNode, visit: (node: ExportTreeNode) => void): void {
+  visit(node);
+  if (!Array.isArray(node.children)) return;
+  for (const child of node.children) {
+    if (child && typeof child === "object") visitExportTree(child, visit);
   }
-  return changed.length === 1 ? changed : [];
+}
+
+// Bare `/export` has no path argument. The file Pi wrote is the path in the
+// status line it prints as "Session exported to: <path>". The last such line
+// is the finished export. When that path cannot be read, filter nothing.
+function exportPathReportedByPi(ui: ExtensionUIContext, cwd: string): string | undefined {
+  const root = exportUiRoot(ui);
+  if (!root) return undefined;
+  let reported: string | undefined;
+  visitExportTree(root, (node) => {
+    if (typeof node.build !== "function") return;
+    let rendered: string;
+    try {
+      rendered = node.build();
+    } catch {
+      return;
+    }
+    if (typeof rendered !== "string") return;
+    const plain = stripTerminalStyles(rendered);
+    const marker = "Session exported to: ";
+    const at = plain.lastIndexOf(marker);
+    if (at < 0) return;
+    const line = plain.slice(at + marker.length).split("\n")[0]?.trim();
+    if (line) reported = line;
+  });
+  if (!reported) return undefined;
+  const filePath = resolve(cwd, reported);
+  try {
+    if (!statSync(filePath).isFile()) return undefined;
+    readFileSync(filePath);
+  } catch {
+    return undefined;
+  }
+  return filePath;
 }
 
 function omitHiddenCustomMessagesFromExportConversation(filePath: string): void {
@@ -582,16 +598,19 @@ export default function (pi: ExtensionAPI) {
       const filterExport =
         calmPresentationIsActive() && (input === "/export" || input.startsWith("/export "));
       const explicitExport = filterExport ? explicitExportFile(input) : undefined;
+      const explicitBefore = explicitExport ? exportStamp(explicitExport) : undefined;
       const exportCwd = ctx.cwd;
-      const exportSnapshot = filterExport ? snapshotHtmlExports(exportCwd, explicitExport) : undefined;
       exportRendering = true;
       setCalmStockExportRendering(true);
       publishPresentationState();
       setTimeout(() => {
-        if (exportSnapshot) {
-          for (const filePath of htmlExportsWrittenSince(exportSnapshot, exportCwd, explicitExport)) {
-            omitHiddenCustomMessagesFromExportConversation(filePath);
+        if (explicitExport) {
+          if (exportFileChanged(explicitBefore, exportStamp(explicitExport))) {
+            omitHiddenCustomMessagesFromExportConversation(explicitExport);
           }
+        } else if (filterExport) {
+          const reported = exportPathReportedByPi(ctx.ui, exportCwd);
+          if (reported) omitHiddenCustomMessagesFromExportConversation(reported);
         }
         exportRendering = false;
         setCalmStockExportRendering(false);
