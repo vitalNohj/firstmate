@@ -98,6 +98,13 @@ type ExportStamp = {
 type ExportTreeNode = {
   children?: ExportTreeNode[];
   build?: () => string;
+  stale?: boolean;
+};
+
+type ExportStatusMark = {
+  node: ExportTreeNode;
+  reported: string;
+  stale: boolean;
 };
 
 // Pi splits `/export` arguments the same way: a bare command has no path, quotes
@@ -177,30 +184,48 @@ function visitExportTree(node: ExportTreeNode, visit: (node: ExportTreeNode) => 
   }
 }
 
-// Bare `/export` has no path argument. The file Pi wrote is the path in the
-// status line it prints as "Session exported to: <path>". The last such line
-// is the finished export. When that path cannot be read, filter nothing.
-function exportPathReportedByPi(ui: ExtensionUIContext, cwd: string): string | undefined {
+function reportedExportLine(node: ExportTreeNode): string | undefined {
+  if (typeof node.build !== "function") return undefined;
+  let rendered: string;
+  try {
+    rendered = node.build();
+  } catch {
+    return undefined;
+  }
+  if (typeof rendered !== "string") return undefined;
+  const plain = stripTerminalStyles(rendered);
+  const marker = "Session exported to: ";
+  const at = plain.lastIndexOf(marker);
+  if (at < 0) return undefined;
+  const line = plain.slice(at + marker.length).split("\n")[0]?.trim();
+  return line || undefined;
+}
+
+// The last "Session exported to:" line still on screen. Its component identity
+// and stale bit distinguish a completion Pi just printed from a line an
+// earlier export left behind.
+function latestExportStatus(ui: ExtensionUIContext): ExportStatusMark | undefined {
   const root = exportUiRoot(ui);
   if (!root) return undefined;
-  let reported: string | undefined;
+  let found: ExportStatusMark | undefined;
   visitExportTree(root, (node) => {
-    if (typeof node.build !== "function") return;
-    let rendered: string;
-    try {
-      rendered = node.build();
-    } catch {
-      return;
-    }
-    if (typeof rendered !== "string") return;
-    const plain = stripTerminalStyles(rendered);
-    const marker = "Session exported to: ";
-    const at = plain.lastIndexOf(marker);
-    if (at < 0) return;
-    const line = plain.slice(at + marker.length).split("\n")[0]?.trim();
-    if (line) reported = line;
+    const reported = reportedExportLine(node);
+    if (!reported) return;
+    found = { node, reported, stale: node.stale === true };
   });
-  if (!reported) return undefined;
+  return found;
+}
+
+function exportStatusIsNew(prior: ExportStatusMark | undefined, next: ExportStatusMark): boolean {
+  if (!prior) return true;
+  if (next.node !== prior.node) return true;
+  if (next.reported !== prior.reported) return true;
+  // showStatus updates one status component in place and invalidates it, which
+  // sets stale. A failed export leaves that component untouched.
+  return prior.stale === false && next.stale === true;
+}
+
+function readableExportFile(cwd: string, reported: string): string | undefined {
   const filePath = resolve(cwd, reported);
   try {
     if (!statSync(filePath).isFile()) return undefined;
@@ -209,6 +234,20 @@ function exportPathReportedByPi(ui: ExtensionUIContext, cwd: string): string | u
     return undefined;
   }
   return filePath;
+}
+
+// Bare `/export` has no path argument. The file Pi wrote is the path in the
+// status line it prints as "Session exported to: <path>" for this completion.
+// A retained line from an earlier export is not that completion. When the new
+// path cannot be read, filter nothing.
+function exportPathReportedByPi(
+  ui: ExtensionUIContext,
+  cwd: string,
+  prior: ExportStatusMark | undefined,
+): string | undefined {
+  const next = latestExportStatus(ui);
+  if (!next || !exportStatusIsNew(prior, next)) return undefined;
+  return readableExportFile(cwd, next.reported);
 }
 
 function omitHiddenCustomMessagesFromExportConversation(filePath: string): void {
@@ -600,6 +639,8 @@ export default function (pi: ExtensionAPI) {
       const explicitExport = filterExport ? explicitExportFile(input) : undefined;
       const explicitBefore = explicitExport ? exportStamp(explicitExport) : undefined;
       const exportCwd = ctx.cwd;
+      const priorExportStatus =
+        filterExport && !explicitExport ? latestExportStatus(ctx.ui) : undefined;
       exportRendering = true;
       setCalmStockExportRendering(true);
       publishPresentationState();
@@ -609,7 +650,7 @@ export default function (pi: ExtensionAPI) {
             omitHiddenCustomMessagesFromExportConversation(explicitExport);
           }
         } else if (filterExport) {
-          const reported = exportPathReportedByPi(ctx.ui, exportCwd);
+          const reported = exportPathReportedByPi(ctx.ui, exportCwd, priorExportStatus);
           if (reported) omitHiddenCustomMessagesFromExportConversation(reported);
         }
         exportRendering = false;

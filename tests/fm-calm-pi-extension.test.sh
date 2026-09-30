@@ -4544,6 +4544,40 @@ for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_A
 if (!tree.includes("firstmate-synthetic-input") || !tree.includes("/tmp/probe.status")) process.exit(1);
 JS
 
+  # A later bare /export that fails must not rewrite the file named by the
+  # confirmation still on screen. The hidden-message script is put back so a
+  # stale filter would change the hash. The session file is only moved aside
+  # for that attempt, then restored byte for byte.
+  local failed_export_hash failed_export_snapshot
+  failed_export_snapshot="$TMP_ROOT/export-failed.txt"
+  cat >>"$export_default_file" <<'HTML'
+        if (entry.type === 'custom_message') {
+          const hidden = entry.display === false;
+          return `<div class="hook-message${hidden ? ' hook-message-hidden' : ''}" id="${entryDomId}">${tsHtml}
+            <div class="hook-type">[${escapeHtml(entry.customType)}]${hidden ? ' · Hidden in terminal' : ''}</div>
+            <div class="markdown-content">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>
+          </div>`;
+        }
+HTML
+  failed_export_hash=$(shasum -a 256 "$export_default_file" | awk '{print $1}')
+  mv "$session_file" "$session_file.held"
+  tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/export"
+  tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
+  if ! wait_for_text "$failed_export_snapshot" "Failed to export session"; then
+    if [ -e "$session_file" ]; then
+      rm -f -- "$session_file"
+    fi
+    mv "$session_file.held" "$session_file"
+    fail "bare /export with no session file did not report failure"
+  fi
+  if [ -e "$session_file" ]; then
+    rm -f -- "$session_file"
+  fi
+  mv "$session_file.held" "$session_file"
+  sleep 0.2
+  [ "$(shasum -a 256 "$export_default_file" | awk '{print $1}')" = "$failed_export_hash" ] \
+    || fail "failed bare /export rewrote the earlier export"
+
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/calm"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
   wait_for_text "$restored_snapshot" "CALM_E2E_OUTPUT" \
