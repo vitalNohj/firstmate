@@ -684,10 +684,28 @@ github_read_required_contexts() {
   [ -z "$FM_PR_GITHUB_REQUIRED_ERROR" ]
 }
 
+# Required and producer JSON are read from files. Passing either value as a jq
+# argument fails the exec once it reaches the kernel per-argument limit, and
+# that failure is reported as an unreadable rollup.
 github_required_checks_missing() {
   local json=$1 required=$2 producers=$3
-  printf '%s' "$json" | jq -r --argjson required "$required" --argjson producers "$producers" '
-    if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
+  local required_file producers_file rc=0
+  required_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-merge-required.XXXXXX") || return 1
+  producers_file=$(mktemp "${TMPDIR:-/tmp}/fm-pr-merge-producers.XXXXXX") || {
+    rm -f "$required_file"
+    return 1
+  }
+  if ! printf '%s' "$required" > "$required_file" \
+    || ! printf '%s' "$producers" > "$producers_file"; then
+    rm -f "$required_file" "$producers_file"
+    return 1
+  fi
+  printf '%s' "$json" | jq -r \
+    --slurpfile required_docs "$required_file" \
+    --slurpfile producer_docs "$producers_file" '
+    ($required_docs[0]) as $required
+    | ($producer_docs[0]) as $producers
+    | if (.statusCheckRollup | type) != "array" then error("no check rollup") else . end
     | .statusCheckRollup as $reported
     | $required
     | map(. as $requirement
@@ -701,7 +719,9 @@ github_required_checks_missing() {
             .context == $requirement.context
           end) | not)
       | .context) | unique[]
-  ' 2>/dev/null || return 1
+  ' 2>/dev/null || rc=$?
+  rm -f "$required_file" "$producers_file"
+  [ "$rc" -eq 0 ]
 }
 
 # Pre-merge conditions from a live PR view, base requirements, and head producers.
