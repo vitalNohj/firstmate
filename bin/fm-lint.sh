@@ -13,9 +13,9 @@
 # same disabled extended analysis. CI, main, and merge-base-less runs keep
 # --norc --external-sources over the whole canonical set. An ordinary local
 # branch (changed-file mode, including the no-mistakes lint step) drops
-# --external-sources and excludes SC1091, SC2034, SC2153, and SC2329, the
-# codes that need library context. Explicit paths keep --external-sources
-# with extended analysis disabled.
+# --external-sources and excludes SC1091, SC2034, and SC2153, the codes that
+# need library context, plus SC2329, which exists only under extended analysis.
+# Explicit paths keep --external-sources with extended analysis disabled.
 # Tests stop source analysis at imported production modules because CI analyzes
 # every production shell separately as a canonical, source-aware root.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
