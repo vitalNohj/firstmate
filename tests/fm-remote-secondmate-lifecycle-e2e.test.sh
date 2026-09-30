@@ -31,7 +31,8 @@ PARENT_ROUTE_INBOX="$REMOTE_HOME/state/parent-route/ios.inbox"
 CLAIMS="$TMP_ROOT/claims"
 mkdir -p "$PARENT/data" "$PARENT/state" "$PARENT/config" "$PARENT/projects" "$REMOTE_ROOT" "$CLAIMS"
 cleanup() {
-  local worker_pid=''
+  local status=$?
+  local worker_pid='' i
   touch "$TMP_ROOT/provision.release" "$TMP_ROOT/seed.release" "$TMP_ROOT/handoff.release" \
     "$TMP_ROOT/inherit.release" "$TMP_ROOT/launch.release" 2>/dev/null || true
   FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" \
@@ -42,8 +43,33 @@ cleanup() {
     # detached supervisor restart it while the fixture root is being removed.
     . "$ROOT/bin/fm-remote-job-lib.sh"
     fm_remote_job_stop_worker_tree "$worker_pid" || true
+    i=0
+    while [ "$i" -lt 500 ] && kill -0 "$worker_pid" 2>/dev/null; do
+      sleep 0.01
+      i=$((i + 1))
+    done
   fi
-  rm -rf -- "$TMP_ROOT"
+  # Direct children can still be writing. Same race as
+  # tests/fm-remote-backlog-handoff.test.sh: rm: cannot remove '...': Directory not empty
+  # An unbounded wait hangs when one of those children never exits, so stop them.
+  if [ -d /proc ]; then
+    local pid ppid
+    for pid in /proc/[0-9]*; do
+      pid=${pid#/proc/}
+      [ "$pid" = "$$" ] && continue
+      ppid=$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null || true)
+      [ "$ppid" = "$$" ] || continue
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+  fi
+  i=0
+  while [ "$i" -lt 50 ]; do
+    rm -rf -- "$TMP_ROOT" 2>/dev/null && exit "$status"
+    sleep 0.02
+    i=$((i + 1))
+  done
+  rm -rf -- "$TMP_ROOT" 2>/dev/null || true
+  exit "$status"
 }
 trap cleanup EXIT
 

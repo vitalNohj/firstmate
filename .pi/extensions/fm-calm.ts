@@ -25,8 +25,10 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -66,6 +68,216 @@ import {
   setCalmPresentation,
   setCalmStockExportRendering,
 } from "./lib/fm-calm-visibility.ts";
+
+// Pi 0.99 puts display:false custom messages into the export conversation column
+// and only hides them with CSS, so a dumped DOM still contains them. Older Pi
+// omits those entries from that column. Calm keeps the column to the conversation:
+// the entries stay in the session data and the export tree.
+const PI_EXPORT_HIDDEN_CUSTOM_MESSAGE =
+  "        if (entry.type === 'custom_message') {\n" +
+  "          const hidden = entry.display === false;\n" +
+  "          return `<div class=\"hook-message${hidden ? ' hook-message-hidden' : ''}\" id=\"${entryDomId}\">${tsHtml}\n" +
+  "            <div class=\"hook-type\">[${escapeHtml(entry.customType)}]${hidden ? ' · Hidden in terminal' : ''}</div>\n" +
+  "            <div class=\"markdown-content\">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>\n" +
+  "          </div>`;\n" +
+  "        }\n";
+const CALM_EXPORT_HIDDEN_CUSTOM_MESSAGE =
+  "        if (entry.type === 'custom_message') {\n" +
+  "          if (entry.display === false) return '';\n" +
+  "          return `<div class=\"hook-message\" id=\"${entryDomId}\">${tsHtml}\n" +
+  "            <div class=\"hook-type\">[${escapeHtml(entry.customType)}]</div>\n" +
+  "            <div class=\"markdown-content\">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>\n" +
+  "          </div>`;\n" +
+  "        }\n";
+
+type ExportStamp = {
+  mtimeMs: number;
+  size: number;
+};
+
+type ExportTreeNode = {
+  children?: ExportTreeNode[];
+  build?: () => string;
+  invalidateCount?: number;
+};
+
+type ExportStatusMark = {
+  node: ExportTreeNode;
+  reported: string;
+  invalidateCount: number;
+};
+
+const exportInvalidateHook = Symbol.for("firstmate.calm.exportInvalidate");
+
+// showStatus always invalidates the status component, including when it is
+// already stale and the path text does not change. Counting those calls is the
+// completion signal. The count lives on the component instance.
+function trackExportInvalidation(node: ExportTreeNode): void {
+  const proto = Object.getPrototypeOf(node) as {
+    invalidate?: (this: ExportTreeNode, ...args: unknown[]) => unknown;
+    [exportInvalidateHook]?: boolean;
+  } | null;
+  if (!proto || proto[exportInvalidateHook] || typeof proto.invalidate !== "function") return;
+  const original = proto.invalidate;
+  proto.invalidate = function (this: ExportTreeNode, ...args: unknown[]) {
+    this.invalidateCount = (this.invalidateCount ?? 0) + 1;
+    return original.apply(this, args);
+  };
+  proto[exportInvalidateHook] = true;
+}
+
+// Pi splits `/export` arguments the same way: a bare command has no path, quotes
+// keep one token, and the first bare token stops at whitespace. Tilde and file
+// URLs follow Pi's path normalization so the later stamp reads the file Pi wrote.
+function explicitExportFile(input: string): string | undefined {
+  if (input === "/export") return undefined;
+  if (!input.startsWith("/export ")) return undefined;
+  let args = input.slice("/export ".length).trimStart();
+  if (!args) return undefined;
+  const quote = args[0];
+  if (quote === '"' || quote === "'") {
+    const end = args.indexOf(quote, 1);
+    if (end < 0) return undefined;
+    args = args.slice(1, end);
+  } else {
+    const space = args.search(/\s/);
+    if (space >= 0) args = args.slice(0, space);
+  }
+  if (!args) return undefined;
+  if (args === "~") return homedir();
+  if (args.startsWith("~/")) return resolve(homedir(), args.slice(2));
+  if (args.startsWith("file://")) {
+    try {
+      return fileURLToPath(args);
+    } catch {
+      return resolve(args);
+    }
+  }
+  return resolve(args);
+}
+
+function exportStamp(filePath: string): ExportStamp | undefined {
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile()) return undefined;
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return undefined;
+  }
+}
+
+function exportFileChanged(prior: ExportStamp | undefined, stamp: ExportStamp | undefined): boolean {
+  if (!stamp) return false;
+  if (!prior) return true;
+  return prior.mtimeMs !== stamp.mtimeMs || prior.size !== stamp.size;
+}
+
+function stripTerminalStyles(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+// Pi's status line is a ThemedText whose build() closes over the message
+// showStatus just set. The widget factory receives the live TUI, which owns
+// that chat tree. A missing widget API or an unreadable path selects nothing.
+function exportUiRoot(ui: ExtensionUIContext): ExportTreeNode | undefined {
+  if (typeof ui.setWidget !== "function") return undefined;
+  const key = "firstmate-calm-export-root";
+  let root: ExportTreeNode | undefined;
+  try {
+    ui.setWidget(key, (tui) => {
+      root = tui as ExportTreeNode;
+      return new Container();
+    });
+    ui.setWidget(key, undefined);
+  } catch {
+    return undefined;
+  }
+  return root;
+}
+
+function visitExportTree(node: ExportTreeNode, visit: (node: ExportTreeNode) => void): void {
+  visit(node);
+  if (!Array.isArray(node.children)) return;
+  for (const child of node.children) {
+    if (child && typeof child === "object") visitExportTree(child, visit);
+  }
+}
+
+function reportedExportLine(node: ExportTreeNode): string | undefined {
+  if (typeof node.build !== "function") return undefined;
+  let rendered: string;
+  try {
+    rendered = node.build();
+  } catch {
+    return undefined;
+  }
+  if (typeof rendered !== "string") return undefined;
+  const plain = stripTerminalStyles(rendered);
+  const marker = "Session exported to: ";
+  const at = plain.lastIndexOf(marker);
+  if (at < 0) return undefined;
+  const line = plain.slice(at + marker.length).split("\n")[0]?.trim();
+  return line || undefined;
+}
+
+// The last "Session exported to:" line still on screen. A new component, a new
+// path, or another invalidation means Pi completed this export. A failed
+// export leaves the previous line's invalidation count unchanged.
+function latestExportStatus(ui: ExtensionUIContext): ExportStatusMark | undefined {
+  const root = exportUiRoot(ui);
+  if (!root) return undefined;
+  let found: ExportStatusMark | undefined;
+  visitExportTree(root, (node) => {
+    const reported = reportedExportLine(node);
+    if (!reported) return;
+    trackExportInvalidation(node);
+    found = { node, reported, invalidateCount: node.invalidateCount ?? 0 };
+  });
+  return found;
+}
+
+function exportStatusIsNew(prior: ExportStatusMark | undefined, next: ExportStatusMark): boolean {
+  if (!prior) return true;
+  if (next.node !== prior.node) return true;
+  if (next.reported !== prior.reported) return true;
+  return next.invalidateCount !== prior.invalidateCount;
+}
+
+function readableExportFile(cwd: string, reported: string): string | undefined {
+  const filePath = resolve(cwd, reported);
+  try {
+    if (!statSync(filePath).isFile()) return undefined;
+    readFileSync(filePath);
+  } catch {
+    return undefined;
+  }
+  return filePath;
+}
+
+// Bare `/export` has no path argument. The file Pi wrote is the path in the
+// status line it prints as "Session exported to: <path>" for this completion.
+// A retained line from an earlier export is not that completion. When the new
+// path cannot be read, filter nothing.
+function exportPathReportedByPi(
+  ui: ExtensionUIContext,
+  cwd: string,
+  prior: ExportStatusMark | undefined,
+): string | undefined {
+  const next = latestExportStatus(ui);
+  if (!next || !exportStatusIsNew(prior, next)) return undefined;
+  return readableExportFile(cwd, next.reported);
+}
+
+function omitHiddenCustomMessagesFromExportConversation(filePath: string): void {
+  let html: string;
+  try {
+    html = readFileSync(filePath, "utf8");
+  } catch {
+    return;
+  }
+  if (!html.includes(PI_EXPORT_HIDDEN_CUSTOM_MESSAGE)) return;
+  writeFileSync(filePath, html.replace(PI_EXPORT_HIDDEN_CUSTOM_MESSAGE, CALM_EXPORT_HIDDEN_CUSTOM_MESSAGE));
+}
 
 type DefinitionFactory<TParams extends TSchema, TDetails, TState> = (
   cwd: string,
@@ -440,10 +652,25 @@ export default function (pi: ExtensionAPI) {
         return undefined;
       }
 
+      const filterExport =
+        calmPresentationIsActive() && (input === "/export" || input.startsWith("/export "));
+      const explicitExport = filterExport ? explicitExportFile(input) : undefined;
+      const explicitBefore = explicitExport ? exportStamp(explicitExport) : undefined;
+      const exportCwd = ctx.cwd;
+      const priorExportStatus =
+        filterExport && !explicitExport ? latestExportStatus(ctx.ui) : undefined;
       exportRendering = true;
       setCalmStockExportRendering(true);
       publishPresentationState();
       setTimeout(() => {
+        if (explicitExport) {
+          if (exportFileChanged(explicitBefore, exportStamp(explicitExport))) {
+            omitHiddenCustomMessagesFromExportConversation(explicitExport);
+          }
+        } else if (filterExport) {
+          const reported = exportPathReportedByPi(ctx.ui, exportCwd, priorExportStatus);
+          if (reported) omitHiddenCustomMessagesFromExportConversation(reported);
+        }
         exportRendering = false;
         setCalmStockExportRendering(false);
         publishPresentationState();
