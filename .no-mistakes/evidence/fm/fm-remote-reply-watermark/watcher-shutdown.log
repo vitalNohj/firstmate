@@ -1,0 +1,25 @@
+shutdown elapsed_ms=1622 pid=1920072
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1709 pid=1923720
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1352 pid=1927733
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=395 pid=1931462
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1775 pid=1936156
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1565 pid=1940140
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1590 pid=1944014
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1551 pid=1947846
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1427 pid=1951508
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1789 pid=1955056
+ok - watch-arm: a watcher exits when its state directory is removed
+shutdown elapsed_ms=1707 pid=1958968
+ok - watch-arm: a watcher exits when its home is removed
+shutdown elapsed_ms=5 pid=1962656
+not ok - watcher did not log the home-gone exit reason: watcher: started pid=1962656 (beacon fresh)
+check: rearm-resurface

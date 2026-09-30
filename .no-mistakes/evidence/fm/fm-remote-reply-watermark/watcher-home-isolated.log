@@ -1,0 +1,35 @@
+shutdown elapsed_ms=1673 pid=1986747
+ok - watch-arm: a watcher exits when its home is removed
+
+/tmp/fm-watch-arm-tests.FEAw1m/home-removed/arm.out
+watcher: started pid=1986747 (beacon fresh)
+watcher: exiting - home no longer exists: /tmp/fm-watch-arm-tests.FEAw1m/home-removed/home
+watcher: FAILED - watcher cycle exited 1 without an actionable reason
+shutdown elapsed_ms=1728 pid=1994049
+ok - watch-arm: a watcher exits when its home is removed
+
+/tmp/fm-watch-arm-tests.4pkO2h/home-removed/arm.out
+watcher: started pid=1994049 (beacon fresh)
+watcher: exiting - home no longer exists: /tmp/fm-watch-arm-tests.4pkO2h/home-removed/home
+watcher: FAILED - watcher cycle exited 1 without an actionable reason
+shutdown elapsed_ms=1884 pid=2001066
+ok - watch-arm: a watcher exits when its home is removed
+
+/tmp/fm-watch-arm-tests.xZawIo/home-removed/arm.out
+watcher: started pid=2001066 (beacon fresh)
+watcher: exiting - home no longer exists: /tmp/fm-watch-arm-tests.xZawIo/home-removed/home
+watcher: FAILED - watcher cycle exited 1 without an actionable reason
+shutdown elapsed_ms=1933 pid=2008191
+ok - watch-arm: a watcher exits when its home is removed
+
+/tmp/fm-watch-arm-tests.c6vBK5/home-removed/arm.out
+watcher: started pid=2008191 (beacon fresh)
+watcher: exiting - home no longer exists: /tmp/fm-watch-arm-tests.c6vBK5/home-removed/home
+watcher: FAILED - watcher cycle exited 1 without an actionable reason
+shutdown elapsed_ms=255 pid=2015232
+ok - watch-arm: a watcher exits when its home is removed
+
+/tmp/fm-watch-arm-tests.7idI9j/home-removed/arm.out
+watcher: started pid=2015232 (beacon fresh)
+watcher: exiting - home no longer exists: /tmp/fm-watch-arm-tests.7idI9j/home-removed/home
+watcher: FAILED - watcher cycle exited 1 without an actionable reason

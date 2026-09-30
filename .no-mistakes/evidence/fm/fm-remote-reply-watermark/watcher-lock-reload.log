@@ -1,0 +1,5 @@
+shutdown elapsed_ms=120 pid=2019970
+ok - watch-arm: pending-reply library reload preserves home-aware lock wait
+
+/tmp/fm-watch-arm-tests.jgf5iN/pending-reply-lock-removed/watch.out
+watcher: exiting - state directory no longer exists: /tmp/fm-watch-arm-tests.jgf5iN/pending-reply-lock-removed/state
