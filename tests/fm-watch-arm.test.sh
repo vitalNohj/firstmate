@@ -1047,6 +1047,49 @@ test_watcher_exits_when_its_state_directory_is_removed() {
 
 # The same for a deleted home whose state directory still exists elsewhere: the
 # lock is released through the ordinary cleanup so nothing stale is left behind.
+test_watcher_exits_during_pending_reply_lock_wait() {
+  local dir home state fakebin out real_mktemp i
+  dir=$(make_case pending-reply-lock-removed)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mkdir -p "$home/data" "$state/pending-replies"
+  printf 'corr_id=shutdown\ntask_id=mate\nphase=awaiting_report\n' > "$state/pending-replies/shutdown"
+  mkdir "$state/.pending-reply-shutdown.lock"
+  printf '%s\n' "$$" > "$state/.pending-reply-shutdown.lock/pid"
+  : > "$dir/attempts"
+  real_mktemp=$(command -v mktemp)
+  cat > "$fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *pending-reply-shutdown.lock.owner.*) printf 'attempt\n' >> "$LOCK_ATTEMPTS" ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+SH
+  chmod +x "$fakebin/mktemp"
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    REAL_MKTEMP="$real_mktemp" LOCK_ATTEMPTS="$dir/attempts" \
+    "$WATCH" > "$out" 2>&1 &
+  SEED_PID=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    [ "$(wc -l < "$dir/attempts" 2>/dev/null || echo 0)" -ge 2 ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$i" -lt 100 ] || fail "watcher never contended on pending-reply lock: $(cat "$out")"
+  rm -rf "$state"
+  wait_for_pid_gone "$SEED_PID" 50 \
+    || { kill -TERM "$SEED_PID" 2>/dev/null; fail "pending-reply lock wait outlived deleted state"; }
+  wait "$SEED_PID" 2>/dev/null || true
+  grep -qF 'watcher: exiting - state directory' "$out" \
+    || fail "pending-reply shutdown lacked state-gone reason: $(cat "$out")"
+  [ ! -e "$state" ] || fail "watcher recreated deleted state"
+  pass "watch-arm: pending-reply library reload preserves home-aware lock wait"
+}
+
 test_watcher_exits_when_its_home_is_removed() {
   local dir home state fakebin armout
   dir=$(make_case home-removed)
@@ -1093,6 +1136,7 @@ test_attached_arm_reports_the_delivered_wake_after_drain
 test_arm_refuses_an_unusable_launch_confirm_window
 test_arm_refuses_a_disposable_validation_checkout
 test_watcher_exits_when_its_state_directory_is_removed
+test_watcher_exits_during_pending_reply_lock_wait
 test_watcher_exits_when_its_home_is_removed
 test_reaper_stops_a_tracked_watcher
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver

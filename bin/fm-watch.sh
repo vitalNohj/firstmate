@@ -2640,8 +2640,14 @@ watcher_install_lock_wait() {
 }
 watcher_install_lock_wait
 
-while :; do
+.() {
+  local watcher_source_status=0
+  builtin . "$@" || watcher_source_status=$?
   watcher_install_lock_wait
+  return "$watcher_source_status"
+}
+
+while :; do
   watcher_require_home
 
   # Self-eviction: if the singleton lock no longer names this process, a second
