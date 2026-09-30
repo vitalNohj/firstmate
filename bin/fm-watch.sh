@@ -2014,7 +2014,7 @@ procevent_surface_queued() {
   local key reason captured="" stranded="" unstarted=""
   PROCEVENT_SURFACED=
   [ -s "$FM_WAKE_QUEUE" ] || return 0
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  watcher_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
   while IFS= read -r key; do
     case "$key" in procevent:*) ;; *) continue ;; esac
     [ -e "$(procevent_surfaced_marker "$key")" ] && continue
@@ -2494,6 +2494,7 @@ pr_poll_publish_release() {
 
 watcher_cleanup() {
   local cleanup_status=0 owns_lock=0 transition=release-lock
+  WATCHER_IN_CLEANUP=1
   pr_poll_publish_release || cleanup_status=1
   pr_poll_control_release || cleanup_status=1
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
@@ -2560,9 +2561,9 @@ rerecord_device_shifted_pr_poll() {  # <id>
   local id=$1
   fm_pr_poll_registration_device_shifted "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 1
   PR_POLL_CONTROL_LOCK="$STATE/.control-$id.lock"
-  fm_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
+  watcher_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
   PR_POLL_PUBLISH_LOCK="$STATE/.pr-poll-publish-$id.lock"
-  fm_lock_acquire_wait "$PR_POLL_PUBLISH_LOCK" || exit 1
+  watcher_lock_acquire_wait "$PR_POLL_PUBLISH_LOCK" || exit 1
   if fm_pr_poll_registration_rerecord_device "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
     triage_log "re-recorded PR poll identity for $id after its state volume device number changed"
   else
@@ -2581,6 +2582,7 @@ resurface_after_downtime() {
     return 0
   fi
   if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
+    watcher_require_home
     if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
       watcher_require_home
       echo "watcher: recovery state could not be consumed safely" >&2
@@ -2616,7 +2618,30 @@ watcher_require_home() {
   fi
 }
 
+# fm_lock_acquire_wait retries until the lock appears. Once the state directory
+# is gone that retry never ends, so each attempt re-checks the home first and
+# leaves through watcher_require_home instead of outliving the torn-down home.
+watcher_lock_acquire_wait() {  # <lockdir>
+  local lockdir=$1
+  while true; do
+    [ "${WATCHER_IN_CLEANUP:-0}" -eq 1 ] || watcher_require_home
+    if fm_lock_try_acquire "$lockdir"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+}
+
+# Recovery checks call the shared wait from this process. That wait retries
+# until the lock appears, and a torn-down home never creates it, so this
+# process uses the home-checking wait for every lock it takes.
+watcher_install_lock_wait() {
+  fm_lock_acquire_wait() { watcher_lock_acquire_wait "$@"; }
+}
+watcher_install_lock_wait
+
 while :; do
+  watcher_install_lock_wait
   watcher_require_home
 
   # Self-eviction: if the singleton lock no longer names this process, a second
@@ -2740,7 +2765,7 @@ while :; do
           path=$FM_PR_POLL_SNAPSHOT_PATH
           number=$FM_PR_POLL_SNAPSHOT_NUMBER
           PR_POLL_CONTROL_LOCK="$STATE/.control-$id.lock"
-          fm_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
+          watcher_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
           if ! fm_pr_poll_snapshot_matches "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
             pr_poll_control_release || exit 1
             triage_log "PR poll for $id changed before its validated check; skipping the stale snapshot"
