@@ -67,6 +67,54 @@ import {
   setCalmStockExportRendering,
 } from "./lib/fm-calm-visibility.ts";
 
+// Pi 0.99 puts display:false custom messages into the export conversation column
+// and only hides them with CSS, so a dumped DOM still contains them. Older Pi
+// omits those entries from that column. Calm keeps the column to the conversation:
+// the entries stay in the session data and the export tree.
+const PI_EXPORT_HIDDEN_CUSTOM_MESSAGE =
+  "        if (entry.type === 'custom_message') {\n" +
+  "          const hidden = entry.display === false;\n" +
+  "          return `<div class=\"hook-message${hidden ? ' hook-message-hidden' : ''}\" id=\"${entryDomId}\">${tsHtml}\n" +
+  "            <div class=\"hook-type\">[${escapeHtml(entry.customType)}]${hidden ? ' · Hidden in terminal' : ''}</div>\n" +
+  "            <div class=\"markdown-content\">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>\n" +
+  "          </div>`;\n" +
+  "        }\n";
+const CALM_EXPORT_HIDDEN_CUSTOM_MESSAGE =
+  "        if (entry.type === 'custom_message') {\n" +
+  "          if (entry.display === false) return '';\n" +
+  "          return `<div class=\"hook-message\" id=\"${entryDomId}\">${tsHtml}\n" +
+  "            <div class=\"hook-type\">[${escapeHtml(entry.customType)}]</div>\n" +
+  "            <div class=\"markdown-content\">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>\n" +
+  "          </div>`;\n" +
+  "        }\n";
+
+function exportHtmlPath(input: string): string | undefined {
+  if (!input.startsWith("/export ")) return undefined;
+  let args = input.slice("/export ".length).trimStart();
+  if (!args) return undefined;
+  const quote = args[0];
+  if (quote === '"' || quote === "'") {
+    const end = args.indexOf(quote, 1);
+    if (end < 0) return undefined;
+    args = args.slice(1, end);
+  } else {
+    const space = args.search(/\s/);
+    if (space >= 0) args = args.slice(0, space);
+  }
+  return resolve(args);
+}
+
+function omitHiddenCustomMessagesFromExportConversation(filePath: string): void {
+  let html: string;
+  try {
+    html = readFileSync(filePath, "utf8");
+  } catch {
+    return;
+  }
+  if (!html.includes(PI_EXPORT_HIDDEN_CUSTOM_MESSAGE)) return;
+  writeFileSync(filePath, html.replace(PI_EXPORT_HIDDEN_CUSTOM_MESSAGE, CALM_EXPORT_HIDDEN_CUSTOM_MESSAGE));
+}
+
 type DefinitionFactory<TParams extends TSchema, TDetails, TState> = (
   cwd: string,
 ) => ToolDefinition<TParams, TDetails, TState>;
@@ -440,10 +488,12 @@ export default function (pi: ExtensionAPI) {
         return undefined;
       }
 
+      const calmExportFile = calmPresentationIsActive() ? exportHtmlPath(input) : undefined;
       exportRendering = true;
       setCalmStockExportRendering(true);
       publishPresentationState();
       setTimeout(() => {
+        if (calmExportFile) omitHiddenCustomMessagesFromExportConversation(calmExportFile);
         exportRendering = false;
         setCalmStockExportRendering(false);
         publishPresentationState();
