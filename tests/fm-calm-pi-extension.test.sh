@@ -4433,6 +4433,87 @@ JS
   assert_contains "$(cat "$export_settled_snapshot")" "The deterministic tool example is complete." \
     "/export removed genuine assistant conversation from the Calm transcript"
 
+  # A bare /export lets Pi choose the filename. The filter has to follow that file.
+  # The decoy holds Pi's hidden-message export script and must stay byte-identical.
+  local decoy_export decoy_hash export_default_snapshot export_default_file export_default_dom
+  local export_default_announced export_default_wait
+  decoy_export="$project/decoy-export.html"
+  export_default_snapshot="$TMP_ROOT/export-default.txt"
+  export_default_dom="$TMP_ROOT/calm-export-default-dom.html"
+  cat >"$decoy_export" <<'HTML'
+DECOY_EXPORT_UNTOUCHED
+        if (entry.type === 'custom_message') {
+          const hidden = entry.display === false;
+          return `<div class="hook-message${hidden ? ' hook-message-hidden' : ''}" id="${entryDomId}">${tsHtml}
+            <div class="hook-type">[${escapeHtml(entry.customType)}]${hidden ? ' · Hidden in terminal' : ''}</div>
+            <div class="markdown-content">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>
+          </div>`;
+        }
+HTML
+  decoy_hash=$(shasum -a 256 "$decoy_export" | awk '{print $1}')
+  tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/export"
+  tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
+  export_default_file=""
+  export_default_wait=0
+  while [ "$export_default_wait" -lt 120 ]; do
+    tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S -600 >"$export_default_snapshot" 2>/dev/null || true
+    export_default_announced=$(
+      grep -F 'Session exported to:' "$export_default_snapshot" | tail -1 | sed -e 's/.*Session exported to: //' -e 's/[[:space:]]*$//'
+    )
+    case "$export_default_announced" in
+      "" | "$export_file")
+        export_default_announced=""
+        ;;
+      /*) ;;
+      *)
+        export_default_announced="$project/$export_default_announced"
+        ;;
+    esac
+    if [ -n "$export_default_announced" ] && [ -f "$export_default_announced" ]; then
+      export_default_file=$export_default_announced
+      break
+    fi
+    sleep 0.05
+    export_default_wait=$((export_default_wait + 1))
+  done
+  [ -n "$export_default_file" ] || fail "default /export did not announce a new file while calm mode was on"
+  [ "$export_default_file" != "$decoy_export" ] || fail "default /export announced the unrelated decoy"
+  # Pi prints the confirmation, then Calm's filter runs on the next macrotask.
+  sleep 0.2
+  [ "$(shasum -a 256 "$decoy_export" | awk '{print $1}')" = "$decoy_hash" ] \
+    || fail "default /export rewrote an unrelated html file"
+  node - "$export_default_file" <<'JS' || fail "default-name HTML export lost tool data or persisted synthetic provenance"
+const html = require("node:fs").readFileSync(process.argv[2], "utf8");
+const match = html.match(/<script id="session-data" type="application\/json">([^<]+)<\/script>/);
+if (!match) process.exit(1);
+const session = JSON.parse(Buffer.from(match[1], "base64").toString("utf8"));
+for (const id of ["call_grep_e2e", "call_find_e2e", "call_watch_e2e"]) {
+  const rendered = session.renderedTools?.[id];
+  if (!rendered?.callHtml || !rendered?.resultHtmlExpanded) process.exit(1);
+}
+const entries = session.session?.entries ?? session.entries ?? [];
+const serialized = JSON.stringify(entries);
+if (!serialized.includes("firstmate-synthetic-input") || !serialized.includes("/tmp/probe.status")) process.exit(1);
+const synthetic = entries.find((entry) => entry.type === "custom_message" && entry.customType === "firstmate-synthetic-input");
+if (!synthetic || synthetic.display) process.exit(1);
+JS
+  chrome_report=$(render_export_dom "$chrome" "$export_default_file" "$export_default_dom" "$version") \
+    || fail "could not render default-name calm-mode HTML export DOM: $chrome_report"
+  node - "$export_default_dom" <<'JS' || fail "default-name export DOM violated the Calm conversation boundary"
+const dom = require("node:fs").readFileSync(process.argv[2], "utf8");
+const messages = dom.match(/<div id="messages">([\s\S]*?)<\/main>/)?.[1];
+const tree = dom.match(/<div[^>]*id="tree-container"[^>]*>([\s\S]*?)<div[^>]*id="tree-status"/)?.[1];
+if (!messages || !tree) process.exit(1);
+if (!/<div class="user-message"[^>]*>[\s\S]*Show a deterministic tool example\./.test(messages)) process.exit(1);
+if (!/<div class="assistant-message"[^>]*>[\s\S]*The deterministic tool example is complete\./.test(messages)) process.exit(1);
+if (messages.includes('<div class="hook-message"')) process.exit(1);
+if (messages.includes("[firstmate-synthetic-input]")) process.exit(1);
+for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_AWAY_E2E", "CURRENT_FROM_FIRSTMATE_E2E", "CURRENT_LAUNCH_BRIEF_E2E"]) {
+  if (!messages.includes(current)) process.exit(1);
+}
+if (!tree.includes("firstmate-synthetic-input") || !tree.includes("/tmp/probe.status")) process.exit(1);
+JS
+
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/calm"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
   wait_for_text "$restored_snapshot" "CALM_E2E_OUTPUT" \

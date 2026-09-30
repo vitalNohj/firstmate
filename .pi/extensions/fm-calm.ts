@@ -21,12 +21,15 @@
 import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -88,7 +91,21 @@ const CALM_EXPORT_HIDDEN_CUSTOM_MESSAGE =
   "          </div>`;\n" +
   "        }\n";
 
-function exportHtmlPath(input: string): string | undefined {
+type ExportStamp = {
+  mtimeMs: number;
+  size: number;
+};
+
+type ExportSnapshot = {
+  directoryScanned: boolean;
+  stamps: Map<string, ExportStamp | undefined>;
+};
+
+// Pi splits `/export` arguments the same way: a bare command has no path, quotes
+// keep one token, and the first bare token stops at whitespace. Tilde and file
+// URLs follow Pi's path normalization so the later stamp reads the file Pi wrote.
+function explicitExportFile(input: string): string | undefined {
+  if (input === "/export") return undefined;
   if (!input.startsWith("/export ")) return undefined;
   let args = input.slice("/export ".length).trimStart();
   if (!args) return undefined;
@@ -101,7 +118,81 @@ function exportHtmlPath(input: string): string | undefined {
     const space = args.search(/\s/);
     if (space >= 0) args = args.slice(0, space);
   }
+  if (!args) return undefined;
+  if (args === "~") return homedir();
+  if (args.startsWith("~/")) return resolve(homedir(), args.slice(2));
+  if (args.startsWith("file://")) {
+    try {
+      return fileURLToPath(args);
+    } catch {
+      return resolve(args);
+    }
+  }
   return resolve(args);
+}
+
+function exportStamp(filePath: string): ExportStamp | undefined {
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile()) return undefined;
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return undefined;
+  }
+}
+
+function snapshotHtmlExports(cwd: string, explicitPath: string | undefined): ExportSnapshot {
+  const stamps = new Map<string, ExportStamp | undefined>();
+  if (explicitPath) {
+    stamps.set(explicitPath, exportStamp(explicitPath));
+    return { directoryScanned: false, stamps };
+  }
+  try {
+    for (const name of readdirSync(cwd)) {
+      if (!name.endsWith(".html")) continue;
+      const filePath = resolve(cwd, name);
+      stamps.set(filePath, exportStamp(filePath));
+    }
+    return { directoryScanned: true, stamps };
+  } catch {
+    return { directoryScanned: false, stamps };
+  }
+}
+
+function exportFileChanged(prior: ExportStamp | undefined, stamp: ExportStamp | undefined): boolean {
+  if (!stamp) return false;
+  if (!prior) return true;
+  return prior.mtimeMs !== stamp.mtimeMs || prior.size !== stamp.size;
+}
+
+// The filtered file is the one Pi's export just wrote. An explicit path is that
+// argument alone. A bare `/export` is the single html file that appeared or
+// changed in the session directory. Zero or several changes select nothing, so
+// a reconstructed session filename can never rewrite an unrelated file.
+function htmlExportsWrittenSince(
+  before: ExportSnapshot,
+  cwd: string,
+  explicitPath: string | undefined,
+): string[] {
+  if (explicitPath) {
+    return exportFileChanged(before.stamps.get(explicitPath), exportStamp(explicitPath))
+      ? [explicitPath]
+      : [];
+  }
+  if (!before.directoryScanned) return [];
+  let names: string[];
+  try {
+    names = readdirSync(cwd);
+  } catch {
+    return [];
+  }
+  const changed: string[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".html")) continue;
+    const filePath = resolve(cwd, name);
+    if (exportFileChanged(before.stamps.get(filePath), exportStamp(filePath))) changed.push(filePath);
+  }
+  return changed.length === 1 ? changed : [];
 }
 
 function omitHiddenCustomMessagesFromExportConversation(filePath: string): void {
@@ -488,12 +579,20 @@ export default function (pi: ExtensionAPI) {
         return undefined;
       }
 
-      const calmExportFile = calmPresentationIsActive() ? exportHtmlPath(input) : undefined;
+      const filterExport =
+        calmPresentationIsActive() && (input === "/export" || input.startsWith("/export "));
+      const explicitExport = filterExport ? explicitExportFile(input) : undefined;
+      const exportCwd = ctx.cwd;
+      const exportSnapshot = filterExport ? snapshotHtmlExports(exportCwd, explicitExport) : undefined;
       exportRendering = true;
       setCalmStockExportRendering(true);
       publishPresentationState();
       setTimeout(() => {
-        if (calmExportFile) omitHiddenCustomMessagesFromExportConversation(calmExportFile);
+        if (exportSnapshot) {
+          for (const filePath of htmlExportsWrittenSince(exportSnapshot, exportCwd, explicitExport)) {
+            omitHiddenCustomMessagesFromExportConversation(filePath);
+          }
+        }
         exportRendering = false;
         setCalmStockExportRendering(false);
         publishPresentationState();
