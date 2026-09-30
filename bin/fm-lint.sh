@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # fm-lint.sh - the single owner of firstmate's lint definition.
 #
-# Runs its file set with ShellCheck's default severity, extended analysis,
-# ambient configuration disabled, and one exact ShellCheck version. CI selects
-# canonical partitions; no-mistakes invokes the context-selected default, so
-# both use this owner without duplicating lint configuration.
-# The explicit --fast mode is local-only and disables ShellCheck's extended
-# dataflow analysis while preserving ordinary shell lint checks and source
-# following. CI, main, and merge-base-less runs keep --norc --external-sources
-# with full dataflow over the whole canonical set. An ordinary local branch
-# (changed-file mode, including the no-mistakes lint step) drops
-# --external-sources, keeps dataflow, and excludes SC1091, SC2034, SC2153,
-# and SC2329, the codes that need library context. Those codes still run in
-# CI over the whole set. Explicit paths keep --external-sources with the
-# selected dataflow mode.
+# Runs its file set with ShellCheck's default severity, extended analysis
+# disabled, ambient configuration disabled, and one exact ShellCheck version.
+# CI selects canonical partitions; no-mistakes invokes the context-selected
+# default, so both use this owner without duplicating lint configuration.
+# Every mode passes --extended-analysis=false, including local runs, CI,
+# partitions, and explicit paths. Ordinary shell lint checks stay on.
+# Diagnostics that exist only under extended analysis, such as SC2329, are
+# not part of this definition.
+# The explicit --fast mode is local-only. It keeps source following and the
+# same disabled extended analysis. CI, main, and merge-base-less runs keep
+# --norc --external-sources over the whole canonical set. An ordinary local
+# branch (changed-file mode, including the no-mistakes lint step) drops
+# --external-sources and excludes SC1091, SC2034, and SC2153, the codes that
+# need library context, plus SC2329, which exists only under extended analysis.
+# Explicit paths keep --external-sources with extended analysis disabled.
 # Tests stop source analysis at imported production modules because CI analyzes
 # every production shell separately as a canonical, source-aware root.
 # The default (no explicit-path) path also runs bin/fm-lint-workflows.sh so a
@@ -25,8 +27,8 @@
 #   - In CI (GITHUB_ACTIONS=true or CI=true), on the main branch, or when no
 #     merge-base against origin/main (or local main) can be found, it lints
 #     the full canonical set: bin/*.sh bin/backends/*.sh tests/*.sh, with
-#     --external-sources and full dataflow. This is what CI always runs, so
-#     CI coverage never depends on a local diff.
+#     --external-sources and extended analysis disabled. This is what CI
+#     always runs, so CI coverage never depends on a local diff.
 #   - Otherwise (an ordinary local branch with a real merge-base) it lints
 #     only the canonical-set files changed since that merge-base, including
 #     uncommitted local edits, via plain local `git diff` (no network, no
@@ -44,19 +46,32 @@
 # Lint defaults to two bounded workers over two stable logical shards.
 # Diagnostics replay in stable shard/root order. FM_LINT_JOBS=1 changes
 # concurrency, not diagnostics or exit selection.
+# Each worker runs one ShellCheck process per root, including when source
+# following is on, so one process never analyzes a whole shard.
+# Source-following runs one of those processes at a time, so one lint
+# invocation cannot hold two sourced graphs at once.
+# Workers sample each child's RSS (and Linux high-water RSS) every 0.1 seconds
+# and kill it when a sample exceeds 5 GiB (5242880 KiB), failing the run as a
+# lint infrastructure error. This is a sampled backstop, not an OS-enforced
+# allocation cap; memory can exceed the threshold between samples.
+# FM_LINT_RSS_LIMIT_KIB may only lower that per-process KiB threshold: accept
+# decimal integers from 1 through 5242880 without leading zeros; reject other
+# values before starting ShellCheck. Unset keeps the fixed 5 GiB default.
 # --partition 1of2/2of2 splits the entire canonical inventory across
 # two CI runners, each with those same bounded workers. Partitions are complete,
 # disjoint, and byte-weight balanced; --list-files exposes their actual roots.
-# Partition mode is always full source-aware analysis, never changed-only or
-# --fast, and does not accept explicit paths. Each partition also runs workflow
-# lint and backend-purity checks, keeping either invocation independently useful.
+# Partition mode is always source-aware canonical analysis with extended
+# analysis disabled, never changed-only or --fast, and does not accept
+# explicit paths.
+# Each partition also runs workflow lint and backend-purity checks, keeping
+# either invocation independently useful.
 #
 # Optional quiet telemetry writes one bounded TSV snapshot of content and source
 # graph identity, wall/CPU/RSS, shard load, and competing ShellCheck processes.
 #
 # Usage:
 #   fm-lint.sh                         lint the context-selected file set (see above)
-#   fm-lint.sh --fast [path]...       local lint with extended analysis disabled
+#   fm-lint.sh --fast [path]...       local lint; source following stays on and extended analysis stays disabled
 #   fm-lint.sh <path>...               lint explicit roots with the same config
 #   fm-lint.sh --jobs <1|2> [path]...  override bounded worker count
 #   fm-lint.sh --partition <1of2|2of2> lint one full-rigor canonical CI partition
@@ -67,8 +82,9 @@
 set -u
 
 REQUIRED_SHELLCHECK=0.11.0
-# Cross-file codes that need --external-sources. Local changed-file mode
-# cannot judge them, so they stay CI-only.
+# 5 GiB resident-set backstop for one ShellCheck process, in KiB.
+DEFAULT_RSS_LIMIT_KIB=5242880
+# Local changed-file exclusions; the header owns their analysis-mode scope.
 LOCAL_NOX_EXCLUDE=SC1091,SC2034,SC2153,SC2329
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SELF="$SELF_DIR/fm-lint.sh"
@@ -76,12 +92,100 @@ ROOT="$(cd "$SELF_DIR/.." && pwd -P)"
 cd "$ROOT" || exit 1
 
 FM_LINT_WORKER_SHELLCHECK_PID=
+FM_LINT_MEMORY_EXCEEDED=0
+FM_LINT_PEAK_RSS_KIB=0
 # shellcheck disable=SC2329 # Registered by the private worker's signal traps.
 fm_lint_worker_stop() {
   [ -n "$FM_LINT_WORKER_SHELLCHECK_PID" ] || return 0
-  kill "$FM_LINT_WORKER_SHELLCHECK_PID" 2>/dev/null || true
+  kill -TERM "$FM_LINT_WORKER_SHELLCHECK_PID" 2>/dev/null || true
   wait "$FM_LINT_WORKER_SHELLCHECK_PID" 2>/dev/null || true
   FM_LINT_WORKER_SHELLCHECK_PID=
+}
+
+# Prints "rss_kib hwm_kib" for one live process. Missing samples are zero.
+fm_lint_process_rss() {  # <pid>
+  local pid=$1 rss=0 hwm=0 sample
+  if [ -r "/proc/$pid/status" ]; then
+    sample=$(awk '/^VmRSS:/ { rss=$2 } /^VmHWM:/ { hwm=$2 } END { printf "%d %d\n", rss + 0, hwm + 0 }' "/proc/$pid/status" 2>/dev/null) || sample="0 0"
+  else
+    sample=$(ps -o rss= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)
+    case "$sample" in
+      ''|*[!0-9]*) sample=0 ;;
+    esac
+    sample="$sample $sample"
+  fi
+  printf '%s\n' "$sample"
+}
+
+# Waits for the current ShellCheck child. Stops it and returns 2 when its
+# resident set crosses the per-process bound. Other statuses are ShellCheck's.
+fm_lint_await_shellcheck() {  # <path>
+  local path=$1 pid rss hwm limit wait_rc=0
+  pid=$FM_LINT_WORKER_SHELLCHECK_PID
+  limit=${FM_LINT_INTERNAL_RSS_LIMIT_KIB:-$DEFAULT_RSS_LIMIT_KIB}
+  FM_LINT_MEMORY_EXCEEDED=0
+  while kill -0 "$pid" 2>/dev/null; do
+    read -r rss hwm <<EOF
+$(fm_lint_process_rss "$pid")
+EOF
+    case "$rss" in ''|*[!0-9]*) rss=0 ;; esac
+    case "$hwm" in ''|*[!0-9]*) hwm=0 ;; esac
+    if [ "$hwm" -gt "$FM_LINT_PEAK_RSS_KIB" ]; then
+      FM_LINT_PEAK_RSS_KIB=$hwm
+    fi
+    if [ "$rss" -gt "$limit" ] || [ "$hwm" -gt "$limit" ]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      FM_LINT_WORKER_SHELLCHECK_PID=
+      FM_LINT_MEMORY_EXCEEDED=1
+      printf 'fm-lint.sh: lint infrastructure failure: ShellCheck exceeded the %s KiB memory bound while checking %s\n' \
+        "$limit" "$path" >&2
+      return 2
+    fi
+    sleep 0.1
+  done
+  wait "$pid" 2>/dev/null || wait_rc=$?
+  FM_LINT_WORKER_SHELLCHECK_PID=
+  return "$wait_rc"
+}
+
+
+# Exclusive lock across the lint invocation's workers. The owner pid lets a
+# later worker take the lock when the holder has already exited.
+fm_lint_acquire_shellcheck_lock() {  # <lock>
+  local lock=$1 owner candidate=$1.$$
+  printf '%s\n' "$$" > "$candidate" || return 2
+  while true; do
+    if ln "$candidate" "$lock" 2>/dev/null; then
+      rm -f "$candidate"
+      return 0
+    fi
+    owner=$(cat "$lock" 2>/dev/null || printf '')
+    case "$owner" in
+      ''|*[!0-9]*)
+        ;;
+      "$$")
+        rm -f "$candidate"
+        return 0
+        ;;
+      *)
+        if ! kill -0 "$owner" 2>/dev/null; then
+          if [ "$(cat "$lock" 2>/dev/null || printf '')" = "$owner" ]; then
+            rm -f "$lock"
+          fi
+        fi
+        ;;
+    esac
+    sleep 0.05
+  done
+}
+
+fm_lint_release_shellcheck_lock() {  # <lock>
+  local lock=${1:-}
+  [ -n "$lock" ] || return 0
+  if [ "$(cat "$lock" 2>/dev/null || printf '')" = "$$" ]; then
+    rm -f "$lock"
+  fi
 }
 
 fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
@@ -95,37 +199,38 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
   done < "$manifest"
   output="$output_dir/shard.$shard_index"
   if [ "${#roots[@]}" -gt 0 ]; then
-    trap 'fm_lint_worker_stop; exit 129' HUP
-    trap 'fm_lint_worker_stop; exit 130' INT
-    trap 'fm_lint_worker_stop; exit 143' TERM
-    shellcheck_args=(--norc)
+    trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 129' HUP
+    trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 130' INT
+    trap 'fm_lint_worker_stop; fm_lint_release_shellcheck_lock "${FM_LINT_SHELLCHECK_LOCK:-}"; exit 143' TERM
+    shellcheck_args=(--norc --extended-analysis=false)
     if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
       shellcheck_args+=(--external-sources)
     fi
     if [ -n "${FM_LINT_INTERNAL_EXCLUDE:-}" ]; then
       shellcheck_args+=(--exclude="$FM_LINT_INTERNAL_EXCLUDE")
     fi
-    if [ "${FM_LINT_INTERNAL_FAST:-0}" -eq 1 ]; then
-      shellcheck_args+=(--extended-analysis=false)
-    fi
     : > "$output.out"
-    if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
-      "$FM_LINT_SHELLCHECK" "${shellcheck_args[@]}" -- "${roots[@]}" >> "$output.out" 2>&1 &
+    FM_LINT_PEAK_RSS_KIB=0
+    FM_LINT_SHELLCHECK_LOCK=$output_dir/shellcheck.lock
+    for path in "${roots[@]}"; do
+      invocation_rc=0
+      if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
+        fm_lint_acquire_shellcheck_lock "$FM_LINT_SHELLCHECK_LOCK" || return 2
+      fi
+      "$FM_LINT_SHELLCHECK" "${shellcheck_args[@]}" -- "$path" >> "$output.out" 2>&1 &
       FM_LINT_WORKER_SHELLCHECK_PID=$!
-      wait "$FM_LINT_WORKER_SHELLCHECK_PID" || rc=$?
-      FM_LINT_WORKER_SHELLCHECK_PID=
-    else
-      for path in "${roots[@]}"; do
-        invocation_rc=0
-        "$FM_LINT_SHELLCHECK" "${shellcheck_args[@]}" -- "$path" >> "$output.out" 2>&1 &
-        FM_LINT_WORKER_SHELLCHECK_PID=$!
-        wait "$FM_LINT_WORKER_SHELLCHECK_PID" || invocation_rc=$?
-        FM_LINT_WORKER_SHELLCHECK_PID=
-        if [ "$rc" -eq 0 ] && [ "$invocation_rc" -ne 0 ]; then
-          rc=$invocation_rc
-        fi
-      done
-    fi
+      fm_lint_await_shellcheck "$path" || invocation_rc=$?
+      if [ "${FM_LINT_INTERNAL_FOLLOW_SOURCES:-1}" -eq 1 ]; then
+        fm_lint_release_shellcheck_lock "$FM_LINT_SHELLCHECK_LOCK"
+      fi
+      if [ "$FM_LINT_MEMORY_EXCEEDED" -eq 1 ]; then
+        rc=2
+        break
+      fi
+      if [ "$rc" -eq 0 ] && [ "$invocation_rc" -ne 0 ]; then
+        rc=$invocation_rc
+      fi
+    done
     trap - HUP INT TERM
   else
     : > "$output.out"
@@ -462,6 +567,12 @@ case "$JOBS" in
   *) printf 'fm-lint.sh: jobs must be 1 or 2, got %s.\n' "$JOBS" >&2; exit 2 ;;
 esac
 
+RSS_LIMIT_KIB=${FM_LINT_RSS_LIMIT_KIB-$DEFAULT_RSS_LIMIT_KIB}
+if [[ ! "$RSS_LIMIT_KIB" =~ ^[1-9][0-9]{0,6}$ ]] || [ "$RSS_LIMIT_KIB" -gt "$DEFAULT_RSS_LIMIT_KIB" ]; then
+  printf 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to %s KiB.\n' "$DEFAULT_RSS_LIMIT_KIB" >&2
+  exit 2
+fi
+
 case "$PARTITION" in
   '')
     if [ "$PARTITION_REQUESTED" -eq 1 ]; then
@@ -479,7 +590,7 @@ case "$PARTITION" in
 esac
 
 if [ "$FAST" -eq 1 ] && { [ "${GITHUB_ACTIONS:-}" = true ] || [ "${CI:-}" = true ]; }; then
-  printf 'fm-lint.sh: --fast is local-only; CI uses full ShellCheck analysis.\n' >&2
+  printf 'fm-lint.sh: --fast is local-only; CI already disables extended analysis.\n' >&2
   exit 2
 fi
 
@@ -620,7 +731,7 @@ if [ "$FAST" -eq 1 ]; then
 elif [ "$FOLLOW_SOURCES" -eq 0 ]; then
   printf 'fm-lint.sh: local changed-file mode; ShellCheck source following disabled\n' >&2
 else
-  printf 'fm-lint.sh: full ShellCheck extended analysis enabled\n' >&2
+  printf 'fm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\n' >&2
 fi
 
 if [ "$CHANGED_MODE" -eq 1 ] && [ "$ROOT_COUNT" -eq 0 ]; then
@@ -737,24 +848,24 @@ fm_lint_run_worker() {  # <worker-index>
     if [ "$(uname)" = Darwin ]; then
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -lp -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
+        env FM_LINT_INTERNAL=1 \
         FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
-        FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        FM_LINT_INTERNAL_RSS_LIMIT_KIB="$RSS_LIMIT_KIB" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     else
       exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
         /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" \
-        env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
+        env FM_LINT_INTERNAL=1 \
         FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
-        FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+        FM_LINT_INTERNAL_RSS_LIMIT_KIB="$RSS_LIMIT_KIB" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
         "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
     fi
   else
     [ -z "$TELEMETRY" ] || printf 'timing_unavailable=1\n' > "$timing"
     exec "$PERL_BIN" -e 'setpgrp(0, 0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' \
-      env FM_LINT_INTERNAL=1 FM_LINT_INTERNAL_FAST="$FAST" \
+      env FM_LINT_INTERNAL=1 \
       FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES" FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES" \
-      FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
+      FM_LINT_INTERNAL_RSS_LIMIT_KIB="$RSS_LIMIT_KIB" FM_LINT_SHELLCHECK="$SHELLCHECK_BIN" \
       "${BASH:-bash}" "$SELF" --internal-worker "$manifest" "$OUTPUT_DIR" "$worker_index"
   fi
 }
@@ -790,7 +901,8 @@ else
 fi
 
 # Replay both stable shards in deterministic order and select the first nonzero
-# shard status. ShellCheck processes every root in a shard after earlier findings.
+# shard status. Ordinary findings do not skip later roots; a memory-bound
+# failure stops the affected shard before its remaining roots.
 overall_rc=0
 worker=0
 while [ "$worker" -lt "$SHARD_COUNT" ]; do

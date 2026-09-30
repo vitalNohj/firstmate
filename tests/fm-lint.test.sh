@@ -179,7 +179,7 @@ test_list_files_reports_the_shell_inventory() {
 }
 
 test_canonical_partitions_preserve_full_lint() {
-  local tmp fakebin all part selected log flags mode rc option
+  local tmp fakebin all part selected log flags mode rc option invocation_count root_count
   tmp=$(fm_test_tmproot fm-lint-partitions)
   fakebin="$tmp/bin"
   mkdir -p "$fakebin"
@@ -203,7 +203,11 @@ test_canonical_partitions_preserve_full_lint() {
       || fail "partition $part executed a different root set than it listed"
     [ "$(LC_ALL=C sort -u "$flags")" = "$(printf 'exclude=none\nexternal-sources=yes')" ] \
       || fail "partition $part weakened source-aware analysis"
-    [ "$(LC_ALL=C sort -u "$mode")" = on ] || fail "partition $part disabled full analysis"
+    invocation_count=$(grep -c '^external-sources=' "$flags" || true)
+    root_count=$(printf '%s\n' "$selected" | grep -c .)
+    [ "$invocation_count" -eq "$root_count" ] \
+      || fail "partition $part ran $invocation_count ShellCheck processes for $root_count roots"
+    [ "$(LC_ALL=C sort -u "$mode")" = off ] || fail "partition $part left extended analysis enabled"
   done
   [ "$(LC_ALL=C sort "$tmp/union")" = "$all" ] || fail "lint partitions lose or duplicate canonical roots"
   for option in 0of2 3of2 1of3; do
@@ -368,9 +372,9 @@ SH
   out=$(PATH="$fakebin:$PATH" CI=true GITHUB_ACTIONS=true FM_LINT_FAST=1 FM_LINT_JOBS=1 \
     FM_TEST_MODE_LOG="$mode_log" "$LINT" "$fixture" 2>&1) \
     || fail "CI full lint mode failed"$'\n'"$out"
-  [ "$(cat "$mode_log")" = on ] \
-    || fail "CI default did not keep full ShellCheck analysis"
-  pass "fm-lint.sh keeps full ShellCheck analysis by default in CI"
+  [ "$(cat "$mode_log")" = off ] \
+    || fail "CI default left extended analysis enabled"
+  pass "fm-lint.sh disables extended analysis by default in CI"
 }
 
 test_ci_rejects_explicit_fast_mode() {
@@ -565,8 +569,8 @@ test_changed_mode_drops_external_sources_and_excludes_cross_file_codes() {
     || fail "changed-mode local lint failed"$'\n'"$out"
   [ "$(cat "$log")" = "$target" ] \
     || fail "changed-mode lint did not run ShellCheck on exactly the changed file"$'\n'"logged: $(cat "$log")"
-  [ "$(cat "$mode_log")" = on ] \
-    || fail "changed-mode local lint disabled dataflow analysis"
+  [ "$(cat "$mode_log")" = off ] \
+    || fail "changed-mode local lint left extended analysis enabled"
   fm_lint_assert_flag_log "$flag_log" no "SC1091,SC2034,SC2153,SC2329"
   assert_contains "$out" "source following disabled" \
     "changed-mode local lint did not disclose dropped source following"
@@ -623,8 +627,8 @@ SH
     FM_TEST_FLAG_LOG="$flag_log" FM_TEST_MODE_LOG="$mode_log" \
     "$LINT" "$fixture" 2>&1) \
     || fail "CI lint with explicit path failed"$'\n'"$out"
-  [ "$(cat "$mode_log")" = on ] \
-    || fail "CI lint disabled dataflow analysis"
+  [ "$(cat "$mode_log")" = off ] \
+    || fail "CI lint left extended analysis enabled"
   fm_lint_assert_flag_log "$flag_log" yes none
   pass "fm-lint.sh CI keeps source following without the local exclusion list"
 }
@@ -748,16 +752,18 @@ SH
   out=$("$LINT" "$fixture" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "explicit-path lint passed a cross-file-only fixture"$'\n'"$out"
   assert_contains "$out" "SC2034" "explicit-path lint did not keep SC2034"
-  assert_contains "$out" "SC2329" "explicit-path lint did not keep SC2329"
+  assert_not_contains "$out" "SC2329" \
+    "explicit-path lint still reported extended-analysis-only SC2329"
   rm -f "$fixture"
-  pass "fm-lint.sh changed mode excludes cross-file codes that explicit paths still report"
+  pass "fm-lint.sh changed mode excludes cross-file codes, and explicit paths keep ordinary ones with extended analysis off"
 }
 
-# One ShellCheck process per root. Passing the whole canonical set in a
-# single invocation still follows in-set sources and is not the no-x posture.
+# One ShellCheck process per root, with the same extended analysis the lint
+# owner disables. Passing the whole canonical set in a single invocation
+# still follows in-set sources and is not the no-x posture.
 fm_lint_nox_one_root() {
   local index=$1 path=$2 outdir=$3
-  shellcheck --norc --format gcc -- "$path" > "$outdir/$index" || true
+  shellcheck --norc --extended-analysis=false --format gcc -- "$path" > "$outdir/$index" || true
 }
 
 test_local_exclusion_list_covers_every_no_external_sources_code() {
@@ -1404,9 +1410,119 @@ SH
   pass "seeded dispatcher, adapter, production-owner, and test-local diagnostics preserve parity"
 }
 
+
+test_rss_bound_stops_a_shellcheck_process_and_fails() {
+  local tmp fakebin fixture out rc
+  tmp=$(fm_test_tmproot fm-lint-rss)
+  fakebin=$(fm_fakebin "$tmp")
+  fixture="$tmp/slow.sh"
+  cat > "$fixture" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' ok
+SH
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+  exit 0
+fi
+exec sleep 5
+SH
+  chmod +x "$fakebin/shellcheck"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_LINT_JOBS=1 FM_LINT_RSS_LIMIT_KIB=1 \
+    "$LINT" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "a ShellCheck process over the memory bound exited $rc"$'\n'"$out"
+  assert_contains "$out" "lint infrastructure failure" \
+    "a memory-bound failure did not report a lint infrastructure failure"
+  assert_contains "$out" "$fixture" \
+    "a memory-bound failure did not name the root being checked"
+
+  rc=0
+  out=$(FM_LINT_RSS_LIMIT_KIB=0 "$LINT" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "a zero memory bound was accepted (exit $rc)"$'\n'"$out"
+  assert_contains "$out" "FM_LINT_RSS_LIMIT_KIB" \
+    "a zero memory bound did not name the rejected setting"
+
+  rc=0
+  out=$(FM_LINT_RSS_LIMIT_KIB=lots "$LINT" "$fixture" 2>&1) || rc=$?
+  [ "$rc" -eq 2 ] || fail "a non-numeric memory bound was accepted (exit $rc)"$'\n'"$out"
+  pass "fm-lint.sh stops a ShellCheck process that exceeds its memory bound and fails the run"
+}
+
+
+test_rss_bound_cannot_be_raised() {
+  local tmp fakebin value out rc
+  tmp=$(fm_test_tmproot fm-lint-rss-ceiling)
+  fakebin=$(fm_fakebin "$tmp")
+  fm_lint_stub_shellcheck "$fakebin" "$tmp/calls"
+  for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001; do
+    rc=0
+    out=$(PATH="$fakebin:$PATH" FM_LINT_RSS_LIMIT_KIB="$value" \
+      "$LINT" "$tmp/fixture.sh" 2>&1) || rc=$?
+    [ "$rc" -eq 2 ] || fail "unsafe memory bound '$value' was accepted (exit $rc)"
+    assert_contains "$out" '1 to 5242880 KiB' "invalid bound did not report the fixed ceiling"
+    [ ! -s "$tmp/calls" ] || fail "invalid bound started ShellCheck"
+  done
+  PATH="$fakebin:$PATH" FM_LINT_RSS_LIMIT_KIB=5242880 \
+    "$LINT" "$tmp/fixture.sh" > "$tmp/out" 2>&1 \
+    || fail "fixed ceiling was rejected: $(cat "$tmp/out")"
+  [ -s "$tmp/calls" ] || fail "valid ceiling did not start ShellCheck"
+  pass "fm-lint.sh refuses memory bounds above the fixed ceiling or malformed values"
+}
+
+test_source_following_runs_one_shellcheck_at_a_time() {
+  local tmp fakebin first second dir out
+  tmp=$(fm_test_tmproot fm-lint-one-shellcheck)
+  fakebin=$(fm_fakebin "$tmp")
+  dir="$tmp/held-dir"
+  mkdir -p "$dir"
+  first="$tmp/first.sh"
+  second="$tmp/second.sh"
+  printf '#!/usr/bin/env bash\nprintf ok\n' > "$first"
+  printf '#!/usr/bin/env bash\nprintf ok\n' > "$second"
+  cat > "$fakebin/shellcheck" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\nversion: 0.11.0\n'
+  exit 0
+fi
+dir=${FM_TEST_CONCURRENCY_DIR:?}
+if ! mkdir "$dir/held" 2>/dev/null; then
+  printf 'overlap\n' >> "$dir/overlap"
+else
+  sleep 0.3
+  rmdir "$dir/held"
+fi
+exit 0
+SH
+  chmod +x "$fakebin/shellcheck"
+  cat > "$tmp/delay-owner.sh" <<'SH'
+printf() {
+  if [ "$#" -eq 2 ] && [ "$1" = '%s\n' ] && [ "$2" = "$$" ]; then
+    builtin printf 'delayed\n' >> "$FM_TEST_CONCURRENCY_DIR/delays"
+    sleep 0.3
+  fi
+  builtin printf "$@"
+}
+SH
+  out=$(PATH="$fakebin:$PATH" FM_LINT_JOBS=2 FM_TEST_CONCURRENCY_DIR="$dir" \
+    BASH_ENV="$tmp/delay-owner.sh" "$LINT" "$first" "$second" 2>&1) \
+    || fail "serialized source-following lint failed"$'\n'"$out"
+  [ "$(wc -l < "$dir/delays" | tr -d '[:space:]')" -eq 2 ] \
+    || fail "lock-owner publication was not delayed for both workers"
+  [ ! -s "$dir/overlap" ] \
+    || fail "source-following lint ran two ShellCheck processes at once"
+  pass "fm-lint.sh runs one source-following ShellCheck process at a time"
+}
+
 test_help_reports_the_complete_interface
 test_list_files_reports_the_shell_inventory
 test_canonical_partitions_preserve_full_lint
+test_rss_bound_stops_a_shellcheck_process_and_fails
+test_rss_bound_cannot_be_raised
+test_source_following_runs_one_shellcheck_at_a_time
 test_fast_mode_disables_extended_analysis
 test_ci_defaults_to_full_analysis
 test_ci_rejects_explicit_fast_mode
