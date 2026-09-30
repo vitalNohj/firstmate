@@ -1,5 +1,7 @@
 # Local ShellCheck option A measurement
 
+This historical comparison does not measure the current lint modes; [`bin/fm-lint.sh`](../../bin/fm-lint.sh)'s header owns current analysis settings and memory safeguards, with regressions in [`tests/fm-lint.test.sh`](../../tests/fm-lint.test.sh).
+
 The 2026-09-05 lint-cost audit measured the seven roots from the missed-reply incident at commit `f09de8a3d3a550b13b4d535346fbc7b9ac0d6c19`:
 
 ```text

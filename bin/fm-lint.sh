@@ -84,8 +84,7 @@ set -u
 REQUIRED_SHELLCHECK=0.11.0
 # 5 GiB resident-set backstop for one ShellCheck process, in KiB.
 DEFAULT_RSS_LIMIT_KIB=5242880
-# Cross-file codes that need --external-sources. Local changed-file mode
-# cannot judge them, so they stay CI-only.
+# Local changed-file exclusions; the header owns their analysis-mode scope.
 LOCAL_NOX_EXCLUDE=SC1091,SC2034,SC2153,SC2329
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SELF="$SELF_DIR/fm-lint.sh"
