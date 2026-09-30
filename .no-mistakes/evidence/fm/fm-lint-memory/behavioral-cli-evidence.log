@@ -1,0 +1,720 @@
+Behavioral CLI evidence extracted verbatim from the successful bash -x test run.
+Memory and concurrency checks use controlled ShellCheck substitutes; ordinary diagnostics use real pinned ShellCheck.
+Canonical selection checks use substitutes, not full-repository ShellCheck analysis.
+
++ test_rss_bound_stops_a_shellcheck_process_and_fails
++ local tmp fakebin fixture out rc
+++ fm_test_tmproot fm-lint-rss
+++ local prefix=fm-lint-rss root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-rss.XXXXXX
+++ root=/tmp/fm-lint-rss.in7rnt
++++ cd -P -- /tmp/fm-lint-rss.in7rnt
++++ pwd -P
+++ root=/tmp/fm-lint-rss.in7rnt
+++ printf '%s\n%s\n' 332027 'linux-starttime=3735285 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f2e666d2d6c696e742d74617267657465642d7465737400'
+++ printf '%s\n' /tmp/fm-lint-rss.in7rnt
+++ printf '%s\n' /tmp/fm-lint-rss.in7rnt
++ tmp=/tmp/fm-lint-rss.in7rnt
+++ fm_fakebin /tmp/fm-lint-rss.in7rnt
+++ local dir=/tmp/fm-lint-rss.in7rnt fakebin=/tmp/fm-lint-rss.in7rnt/fakebin
+++ mkdir -p /tmp/fm-lint-rss.in7rnt/fakebin
+++ printf '%s\n' /tmp/fm-lint-rss.in7rnt/fakebin
++ fakebin=/tmp/fm-lint-rss.in7rnt/fakebin
++ fixture=/tmp/fm-lint-rss.in7rnt/slow.sh
++ cat
++ cat
++ chmod +x /tmp/fm-lint-rss.in7rnt/fakebin/shellcheck
++ rc=0
+++ PATH=/tmp/fm-lint-rss.in7rnt/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_JOBS=1
+++ FM_LINT_RSS_LIMIT_KIB=1
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss.in7rnt/slow.sh
++ out=$'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\nfm-lint.sh: lint infrastructure failure: ShellCheck exceeded the 1 KiB memory bound while checking /tmp/fm-lint-rss.in7rnt/slow.sh'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\nfm-lint.sh: lint infrastructure failure: ShellCheck exceeded the 1 KiB memory bound while checking /tmp/fm-lint-rss.in7rnt/slow.sh' 'lint infrastructure failure' 'a memory-bound failure did not report a lint infrastructure failure'
++ case "$1" in
++ :
++ assert_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\nfm-lint.sh: lint infrastructure failure: ShellCheck exceeded the 1 KiB memory bound while checking /tmp/fm-lint-rss.in7rnt/slow.sh' /tmp/fm-lint-rss.in7rnt/slow.sh 'a memory-bound failure did not name the root being checked'
++ case "$1" in
++ :
++ rc=0
+++ FM_LINT_RSS_LIMIT_KIB=0
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss.in7rnt/slow.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' FM_LINT_RSS_LIMIT_KIB 'a zero memory bound did not name the rejected setting'
++ case "$1" in
++ :
++ rc=0
+++ FM_LINT_RSS_LIMIT_KIB=lots
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss.in7rnt/slow.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ pass 'fm-lint.sh stops a ShellCheck process that exceeds its memory bound and fails the run'
++ printf 'ok - %s\n' 'fm-lint.sh stops a ShellCheck process that exceeds its memory bound and fails the run'
+ok - fm-lint.sh stops a ShellCheck process that exceeds its memory bound and fails the run
++ test_rss_bound_cannot_be_raised
++ local tmp fakebin value out rc
+++ fm_test_tmproot fm-lint-rss-ceiling
+++ local prefix=fm-lint-rss-ceiling root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-rss-ceiling.XXXXXX
+++ root=/tmp/fm-lint-rss-ceiling.nZJMGn
++++ cd -P -- /tmp/fm-lint-rss-ceiling.nZJMGn
++++ pwd -P
+++ root=/tmp/fm-lint-rss-ceiling.nZJMGn
+++ printf '%s\n%s\n' 332027 'linux-starttime=3735285 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f2e666d2d6c696e742d74617267657465642d7465737400'
+++ printf '%s\n' /tmp/fm-lint-rss-ceiling.nZJMGn
+++ printf '%s\n' /tmp/fm-lint-rss-ceiling.nZJMGn
++ tmp=/tmp/fm-lint-rss-ceiling.nZJMGn
+++ fm_fakebin /tmp/fm-lint-rss-ceiling.nZJMGn
+++ local dir=/tmp/fm-lint-rss-ceiling.nZJMGn fakebin=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin
+++ mkdir -p /tmp/fm-lint-rss-ceiling.nZJMGn/fakebin
+++ printf '%s\n' /tmp/fm-lint-rss-ceiling.nZJMGn/fakebin
++ fakebin=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin
++ fm_lint_stub_shellcheck /tmp/fm-lint-rss-ceiling.nZJMGn/fakebin /tmp/fm-lint-rss-ceiling.nZJMGn/calls
++ local fakebin=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin log=/tmp/fm-lint-rss-ceiling.nZJMGn/calls
++ :
++ cat
++ chmod +x /tmp/fm-lint-rss-ceiling.nZJMGn/fakebin/shellcheck
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=5242881
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.nZJMGn/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.nZJMGn/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=11534336
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.nZJMGn/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.nZJMGn/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=18446744073709551617
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.nZJMGn/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.nZJMGn/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.nZJMGn/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.nZJMGn/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=-1
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.nZJMGn/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.nZJMGn/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=1.5
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.nZJMGn/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.nZJMGn/calls ']'
++ for value in 5242881 11534336 18446744073709551617 '' -1 1.5 0001
++ rc=0
+++ PATH=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_RSS_LIMIT_KIB=0001
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.nZJMGn/fixture.sh
++ out='fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.'
++ rc=2
++ '[' 2 -eq 2 ']'
++ assert_contains 'fm-lint.sh: FM_LINT_RSS_LIMIT_KIB must be an integer from 1 to 5242880 KiB.' '1 to 5242880 KiB' 'invalid bound did not report the fixed ceiling'
++ case "$1" in
++ :
++ '[' '!' -s /tmp/fm-lint-rss-ceiling.nZJMGn/calls ']'
++ PATH=/tmp/fm-lint-rss-ceiling.nZJMGn/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
++ FM_LINT_RSS_LIMIT_KIB=5242880
++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-rss-ceiling.nZJMGn/fixture.sh
++ '[' -s /tmp/fm-lint-rss-ceiling.nZJMGn/calls ']'
++ pass 'fm-lint.sh refuses memory bounds above the fixed ceiling or malformed values'
++ printf 'ok - %s\n' 'fm-lint.sh refuses memory bounds above the fixed ceiling or malformed values'
+ok - fm-lint.sh refuses memory bounds above the fixed ceiling or malformed values
++ test_source_following_runs_one_shellcheck_at_a_time
++ local tmp fakebin first second dir out
+++ fm_test_tmproot fm-lint-one-shellcheck
+++ local prefix=fm-lint-one-shellcheck root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-one-shellcheck.XXXXXX
+++ root=/tmp/fm-lint-one-shellcheck.USJyT4
++++ cd -P -- /tmp/fm-lint-one-shellcheck.USJyT4
++++ pwd -P
+++ root=/tmp/fm-lint-one-shellcheck.USJyT4
+++ printf '%s\n%s\n' 332027 'linux-starttime=3735285 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f2e666d2d6c696e742d74617267657465642d7465737400'
+++ printf '%s\n' /tmp/fm-lint-one-shellcheck.USJyT4
+++ printf '%s\n' /tmp/fm-lint-one-shellcheck.USJyT4
++ tmp=/tmp/fm-lint-one-shellcheck.USJyT4
+++ fm_fakebin /tmp/fm-lint-one-shellcheck.USJyT4
+++ local dir=/tmp/fm-lint-one-shellcheck.USJyT4 fakebin=/tmp/fm-lint-one-shellcheck.USJyT4/fakebin
+++ mkdir -p /tmp/fm-lint-one-shellcheck.USJyT4/fakebin
+++ printf '%s\n' /tmp/fm-lint-one-shellcheck.USJyT4/fakebin
++ fakebin=/tmp/fm-lint-one-shellcheck.USJyT4/fakebin
++ dir=/tmp/fm-lint-one-shellcheck.USJyT4/held-dir
++ mkdir -p /tmp/fm-lint-one-shellcheck.USJyT4/held-dir
++ first=/tmp/fm-lint-one-shellcheck.USJyT4/first.sh
++ second=/tmp/fm-lint-one-shellcheck.USJyT4/second.sh
++ printf '#!/usr/bin/env bash\nprintf ok\n'
++ printf '#!/usr/bin/env bash\nprintf ok\n'
++ cat
++ chmod +x /tmp/fm-lint-one-shellcheck.USJyT4/fakebin/shellcheck
++ cat
+++ PATH=/tmp/fm-lint-one-shellcheck.USJyT4/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ FM_LINT_JOBS=2
+++ FM_TEST_CONCURRENCY_DIR=/tmp/fm-lint-one-shellcheck.USJyT4/held-dir
+++ BASH_ENV=/tmp/fm-lint-one-shellcheck.USJyT4/delay-owner.sh
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-one-shellcheck.USJyT4/first.sh /tmp/fm-lint-one-shellcheck.USJyT4/second.sh
++ out=$'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled'
+++ wc -l
+++ tr -d '[:space:]'
++ '[' 2 -eq 2 ']'
++ '[' '!' -s /tmp/fm-lint-one-shellcheck.USJyT4/held-dir/overlap ']'
++ pass 'fm-lint.sh runs one source-following ShellCheck process at a time'
++ printf 'ok - %s\n' 'fm-lint.sh runs one source-following ShellCheck process at a time'
+ok - fm-lint.sh runs one source-following ShellCheck process at a time
++ test_ci_defaults_to_full_analysis
++ local tmp fakebin log mode_log fixture out
+++ fm_test_tmproot fm-lint-ci-analysis
+++ local prefix=fm-lint-ci-analysis root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-ci-analysis.XXXXXX
+++ root=/tmp/fm-lint-ci-analysis.yxQJnH
++++ cd -P -- /tmp/fm-lint-ci-analysis.yxQJnH
++++ pwd -P
+++ root=/tmp/fm-lint-ci-analysis.yxQJnH
+++ printf '%s\n%s\n' 332027 'linux-starttime=3735285 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f2e666d2d6c696e742d74617267657465642d7465737400'
+++ printf '%s\n' /tmp/fm-lint-ci-analysis.yxQJnH
+++ printf '%s\n' /tmp/fm-lint-ci-analysis.yxQJnH
++ tmp=/tmp/fm-lint-ci-analysis.yxQJnH
+++ fm_fakebin /tmp/fm-lint-ci-analysis.yxQJnH
+++ local dir=/tmp/fm-lint-ci-analysis.yxQJnH fakebin=/tmp/fm-lint-ci-analysis.yxQJnH/fakebin
+++ mkdir -p /tmp/fm-lint-ci-analysis.yxQJnH/fakebin
+++ printf '%s\n' /tmp/fm-lint-ci-analysis.yxQJnH/fakebin
++ fakebin=/tmp/fm-lint-ci-analysis.yxQJnH/fakebin
++ fixture=/tmp/fm-lint-ci-analysis.yxQJnH/fixture.sh
++ log=/tmp/fm-lint-ci-analysis.yxQJnH/shellcheck.log
++ mode_log=/tmp/fm-lint-ci-analysis.yxQJnH/mode.log
++ cat
++ chmod +x /tmp/fm-lint-ci-analysis.yxQJnH/fixture.sh
++ fm_lint_stub_shellcheck /tmp/fm-lint-ci-analysis.yxQJnH/fakebin /tmp/fm-lint-ci-analysis.yxQJnH/shellcheck.log
++ local fakebin=/tmp/fm-lint-ci-analysis.yxQJnH/fakebin log=/tmp/fm-lint-ci-analysis.yxQJnH/shellcheck.log
++ :
++ cat
++ chmod +x /tmp/fm-lint-ci-analysis.yxQJnH/fakebin/shellcheck
+++ PATH=/tmp/fm-lint-ci-analysis.yxQJnH/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ CI=true
+++ GITHUB_ACTIONS=true
+++ FM_LINT_FAST=1
+++ FM_LINT_JOBS=1
+++ FM_TEST_MODE_LOG=/tmp/fm-lint-ci-analysis.yxQJnH/mode.log
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-ci-analysis.yxQJnH/fixture.sh
++ out=$'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled'
+++ cat /tmp/fm-lint-ci-analysis.yxQJnH/mode.log
++ '[' off = off ']'
++ pass 'fm-lint.sh disables extended analysis by default in CI'
++ printf 'ok - %s\n' 'fm-lint.sh disables extended analysis by default in CI'
+ok - fm-lint.sh disables extended analysis by default in CI
++ test_catches_a_real_lint_defect
++ pinned_ready
++ command -v shellcheck
+++ shellcheck --version
+++ awk '/^version:/ {print $2; exit}'
++ '[' 0.11.0 = 0.11.0 ']'
++ local tmp bad out rc
+++ fm_test_tmproot fm-lint-bad
+++ local prefix=fm-lint-bad root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-bad.XXXXXX
+++ root=/tmp/fm-lint-bad.PIQJYB
++++ cd -P -- /tmp/fm-lint-bad.PIQJYB
++++ pwd -P
+++ root=/tmp/fm-lint-bad.PIQJYB
+++ printf '%s\n%s\n' 332027 'linux-starttime=3735285 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f2e666d2d6c696e742d74617267657465642d7465737400'
+++ printf '%s\n' /tmp/fm-lint-bad.PIQJYB
+++ printf '%s\n' /tmp/fm-lint-bad.PIQJYB
++ tmp=/tmp/fm-lint-bad.PIQJYB
++ mkdir -p /tmp/fm-lint-bad.PIQJYB
++ bad=/tmp/fm-lint-bad.PIQJYB/bad.sh
++ cat
++ rc=0
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /tmp/fm-lint-bad.PIQJYB/bad.sh
++ out=$'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\n\nIn /tmp/fm-lint-bad.PIQJYB/bad.sh line 3:\n  local a= b=\n          ^-- SC1007 (warning): Remove space after = if trying to assign a value (for empty string, use var=\'\' ... ).\n\nFor more information:\n  https://www.shellcheck.net/wiki/SC1007 -- Remove space after = if trying to...'
++ rc=1
++ '[' 1 -ne 0 ']'
++ assert_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\n\nIn /tmp/fm-lint-bad.PIQJYB/bad.sh line 3:\n  local a= b=\n          ^-- SC1007 (warning): Remove space after = if trying to assign a value (for empty string, use var=\'\' ... ).\n\nFor more information:\n  https://www.shellcheck.net/wiki/SC1007 -- Remove space after = if trying to...' SC1007 'fm-lint.sh did not report the expected ShellCheck finding'
++ case "$1" in
++ :
++ pass 'fm-lint.sh catches a real lint defect the old no-op gate passed'
++ printf 'ok - %s\n' 'fm-lint.sh catches a real lint defect the old no-op gate passed'
+ok - fm-lint.sh catches a real lint defect the old no-op gate passed
++ test_changed_mode_hides_cross_file_codes_that_ci_still_sees
++ pinned_ready
++ command -v shellcheck
+++ shellcheck --version
+++ awk '/^version:/ {print $2; exit}'
++ '[' 0.11.0 = 0.11.0 ']'
++ local tmp fakebin diff_file fixture out rc
+++ fm_test_tmproot fm-lint-local-exclude-behavior
+++ local prefix=fm-lint-local-exclude-behavior root tmp_base
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-lint-local-exclude-behavior.XXXXXX
+++ root=/tmp/fm-lint-local-exclude-behavior.mGrysO
++++ cd -P -- /tmp/fm-lint-local-exclude-behavior.mGrysO
++++ pwd -P
+++ root=/tmp/fm-lint-local-exclude-behavior.mGrysO
+++ printf '%s\n%s\n' 332027 'linux-starttime=3735285 cmdline-hex=2f7573722f62696e2f62617368002d780074657374732f2e666d2d6c696e742d74617267657465642d7465737400'
+++ printf '%s\n' /tmp/fm-lint-local-exclude-behavior.mGrysO
+++ printf '%s\n' /tmp/fm-lint-local-exclude-behavior.mGrysO
++ tmp=/tmp/fm-lint-local-exclude-behavior.mGrysO
++ fixture=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh
++ printf '%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh
++ cat
+++ fm_fakebin /tmp/fm-lint-local-exclude-behavior.mGrysO
+++ local dir=/tmp/fm-lint-local-exclude-behavior.mGrysO fakebin=/tmp/fm-lint-local-exclude-behavior.mGrysO/fakebin
+++ mkdir -p /tmp/fm-lint-local-exclude-behavior.mGrysO/fakebin
+++ printf '%s\n' /tmp/fm-lint-local-exclude-behavior.mGrysO/fakebin
++ fakebin=/tmp/fm-lint-local-exclude-behavior.mGrysO/fakebin
++ fm_lint_stub_git /tmp/fm-lint-local-exclude-behavior.mGrysO/fakebin
++ local fakebin=/tmp/fm-lint-local-exclude-behavior.mGrysO/fakebin
++ cat
++ chmod +x /tmp/fm-lint-local-exclude-behavior.mGrysO/fakebin/git
++ diff_file=/tmp/fm-lint-local-exclude-behavior.mGrysO/diff.nul
++ fm_lint_write_diff_file /tmp/fm-lint-local-exclude-behavior.mGrysO/diff.nul tests/fm-lint-local-exclude-fixture.test.sh
++ local file=/tmp/fm-lint-local-exclude-behavior.mGrysO/diff.nul
++ shift
++ printf '%s\0' tests/fm-lint-local-exclude-fixture.test.sh
++ rc=0
+++ PATH=/tmp/fm-lint-local-exclude-behavior.mGrysO/fakebin:/home/nohj/.pi/agent/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/.local/bin:/home/nohj/go/bin:/home/nohj/.cargo/bin:/home/nohj/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/snap/bin
+++ GITHUB_ACTIONS=
+++ CI=
+++ FM_LINT_JOBS=1
+++ FM_TEST_GIT_BRANCH=feature
+++ FM_TEST_GIT_DIFF_FILE=/tmp/fm-lint-local-exclude-behavior.mGrysO/diff.nul
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh
++ out=$'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: local changed-file mode; ShellCheck source following disabled\nfm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)\nfm-lint-workflows.sh: 3 workflow files valid'
++ '[' 0 -eq 0 ']'
++ assert_not_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: local changed-file mode; ShellCheck source following disabled\nfm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)\nfm-lint-workflows.sh: 3 workflow files valid' SC2034 'changed-mode local lint still reported SC2034'
++ case "$1" in
++ :
++ assert_not_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: local changed-file mode; ShellCheck source following disabled\nfm-lint-workflows.sh: actionlint 1.7.12 (pinned 1.7.12)\nfm-lint-workflows.sh: 3 workflow files valid' SC2329 'changed-mode local lint still reported SC2329'
++ case "$1" in
++ :
++ rc=0
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/bin/fm-lint.sh /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh
++ out=$'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\n\nIn /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh line 3:\ncross_file_only=1\n^-------------^ SC2034 (warning): cross_file_only appears unused. Verify use (or export if used externally).\n\nFor more information:\n  https://www.shellcheck.net/wiki/SC2034 -- cross_file_only appears unused. V...'
++ rc=1
++ '[' 1 -ne 0 ']'
++ assert_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\n\nIn /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh line 3:\ncross_file_only=1\n^-------------^ SC2034 (warning): cross_file_only appears unused. Verify use (or export if used externally).\n\nFor more information:\n  https://www.shellcheck.net/wiki/SC2034 -- cross_file_only appears unused. V...' SC2034 'explicit-path lint did not keep SC2034'
++ case "$1" in
++ :
++ assert_not_contains $'fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)\nfm-lint.sh: full canonical lint; ShellCheck extended analysis disabled\n\nIn /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh line 3:\ncross_file_only=1\n^-------------^ SC2034 (warning): cross_file_only appears unused. Verify use (or export if used externally).\n\nFor more information:\n  https://www.shellcheck.net/wiki/SC2034 -- cross_file_only appears unused. V...' SC2329 'explicit-path lint still reported extended-analysis-only SC2329'
++ case "$1" in
++ :
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh
++ pass 'fm-lint.sh changed mode excludes cross-file codes, and explicit paths keep ordinary ones with extended analysis off'
++ printf 'ok - %s\n' 'fm-lint.sh changed mode excludes cross-file codes, and explicit paths keep ordinary ones with extended analysis off'
+ok - fm-lint.sh changed mode excludes cross-file codes, and explicit paths keep ordinary ones with extended analysis off
++ fm_test_cleanup
++ local d
++ fm_test_reap_watchers
++ local state lock_home $'seen=\n'
++ '[' -f /tmp/.fm-test-watcher.332027.CEYOnq ']'
++ IFS=
++ read -r state
++ rm -f /tmp/.fm-test-watcher.332027.CEYOnq
++ fm_test_reap_procevent_homes
++ local home claim_root $'seen=\n'
++ '[' -f /tmp/.fm-test-procevent.332027.jnHmuJ ']'
++ IFS=$'\t'
++ read -r home claim_root
++ rm -f /tmp/.fm-test-procevent.332027.jnHmuJ
++ for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/.fm-lint-parity.Zft3ia ']'
++ fm_test_remove_tree /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/.fm-lint-parity.Zft3ia
++ local dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/.fm-lint-parity.Zft3ia
++ '[' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/.fm-lint-parity.Zft3ia ']'
++ '[' '!' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/.fm-lint-parity.Zft3ia ']'
++ find /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/.fm-lint-parity.Zft3ia -type d -exec chmod u+rwx '{}' +
++ rm -rf /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/.fm-lint-parity.Zft3ia
++ '[' -f /tmp/.fm-test-cleanup.332027.ZUVvQp ']'
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-partitions.CEUNAG ']'
++ fm_test_remove_tree /tmp/fm-lint-partitions.CEUNAG
++ local dir=/tmp/fm-lint-partitions.CEUNAG
++ '[' -d /tmp/fm-lint-partitions.CEUNAG ']'
++ '[' '!' -L /tmp/fm-lint-partitions.CEUNAG ']'
++ find /tmp/fm-lint-partitions.CEUNAG -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-partitions.CEUNAG
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-rss.in7rnt ']'
++ fm_test_remove_tree /tmp/fm-lint-rss.in7rnt
++ local dir=/tmp/fm-lint-rss.in7rnt
++ '[' -d /tmp/fm-lint-rss.in7rnt ']'
++ '[' '!' -L /tmp/fm-lint-rss.in7rnt ']'
++ find /tmp/fm-lint-rss.in7rnt -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-rss.in7rnt
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-rss-ceiling.nZJMGn ']'
++ fm_test_remove_tree /tmp/fm-lint-rss-ceiling.nZJMGn
++ local dir=/tmp/fm-lint-rss-ceiling.nZJMGn
++ '[' -d /tmp/fm-lint-rss-ceiling.nZJMGn ']'
++ '[' '!' -L /tmp/fm-lint-rss-ceiling.nZJMGn ']'
++ find /tmp/fm-lint-rss-ceiling.nZJMGn -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-rss-ceiling.nZJMGn
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-one-shellcheck.USJyT4 ']'
++ fm_test_remove_tree /tmp/fm-lint-one-shellcheck.USJyT4
++ local dir=/tmp/fm-lint-one-shellcheck.USJyT4
++ '[' -d /tmp/fm-lint-one-shellcheck.USJyT4 ']'
++ '[' '!' -L /tmp/fm-lint-one-shellcheck.USJyT4 ']'
++ find /tmp/fm-lint-one-shellcheck.USJyT4 -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-one-shellcheck.USJyT4
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-fast-mode.sCQdoJ ']'
++ fm_test_remove_tree /tmp/fm-lint-fast-mode.sCQdoJ
++ local dir=/tmp/fm-lint-fast-mode.sCQdoJ
++ '[' -d /tmp/fm-lint-fast-mode.sCQdoJ ']'
++ '[' '!' -L /tmp/fm-lint-fast-mode.sCQdoJ ']'
++ find /tmp/fm-lint-fast-mode.sCQdoJ -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-fast-mode.sCQdoJ
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-ci-analysis.yxQJnH ']'
++ fm_test_remove_tree /tmp/fm-lint-ci-analysis.yxQJnH
++ local dir=/tmp/fm-lint-ci-analysis.yxQJnH
++ '[' -d /tmp/fm-lint-ci-analysis.yxQJnH ']'
++ '[' '!' -L /tmp/fm-lint-ci-analysis.yxQJnH ']'
++ find /tmp/fm-lint-ci-analysis.yxQJnH -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-ci-analysis.yxQJnH
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-ci-reject-fast.ZUpGzu ']'
++ fm_test_remove_tree /tmp/fm-lint-ci-reject-fast.ZUpGzu
++ local dir=/tmp/fm-lint-ci-reject-fast.ZUpGzu
++ '[' -d /tmp/fm-lint-ci-reject-fast.ZUpGzu ']'
++ '[' '!' -L /tmp/fm-lint-ci-reject-fast.ZUpGzu ']'
++ find /tmp/fm-lint-ci-reject-fast.ZUpGzu -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-ci-reject-fast.ZUpGzu
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-fast-bad.xPK89k ']'
++ fm_test_remove_tree /tmp/fm-lint-fast-bad.xPK89k
++ local dir=/tmp/fm-lint-fast-bad.xPK89k
++ '[' -d /tmp/fm-lint-fast-bad.xPK89k ']'
++ '[' '!' -L /tmp/fm-lint-fast-bad.xPK89k ']'
++ find /tmp/fm-lint-fast-bad.xPK89k -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-fast-bad.xPK89k
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-shellcheck-download.3fqIO0 ']'
++ fm_test_remove_tree /tmp/fm-shellcheck-download.3fqIO0
++ local dir=/tmp/fm-shellcheck-download.3fqIO0
++ '[' -d /tmp/fm-shellcheck-download.3fqIO0 ']'
++ '[' '!' -L /tmp/fm-shellcheck-download.3fqIO0 ']'
++ find /tmp/fm-shellcheck-download.3fqIO0 -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-shellcheck-download.3fqIO0
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-shellcheck-platform.2Onhkh ']'
++ fm_test_remove_tree /tmp/fm-shellcheck-platform.2Onhkh
++ local dir=/tmp/fm-shellcheck-platform.2Onhkh
++ '[' -d /tmp/fm-shellcheck-platform.2Onhkh ']'
++ '[' '!' -L /tmp/fm-shellcheck-platform.2Onhkh ']'
++ find /tmp/fm-shellcheck-platform.2Onhkh -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-shellcheck-platform.2Onhkh
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-shellcheck-badsum.pmXvRa ']'
++ fm_test_remove_tree /tmp/fm-shellcheck-badsum.pmXvRa
++ local dir=/tmp/fm-shellcheck-badsum.pmXvRa
++ '[' -d /tmp/fm-shellcheck-badsum.pmXvRa ']'
++ '[' '!' -L /tmp/fm-shellcheck-badsum.pmXvRa ']'
++ find /tmp/fm-shellcheck-badsum.pmXvRa -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-shellcheck-badsum.pmXvRa
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-shellcheck-shasum.4TJN3E ']'
++ fm_test_remove_tree /tmp/fm-shellcheck-shasum.4TJN3E
++ local dir=/tmp/fm-shellcheck-shasum.4TJN3E
++ '[' -d /tmp/fm-shellcheck-shasum.4TJN3E ']'
++ '[' '!' -L /tmp/fm-shellcheck-shasum.4TJN3E ']'
++ find /tmp/fm-shellcheck-shasum.4TJN3E -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-shellcheck-shasum.4TJN3E
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-shellcheck-sha256sum-pref.CYyuQw ']'
++ fm_test_remove_tree /tmp/fm-shellcheck-sha256sum-pref.CYyuQw
++ local dir=/tmp/fm-shellcheck-sha256sum-pref.CYyuQw
++ '[' -d /tmp/fm-shellcheck-sha256sum-pref.CYyuQw ']'
++ '[' '!' -L /tmp/fm-shellcheck-sha256sum-pref.CYyuQw ']'
++ find /tmp/fm-shellcheck-sha256sum-pref.CYyuQw -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-shellcheck-sha256sum-pref.CYyuQw
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-shellcheck-unsupported.iUqQ35 ']'
++ fm_test_remove_tree /tmp/fm-shellcheck-unsupported.iUqQ35
++ local dir=/tmp/fm-shellcheck-unsupported.iUqQ35
++ '[' -d /tmp/fm-shellcheck-unsupported.iUqQ35 ']'
++ '[' '!' -L /tmp/fm-shellcheck-unsupported.iUqQ35 ']'
++ find /tmp/fm-shellcheck-unsupported.iUqQ35 -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-shellcheck-unsupported.iUqQ35
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-noshellcheck.AHwz4S ']'
++ fm_test_remove_tree /tmp/fm-lint-noshellcheck.AHwz4S
++ local dir=/tmp/fm-lint-noshellcheck.AHwz4S
++ '[' -d /tmp/fm-lint-noshellcheck.AHwz4S ']'
++ '[' '!' -L /tmp/fm-lint-noshellcheck.AHwz4S ']'
++ find /tmp/fm-lint-noshellcheck.AHwz4S -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-noshellcheck.AHwz4S
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-ver.2p4W0K ']'
++ fm_test_remove_tree /tmp/fm-lint-ver.2p4W0K
++ local dir=/tmp/fm-lint-ver.2p4W0K
++ '[' -d /tmp/fm-lint-ver.2p4W0K ']'
++ '[' '!' -L /tmp/fm-lint-ver.2p4W0K ']'
++ find /tmp/fm-lint-ver.2p4W0K -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-ver.2p4W0K
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-bad.PIQJYB ']'
++ fm_test_remove_tree /tmp/fm-lint-bad.PIQJYB
++ local dir=/tmp/fm-lint-bad.PIQJYB
++ '[' -d /tmp/fm-lint-bad.PIQJYB ']'
++ '[' '!' -L /tmp/fm-lint-bad.PIQJYB ']'
++ find /tmp/fm-lint-bad.PIQJYB -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-bad.PIQJYB
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-backend-purity.HLu3Qj ']'
++ fm_test_remove_tree /tmp/fm-lint-backend-purity.HLu3Qj
++ local dir=/tmp/fm-lint-backend-purity.HLu3Qj
++ '[' -d /tmp/fm-lint-backend-purity.HLu3Qj ']'
++ '[' '!' -L /tmp/fm-lint-backend-purity.HLu3Qj ']'
++ find /tmp/fm-lint-backend-purity.HLu3Qj -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-backend-purity.HLu3Qj
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-explicit-backend-purity.AXuL0V ']'
++ fm_test_remove_tree /tmp/fm-lint-explicit-backend-purity.AXuL0V
++ local dir=/tmp/fm-lint-explicit-backend-purity.AXuL0V
++ '[' -d /tmp/fm-lint-explicit-backend-purity.AXuL0V ']'
++ '[' '!' -L /tmp/fm-lint-explicit-backend-purity.AXuL0V ']'
++ find /tmp/fm-lint-explicit-backend-purity.AXuL0V -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-explicit-backend-purity.AXuL0V
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-opts.C40yh9 ']'
++ fm_test_remove_tree /tmp/fm-lint-opts.C40yh9
++ local dir=/tmp/fm-lint-opts.C40yh9
++ '[' -d /tmp/fm-lint-opts.C40yh9 ']'
++ '[' '!' -L /tmp/fm-lint-opts.C40yh9 ']'
++ find /tmp/fm-lint-opts.C40yh9 -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-opts.C40yh9
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-good.e5gcZR ']'
++ fm_test_remove_tree /tmp/fm-lint-good.e5gcZR
++ local dir=/tmp/fm-lint-good.e5gcZR
++ '[' -d /tmp/fm-lint-good.e5gcZR ']'
++ '[' '!' -L /tmp/fm-lint-good.e5gcZR ']'
++ find /tmp/fm-lint-good.e5gcZR -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-good.e5gcZR
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-jobs.3UdTHr ']'
++ fm_test_remove_tree /tmp/fm-lint-jobs.3UdTHr
++ local dir=/tmp/fm-lint-jobs.3UdTHr
++ '[' -d /tmp/fm-lint-jobs.3UdTHr ']'
++ '[' '!' -L /tmp/fm-lint-jobs.3UdTHr ']'
++ find /tmp/fm-lint-jobs.3UdTHr -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-jobs.3UdTHr
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-signal.ogAOwa ']'
++ fm_test_remove_tree /tmp/fm-lint-signal.ogAOwa
++ local dir=/tmp/fm-lint-signal.ogAOwa
++ '[' -d /tmp/fm-lint-signal.ogAOwa ']'
++ '[' '!' -L /tmp/fm-lint-signal.ogAOwa ']'
++ find /tmp/fm-lint-signal.ogAOwa -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-signal.ogAOwa
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-changed.VOS2Wi ']'
++ fm_test_remove_tree /tmp/fm-lint-changed.VOS2Wi
++ local dir=/tmp/fm-lint-changed.VOS2Wi
++ '[' -d /tmp/fm-lint-changed.VOS2Wi ']'
++ '[' '!' -L /tmp/fm-lint-changed.VOS2Wi ']'
++ find /tmp/fm-lint-changed.VOS2Wi -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-changed.VOS2Wi
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-main-full.iDLFXd ']'
++ fm_test_remove_tree /tmp/fm-lint-main-full.iDLFXd
++ local dir=/tmp/fm-lint-main-full.iDLFXd
++ '[' -d /tmp/fm-lint-main-full.iDLFXd ']'
++ '[' '!' -L /tmp/fm-lint-main-full.iDLFXd ']'
++ find /tmp/fm-lint-main-full.iDLFXd -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-main-full.iDLFXd
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-explicit-override.Akrf3B ']'
++ fm_test_remove_tree /tmp/fm-lint-explicit-override.Akrf3B
++ local dir=/tmp/fm-lint-explicit-override.Akrf3B
++ '[' -d /tmp/fm-lint-explicit-override.Akrf3B ']'
++ '[' '!' -L /tmp/fm-lint-explicit-override.Akrf3B ']'
++ find /tmp/fm-lint-explicit-override.Akrf3B -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-explicit-override.Akrf3B
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-zero-changed.7vIcEs ']'
++ fm_test_remove_tree /tmp/fm-lint-zero-changed.7vIcEs
++ local dir=/tmp/fm-lint-zero-changed.7vIcEs
++ '[' -d /tmp/fm-lint-zero-changed.7vIcEs ']'
++ '[' '!' -L /tmp/fm-lint-zero-changed.7vIcEs ']'
++ find /tmp/fm-lint-zero-changed.7vIcEs -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-zero-changed.7vIcEs
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-list-changed.22uo9X ']'
++ fm_test_remove_tree /tmp/fm-lint-list-changed.22uo9X
++ local dir=/tmp/fm-lint-list-changed.22uo9X
++ '[' -d /tmp/fm-lint-list-changed.22uo9X ']'
++ '[' '!' -L /tmp/fm-lint-list-changed.22uo9X ']'
++ find /tmp/fm-lint-list-changed.22uo9X -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-list-changed.22uo9X
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-local-nox.Gknr2f ']'
++ fm_test_remove_tree /tmp/fm-lint-local-nox.Gknr2f
++ local dir=/tmp/fm-lint-local-nox.Gknr2f
++ '[' -d /tmp/fm-lint-local-nox.Gknr2f ']'
++ '[' '!' -L /tmp/fm-lint-local-nox.Gknr2f ']'
++ find /tmp/fm-lint-local-nox.Gknr2f -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-local-nox.Gknr2f
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-local-per-root.SxGsoL ']'
++ fm_test_remove_tree /tmp/fm-lint-local-per-root.SxGsoL
++ local dir=/tmp/fm-lint-local-per-root.SxGsoL
++ '[' -d /tmp/fm-lint-local-per-root.SxGsoL ']'
++ '[' '!' -L /tmp/fm-lint-local-per-root.SxGsoL ']'
++ find /tmp/fm-lint-local-per-root.SxGsoL -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-local-per-root.SxGsoL
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-ci-follow.kGh6Gt ']'
++ fm_test_remove_tree /tmp/fm-lint-ci-follow.kGh6Gt
++ local dir=/tmp/fm-lint-ci-follow.kGh6Gt
++ '[' -d /tmp/fm-lint-ci-follow.kGh6Gt ']'
++ '[' '!' -L /tmp/fm-lint-ci-follow.kGh6Gt ']'
++ find /tmp/fm-lint-ci-follow.kGh6Gt -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-ci-follow.kGh6Gt
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-main-follow.m0qMCc ']'
++ fm_test_remove_tree /tmp/fm-lint-main-follow.m0qMCc
++ local dir=/tmp/fm-lint-main-follow.m0qMCc
++ '[' -d /tmp/fm-lint-main-follow.m0qMCc ']'
++ '[' '!' -L /tmp/fm-lint-main-follow.m0qMCc ']'
++ find /tmp/fm-lint-main-follow.m0qMCc -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-main-follow.m0qMCc
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-nomergebase-follow.pjNzsb ']'
++ fm_test_remove_tree /tmp/fm-lint-nomergebase-follow.pjNzsb
++ local dir=/tmp/fm-lint-nomergebase-follow.pjNzsb
++ '[' -d /tmp/fm-lint-nomergebase-follow.pjNzsb ']'
++ '[' '!' -L /tmp/fm-lint-nomergebase-follow.pjNzsb ']'
++ find /tmp/fm-lint-nomergebase-follow.pjNzsb -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-nomergebase-follow.pjNzsb
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-explicit-follow.pw3L8n ']'
++ fm_test_remove_tree /tmp/fm-lint-explicit-follow.pw3L8n
++ local dir=/tmp/fm-lint-explicit-follow.pw3L8n
++ '[' -d /tmp/fm-lint-explicit-follow.pw3L8n ']'
++ '[' '!' -L /tmp/fm-lint-explicit-follow.pw3L8n ']'
++ find /tmp/fm-lint-explicit-follow.pw3L8n -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-explicit-follow.pw3L8n
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-fast-follow.G8Poup ']'
++ fm_test_remove_tree /tmp/fm-lint-fast-follow.G8Poup
++ local dir=/tmp/fm-lint-fast-follow.G8Poup
++ '[' -d /tmp/fm-lint-fast-follow.G8Poup ']'
++ '[' '!' -L /tmp/fm-lint-fast-follow.G8Poup ']'
++ find /tmp/fm-lint-fast-follow.G8Poup -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-fast-follow.G8Poup
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-lint-local-exclude-behavior.mGrysO ']'
++ fm_test_remove_tree /tmp/fm-lint-local-exclude-behavior.mGrysO
++ local dir=/tmp/fm-lint-local-exclude-behavior.mGrysO
++ '[' -d /tmp/fm-lint-local-exclude-behavior.mGrysO ']'
++ '[' '!' -L /tmp/fm-lint-local-exclude-behavior.mGrysO ']'
++ find /tmp/fm-lint-local-exclude-behavior.mGrysO -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-lint-local-exclude-behavior.mGrysO
++ IFS=
++ read -r d
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh ']'
++ fm_test_remove_tree /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh
++ local dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh
++ '[' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh ']'
++ rm -rf /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3RR3DT9Y6TY8H31V669EQW4/tests/fm-lint-local-exclude-fixture.test.sh
++ IFS=
++ read -r d
++ rm -f /tmp/.fm-test-cleanup.332027.ZUVvQp
