@@ -3383,6 +3383,111 @@ test_app_bound_required_status_context_matches_by_name() {
   pass "fm-pr-merge matches an app-bound required commit status by name"
 }
 
+# Linux rejects one command argument at 131072 bytes. A compact check-run
+# producer list past that limit used to fail jq before it could validate, and
+# the merge was refused as an unreadable rollup. The same safeguards have to
+# keep refusing when that list is large enough to have hit the limit.
+test_oversized_check_producers_still_validate() {
+  local case_dir head variant app expected size
+  head=c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4
+  for variant in small-valid large-valid wrong-app absent red stale-head; do
+    case_dir=$(make_case "oversized-producers-$variant")
+    add_gh_mocks "$case_dir" "$head"
+    app=413034
+    case "$variant" in
+      wrong-app) app=42 ;;
+    esac
+    if [ "$variant" = small-valid ]; then
+      jq -n --arg head "$head" --argjson app "$app" '{
+        check_runs: [
+          {name:"ci", app:{id:15368}, head_sha:$head},
+          {name:"Kody Code Review", app:{id:$app}, head_sha:$head}
+        ]
+      }' > "$case_dir/github-runs.json"
+    else
+      jq -n --arg head "$head" --argjson app "$app" --argjson n 140000 '
+        def run($name; $id):
+          {name:$name, app:{id:$id}, head_sha:$head, output:{title:$name, summary:("a" * $n)}};
+        {
+          check_runs: [
+            run("ci"; 15368),
+            run("Kody Code Review"; $app)
+          ]
+        }' > "$case_dir/github-runs.json"
+      jq -sc --arg head "$head" '
+        [ .[] | if (.check_runs | type) == "array" then .check_runs[] else error("invalid check runs") end
+          | if (.name | type) == "string" and (.app.id | type) == "number" and .head_sha == $head
+            then . else error("invalid check producer") end ]' \
+        "$case_dir/github-runs.json" > "$case_dir/producers-compact.json"
+      size=$(wc -c < "$case_dir/producers-compact.json")
+      [ "$size" -gt 131072 ] || fail "oversized-producers-$variant: compact producers are $size bytes, need more than 131072"
+    fi
+    case "$variant" in
+      stale-head)
+        jq --arg head "$head" '.check_runs[1].head_sha = "dddddddddddddddddddddddddddddddddddddddd"' \
+          "$case_dir/github-runs.json" > "$case_dir/runs.tmp"
+        mv "$case_dir/runs.tmp" "$case_dir/github-runs.json"
+        ;;
+    esac
+    case "$variant" in
+      absent)
+        write_github_rollup_json "$case_dir" "$head" \
+          "$(check_run ci COMPLETED SUCCESS)"
+        ;;
+      red)
+        write_github_rollup_json "$case_dir" "$head" \
+          "$(check_run ci COMPLETED SUCCESS)" \
+          "$(check_run "Kody Code Review" COMPLETED SUCCESS)" \
+          "$(check_run lint COMPLETED FAILURE)"
+        ;;
+      *)
+        write_github_rollup_json "$case_dir" "$head" \
+          "$(check_run ci COMPLETED SUCCESS)" \
+          "$(check_run "Kody Code Review" COMPLETED SUCCESS)"
+        ;;
+    esac
+    write_github_required "$case_dir" "ruleset:Kody Code Review"
+    jq '.[1].parameters.required_status_checks[0].integration_id = 413034' \
+      "$case_dir/github-required-rules.json" > "$case_dir/rules.tmp"
+    mv "$case_dir/rules.tmp" "$case_dir/github-required-rules.json"
+    expected=1
+    run_required_case "$case_dir" 120
+    case "$variant" in
+      small-valid|large-valid) expected=0 ;;
+    esac
+    expect_code "$expected" "$RC" "oversized-producers-$variant: $(cat "$case_dir/stderr")"
+    if [ "$expected" = 0 ]; then
+      assert_logged_gh_merge "$case_dir" 120 example/repo --squash
+      assert_grep "every unwaived required check reported and every unwaived check green at head $head" \
+        "$case_dir/stderr" "oversized-producers-$variant: the verified line did not name the head"
+    else
+      assert_no_grep 'pr merge' "$case_dir/gh.log" \
+        "oversized-producers-$variant: gh pr merge ran"
+      assert_no_grep 'verified: ' "$case_dir/stderr" \
+        "oversized-producers-$variant: the refusal still claimed a verified head"
+    fi
+    case "$variant" in
+      wrong-app|absent)
+        assert_grep "required check 'Kody Code Review' has not reported at head $head" \
+          "$case_dir/stderr" "oversized-producers-$variant: the missing required check was not named"
+        assert_no_grep 'could not be read' "$case_dir/stderr" \
+          "oversized-producers-$variant: a decisive missing check was reported as unreadable"
+        ;;
+      red)
+        assert_grep "check 'lint' is not green" "$case_dir/stderr" \
+          "oversized-producers-$variant: the red check was not named"
+        assert_no_grep 'pr merge' "$case_dir/gh.log" \
+          "oversized-producers-$variant: a red check reached merge"
+        ;;
+      stale-head)
+        assert_grep "required check producers at head $head could not be read" \
+          "$case_dir/stderr" "oversized-producers-$variant: a producer from another head was accepted"
+        ;;
+    esac
+  done
+  pass "fm-pr-merge validates check producers past the command-argument limit and still refuses unsafe merges"
+}
+
 test_required_partial_reads_report_all_failures() {
   local case_dir head variant
   head=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
@@ -3717,4 +3822,5 @@ test_allow_missing_follows_the_allow_red_rules
 
 test_required_producer_identity
 test_app_bound_required_status_context_matches_by_name
+test_oversized_check_producers_still_validate
 test_required_partial_reads_report_all_failures

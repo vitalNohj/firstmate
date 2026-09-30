@@ -2128,6 +2128,62 @@ ${context.command}
     return stockOutcomesPreviewLines ?? undefined;
   };
 
+  // Pi 0.99's stock call header appends arguments. Older stock is the bold name
+  // alone. Probe the installed component once so Calm-off rendering follows
+  // whichever contract this process actually has.
+  const STOCK_COLLAPSED_ARGS_CHARS = 100;
+  let stockCallShowsArgs: boolean | undefined;
+  const stockToolCallShowsArguments = (): boolean => {
+    if (stockCallShowsArgs !== undefined) return stockCallShowsArgs;
+    try {
+      const probeDefinition: ToolDefinition = {
+        name: "fm_call_args_probe",
+        label: "Call args probe",
+        description: "Call args probe",
+        parameters: Type.Object({}),
+        execute: async () => ({ content: [], details: undefined }),
+      };
+      const probe = new ToolExecutionComponent(
+        probeDefinition.name,
+        "fm-call-args-probe",
+        { fm_probe_key: "fm_probe_value" },
+        { showImages: false },
+        probeDefinition,
+        { requestRender() {} } as ConstructorParameters<typeof ToolExecutionComponent>[5],
+        root,
+      );
+      stockCallShowsArgs = probe.render(4096).join("\n").includes("fm_probe_key=");
+    } catch {
+      stockCallShowsArgs = false;
+    }
+    return stockCallShowsArgs;
+  };
+  const formatStockToolCall = (
+    title: string,
+    args: unknown,
+    theme: Parameters<NonNullable<ToolDefinition["renderCall"]>>[1],
+    expanded: boolean,
+  ): string => {
+    const header = theme.fg("toolTitle", theme.bold(title));
+    if (!stockToolCallShowsArguments() || args == null) return header;
+    const entries = typeof args === "object" && !Array.isArray(args)
+      ? Object.entries(args as Record<string, unknown>)
+      : [["args", args]];
+    if (entries.length === 0) return header;
+    if (expanded) {
+      const lines = entries.map(([key, value]) => {
+        const text = typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? String(value));
+        return `  ${key}: ${text.replace(/\t/g, "   ").replace(/\r/g, "").split("\n").join("\n    ")}`;
+      });
+      return `${header}\n${theme.fg("muted", lines.join("\n"))}`;
+    }
+    const pairs = entries.map(([key, value]) => `${key}=${JSON.stringify(value) ?? String(value)}`).join(" ");
+    const preview = pairs.length > STOCK_COLLAPSED_ARGS_CHARS
+      ? `${pairs.slice(0, STOCK_COLLAPSED_ARGS_CHARS - 3)}...`
+      : pairs;
+    return `${header} ${theme.fg("muted", preview)}`;
+  };
+
   type OutcomesToolShellState = {
     shell?: Box;
     call?: Text;
@@ -2162,11 +2218,11 @@ ${context.command}
       recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
     }),
     renderShell: "self",
-    renderCall: (_args, theme, context) => {
+    renderCall: (args, theme, context) => {
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_outcomes")), 0, 0);
+      shellState.call = new Text(formatStockToolCall("fm_branch_outcomes", args, theme, context.expanded), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, options, theme, context) => {
@@ -2224,11 +2280,11 @@ ${context.command}
       through: Type.Number({ description: "The highest outcome sequence number this conversation has processed" }),
     }),
     renderShell: "self",
-    renderCall: (_args, theme, context) => {
+    renderCall: (args, theme, context) => {
       if (calmPresentation.stockExportRendering) throw new Error("Use Pi stock export rendering");
       if (calmHides("assistant-tool-call")) return new Container();
       const shellState = context.state as OutcomesToolShellState;
-      shellState.call = new Text(theme.fg("toolTitle", theme.bold("fm_branch_processed")), 0, 0);
+      shellState.call = new Text(formatStockToolCall("fm_branch_processed", args, theme, context.expanded), 0, 0);
       return refreshOutcomesToolShell(shellState, theme, context);
     },
     renderResult: (result, _options, theme, context) => {
