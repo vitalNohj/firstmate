@@ -4544,6 +4544,47 @@ for (const current of ["CURRENT_WATCHER_E2E", "CURRENT_TURN_END_E2E", "CURRENT_A
 if (!tree.includes("firstmate-synthetic-input") || !tree.includes("/tmp/probe.status")) process.exit(1);
 JS
 
+  # A second bare /export writes the same filename. The confirmation text can
+  # stay the same, so wait until Pi replaces the file, then require the filter
+  # to remove the hidden-message script from that new copy.
+  local repeat_export_hash repeat_export_wait repeat_export_now
+  cat >>"$export_default_file" <<'HTML'
+        if (entry.type === 'custom_message') {
+          const hidden = entry.display === false;
+          return `<div class="hook-message${hidden ? ' hook-message-hidden' : ''}" id="${entryDomId}">${tsHtml}
+            <div class="hook-type">[${escapeHtml(entry.customType)}]${hidden ? ' · Hidden in terminal' : ''}</div>
+            <div class="markdown-content">${safeMarkedParse(typeof entry.content === 'string' ? entry.content : JSON.stringify(entry.content))}</div>
+          </div>`;
+        }
+HTML
+  repeat_export_hash=$(shasum -a 256 "$export_default_file" | awk '{print $1}')
+  tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/export"
+  tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
+  repeat_export_wait=0
+  while [ "$repeat_export_wait" -lt 120 ]; do
+    repeat_export_now=$(shasum -a 256 "$export_default_file" | awk '{print $1}')
+    [ "$repeat_export_now" != "$repeat_export_hash" ] && break
+    sleep 0.05
+    repeat_export_wait=$((repeat_export_wait + 1))
+  done
+  [ "$repeat_export_now" != "$repeat_export_hash" ] \
+    || fail "repeated bare /export did not rewrite the default file"
+  sleep 0.2
+  # The stylesheet keeps the .hook-message-hidden rule. The conversation script
+  # is the part that would print those messages into the column.
+  if grep -F "hidden ? ' hook-message-hidden'" "$export_default_file" >/dev/null; then
+    fail "repeated bare /export left hidden custom messages in the conversation column"
+  fi
+  chrome_report=$(render_export_dom "$chrome" "$export_default_file" "$export_default_dom" "$version") \
+    || fail "could not render repeated calm-mode HTML export DOM: $chrome_report"
+  node - "$export_default_dom" <<'JS' || fail "repeated bare /export DOM violated the Calm conversation boundary"
+const dom = require("node:fs").readFileSync(process.argv[2], "utf8");
+const messages = dom.match(/<div id="messages">([\s\S]*?)<\/main>/)?.[1];
+if (!messages) process.exit(1);
+if (messages.includes('<div class="hook-message"')) process.exit(1);
+if (messages.includes("[firstmate-synthetic-input]")) process.exit(1);
+JS
+
   # A later bare /export that fails must not rewrite the file named by the
   # confirmation still on screen. The hidden-message script is put back so a
   # stale filter would change the hash. The session file is only moved aside

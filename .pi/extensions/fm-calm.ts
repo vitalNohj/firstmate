@@ -98,14 +98,33 @@ type ExportStamp = {
 type ExportTreeNode = {
   children?: ExportTreeNode[];
   build?: () => string;
-  stale?: boolean;
+  invalidateCount?: number;
 };
 
 type ExportStatusMark = {
   node: ExportTreeNode;
   reported: string;
-  stale: boolean;
+  invalidateCount: number;
 };
+
+const exportInvalidateHook = Symbol.for("firstmate.calm.exportInvalidate");
+
+// showStatus always invalidates the status component, including when it is
+// already stale and the path text does not change. Counting those calls is the
+// completion signal. The count lives on the component instance.
+function trackExportInvalidation(node: ExportTreeNode): void {
+  const proto = Object.getPrototypeOf(node) as {
+    invalidate?: (this: ExportTreeNode, ...args: unknown[]) => unknown;
+    [exportInvalidateHook]?: boolean;
+  } | null;
+  if (!proto || proto[exportInvalidateHook] || typeof proto.invalidate !== "function") return;
+  const original = proto.invalidate;
+  proto.invalidate = function (this: ExportTreeNode, ...args: unknown[]) {
+    this.invalidateCount = (this.invalidateCount ?? 0) + 1;
+    return original.apply(this, args);
+  };
+  proto[exportInvalidateHook] = true;
+}
 
 // Pi splits `/export` arguments the same way: a bare command has no path, quotes
 // keep one token, and the first bare token stops at whitespace. Tilde and file
@@ -201,9 +220,9 @@ function reportedExportLine(node: ExportTreeNode): string | undefined {
   return line || undefined;
 }
 
-// The last "Session exported to:" line still on screen. Its component identity
-// and stale bit distinguish a completion Pi just printed from a line an
-// earlier export left behind.
+// The last "Session exported to:" line still on screen. A new component, a new
+// path, or another invalidation means Pi completed this export. A failed
+// export leaves the previous line's invalidation count unchanged.
 function latestExportStatus(ui: ExtensionUIContext): ExportStatusMark | undefined {
   const root = exportUiRoot(ui);
   if (!root) return undefined;
@@ -211,7 +230,8 @@ function latestExportStatus(ui: ExtensionUIContext): ExportStatusMark | undefine
   visitExportTree(root, (node) => {
     const reported = reportedExportLine(node);
     if (!reported) return;
-    found = { node, reported, stale: node.stale === true };
+    trackExportInvalidation(node);
+    found = { node, reported, invalidateCount: node.invalidateCount ?? 0 };
   });
   return found;
 }
@@ -220,9 +240,7 @@ function exportStatusIsNew(prior: ExportStatusMark | undefined, next: ExportStat
   if (!prior) return true;
   if (next.node !== prior.node) return true;
   if (next.reported !== prior.reported) return true;
-  // showStatus updates one status component in place and invalidates it, which
-  // sets stale. A failed export leaves that component untouched.
-  return prior.stale === false && next.stale === true;
+  return next.invalidateCount !== prior.invalidateCount;
 }
 
 function readableExportFile(cwd: string, reported: string): string | undefined {
