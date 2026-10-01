@@ -767,8 +767,32 @@ cadence_epoch=$(date +%s)
 # shellcheck disable=SC2016 # Positional parameters expand in the inner shell.
 FM_PENDING_REPLY_NOW="$cadence_epoch" remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
 rm -f "$PARENT/state/remote-replies/ios.caught-up"
+# Earlier legs leave finished jobs in this directory. Only a job created by
+# the reader below counts, or a leftover running record would skip the wait.
+prior_jobs=' '
+for job in "$TMP_ROOT"/remote-jobs/jobs/job-*; do
+  [ -d "$job" ] || continue
+  prior_jobs="$prior_jobs$job "
+done
 remote_env "$ADAPTER" source ios > "$TMP_ROOT/cadence-source.out" 2>&1 &
 CADENCE_SOURCE=$!
+# Logical ticks finish in milliseconds. Wait until this reader is running, the
+# same way the preemption leg does, or a slow start lets every tick land first.
+running_reader=''
+for _ in $(seq 1 100); do
+  for job in "$TMP_ROOT"/remote-jobs/jobs/job-*; do
+    [ -d "$job" ] || continue
+    case "$prior_jobs" in
+      *" $job "*) continue ;;
+    esac
+    if [ "$(fm_remote_job_read_state "$job" 2>/dev/null || true)" = running ]; then
+      running_reader=$job
+      break 2
+    fi
+  done
+  sleep 0.05
+done
+[ -n "$running_reader" ] || fail "the quiet reply reader did not begin running before supervision ticks"
 # Ten-second reader, eleven-second observe gap: advance only the supervision
 # clock so slow ticks on constrained hosts cannot become eligible check-ins.
 # The queued reader and its quiet-window timeout still use real time.
