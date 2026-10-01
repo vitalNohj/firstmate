@@ -14,3 +14,4 @@ config/
 .pi-lens.json
 
 .tools/
+.codesearch.db/

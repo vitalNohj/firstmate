@@ -1,7 +1,0 @@
-{
-  "dimensions": 384,
-  "indexed_at": "2026-10-01T06:00:30.607198515+00:00",
-  "model_name": "sentence-transformers/all-MiniLM-L6-v2 (quantized)",
-  "model_short_name": "minilm-l6-q",
-  "schema_version": 1
-}
