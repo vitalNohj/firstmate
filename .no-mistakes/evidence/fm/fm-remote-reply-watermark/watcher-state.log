@@ -1,0 +1,1704 @@
++ set -u
++++ dirname bin/fm-watch.sh
+++ cd bin
+++ pwd
++ SCRIPT_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
+++ pwd
++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++ STATE=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++ CONFIG=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/config
++ mkdir -p /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++ WATCH_HOME_EXISTED=0
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state ']'
++ WATCH_HOME_EXISTED=1
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-push-transition-lib.sh
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-push-transition-lib.sh
++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ pwd
+++ FM_PUSH_TRANSITION_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-wake-lib.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-wake-lib.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ FM_WAKE_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
+++++ pwd
++++ FM_WAKE_DEFAULT_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++++ STATE=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ FM_WAKE_QUEUE=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue
++++ FM_WAKE_QUEUE_LOCK=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++++ FM_LOCK_STALE_AFTER=2
+++++ uname
++++ _FM_UNAME=Linux
++++ mkdir -p /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ FM_WATCHER_MATCHED_IDENTITY=
++++ FM_WATCHER_HEALTHY_PID=
++++ FM_WATCHER_HEALTHY_IDENTITY=
++++ FM_WATCHER_VERDICT_OK=false
++++ FM_WATCHER_VERDICT_REASON=stale-beacon
++++ FM_RECOVERY_MARKER_TOKEN=
++++ FM_RECOVERY_MARKER_ACTION=none
++++ FM_WAKE_STATUS_KEY=
++++ FM_WAKE_STATUS_HISTORICAL=false
++++ FM_WAKE_EVENT_LINE=
++++ FM_WAKE_UNREAD_LINES=
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ _FM_CLASSIFY_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ FM_CREW_STATE_BIN=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-crew-state.sh
++++ case $- in
++++ _fm_classify_nounset=on
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-timeout-lib.sh
+++++ set -u
++++ '[' on = on ']'
++++ unset _fm_classify_nounset
++++ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'
++++ FM_CLASSIFY_PAUSED_VERB_DEFAULT=paused
++++ FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
++++ FM_CLASSIFY_RESOLVE_VERB_DEFAULT=resolved
++++ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT=captain-held
++++ FM_CLASSIFY_EVENT_WINDOW_LINES=200
++++ FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT=pending-reply-
++++ FM_OPEN_DECISIONS_FOLD_VERSION=9
++++ FM_STATUS_SNAPSHOT_EVENT_LINE=
++++ FM_STATUS_SNAPSHOT_EVENT_MTIME=
++++ FM_STATUS_SNAPSHOT_EVENT_ENDPOINT=
++++ STATUS_PRESENTATION_REPORTED=
++++ STATUS_PRESENTATION_CLASSIFIED=
++++ _FM_CLASSIFY_KEYLESS_PHASE=$'\036default'
++++ FM_GATE_HUMAN_DECISION='ask-user: authority decision'
++++ FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'
++++ FM_WORKTREE_WRITE_MAXDEPTH=6
++++ FM_WORKTREE_WRITE_TIMEOUT=10
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
++++ FM_BACKEND_SCRIPT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ FM_BACKEND_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ unset FM_BACKEND_SCRIPT
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
+++++ pwd
++++ FM_BACKEND_DEFAULT_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++++ FM_BACKEND_CONFIG_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/config
++++ FM_BACKEND_KNOWN='tmux herdr zellij orca cmux'
++++ FM_BACKEND_SPAWN='tmux herdr zellij orca cmux'
++++ FM_BACKEND_CMUX_BUNDLE_ID=com.cmuxterm.app
++++ FM_BACKEND_VISIBLE_CAPTURE='tmux herdr zellij'
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-transition-lib.sh
++++ FM_TRANSITION_FIELD_SEP=$'\t'
+++ TRIAGE_LOG=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch-triage.log
+++ TRIAGE_LOG_MAX_BYTES=262144
+++ FM_WAKE_POST_OUTPUT_ACTION=
+++ FM_WATCH_DELIVERED_REASON=
+++ FM_WATCH_DELIVERY_PID=
+++ FM_WATCH_DELIVERY_IDENTITY=
+++ WATCH_DELIVERY_LOG=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch-deliveries.log
+++ WATCH_DELIVERY_LOCK=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch-deliveries.lock
+++ WATCH_DELIVERY_MAX_BYTES=65536
+++ WATCH_DELIVERY_KEEP_LINES=64
+++ case "$WATCH_DELIVERY_MAX_BYTES" in
+++ case "$WATCH_DELIVERY_KEEP_LINES" in
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-pr-lib.sh
+++ FM_PR_PROVIDER=
+++ FM_PR_URL=
+++ FM_PR_HOST=
+++ FM_PR_PATH=
+++ FM_PR_OWNER=
+++ FM_PR_REPO=
+++ FM_PR_NUMBER=
+++ FM_PR_DATA_PROVIDER=
+++ FM_PR_DATA_URL=
+++ FM_PR_DATA_HOST=
+++ FM_PR_DATA_PATH=
+++ FM_PR_DATA_NUMBER=
+++ FM_PR_META_PROVIDER=
+++ FM_PR_META_URL=
+++ FM_PR_META_HOST=
+++ FM_PR_META_PATH=
+++ FM_PR_META_NUMBER=
+++ FM_PR_REG_ID=
+++ FM_PR_REG_PROVIDER=
+++ FM_PR_REG_URL=
+++ FM_PR_REG_HOST=
+++ FM_PR_REG_PATH=
+++ FM_PR_REG_NUMBER=
+++ FM_PR_REG_DATA_HASH=
+++ FM_PR_REG_TEMPLATE_HASH=
+++ FM_PR_REG_DATA_IDENTITY=
+++ FM_PR_REG_CHECK_IDENTITY=
+++ FM_PR_POLL_DATA_TMP=
+++ FM_PR_POLL_CHECK_TMP=
+++ FM_PR_POLL_REG_TMP=
+++ FM_PR_POLL_DATA_DEST=
+++ FM_PR_POLL_CHECK_DEST=
+++ FM_PR_POLL_REG_DEST=
+++ FM_PR_POLL_EXPECT_ID=
+++ FM_PR_POLL_EXPECT_PROVIDER=
+++ FM_PR_POLL_EXPECT_URL=
+++ FM_PR_POLL_EXPECT_HOST=
+++ FM_PR_POLL_EXPECT_PATH=
+++ FM_PR_POLL_EXPECT_NUMBER=
+++ FM_PR_POLL_EXPECT_DATA_HASH=
+++ FM_PR_POLL_EXPECT_TEMPLATE_HASH=
+++ FM_PR_POLL_EXPECT_DATA_IDENTITY=
+++ FM_PR_POLL_EXPECT_CHECK_IDENTITY=
+++ FM_PR_POLL_TEMPLATE=
+++ FM_PR_POLL_STATE_DEVICE=
+++ FM_PR_POLL_SNAPSHOT_ID=
+++ FM_PR_POLL_SNAPSHOT_PROVIDER=
+++ FM_PR_POLL_SNAPSHOT_URL=
+++ FM_PR_POLL_SNAPSHOT_HOST=
+++ FM_PR_POLL_SNAPSHOT_PATH=
+++ FM_PR_POLL_SNAPSHOT_NUMBER=
+++ FM_PR_POLL_SNAPSHOT_DATA_HASH=
+++ FM_PR_POLL_SNAPSHOT_TEMPLATE_HASH=
+++ FM_PR_POLL_SNAPSHOT_DATA_IDENTITY=
+++ FM_PR_POLL_SNAPSHOT_CHECK_IDENTITY=
+++ FM_PR_POLL_SNAPSHOT_REG_HASH=
+++ FM_PR_POLL_SNAPSHOT_REG_IDENTITY=
+++ FM_PR_POLL_REARM_DATA_IDENTITY=
+++ FM_PR_POLL_REARM_CHECK_IDENTITY=
+++ FM_PR_RETIRE_ID=
+++ FM_PR_RETIRE_PROVIDER=
+++ FM_PR_RETIRE_URL=
+++ FM_PR_RETIRE_HOST=
+++ FM_PR_RETIRE_PATH=
+++ FM_PR_RETIRE_NUMBER=
+++ FM_PR_RETIRE_DATA_HASH=
+++ FM_PR_RETIRE_TEMPLATE_HASH=
+++ FM_PR_RETIRE_DATA_IDENTITY=
+++ FM_PR_RETIRE_CHECK_IDENTITY=
+++ FM_PR_RETIRE_REG_HASH=
+++ FM_PR_RETIRE_REG_IDENTITY=
+++ FM_PR_RETIRE_RECEIPT_HASH=
+++ FM_PR_RETIRE_RECEIPT_IDENTITY=
+++ FM_PR_RECORD_STATE=
+++ FM_PR_RECORD_MERGED=
+++ FM_PR_POLL_RETIREMENT_REJECTED=
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-procevent-lib.sh
+++ FM_PROCEVENT_OWNER_LEASE_DEFAULT_SECONDS=600
+++ FM_PROCEVENT_OWNER_LEASE_MIN_SECONDS=1
+++ FM_PROCEVENT_OWNER_LEASE_MAX_SECONDS=86400
+++ FM_PROCEVENT_OWNER_CHECK_DEFAULT_SECONDS=15
+++ FM_PROCEVENT_OWNER_CHECK_MIN_SECONDS=1
+++ FM_PROCEVENT_OWNER_CHECK_MAX_SECONDS=3600
+++ FM_PROCEVENT_LAUNCH_FLOOR_DEFAULT_SECONDS=1
+++ FM_PROCEVENT_LAUNCH_FLOOR_MIN_SECONDS=1
+++ FM_PROCEVENT_LAUNCH_FLOOR_MAX_SECONDS=3600
+++ FM_PROCEVENT_LAUNCH_CONFIRM_DEFAULT_SECONDS=3
+++ FM_PROCEVENT_LAUNCH_CONFIRM_MIN_SECONDS=1
+++ FM_PROCEVENT_LAUNCH_CONFIRM_MAX_SECONDS=600
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-merge-outcome-lib.sh
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-merge-outcome-lib.sh
++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ pwd
+++ _FM_MERGE_OUTCOME_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-pr-lib.sh
++++ FM_PR_PROVIDER=
++++ FM_PR_URL=
++++ FM_PR_HOST=
++++ FM_PR_PATH=
++++ FM_PR_OWNER=
++++ FM_PR_REPO=
++++ FM_PR_NUMBER=
++++ FM_PR_DATA_PROVIDER=
++++ FM_PR_DATA_URL=
++++ FM_PR_DATA_HOST=
++++ FM_PR_DATA_PATH=
++++ FM_PR_DATA_NUMBER=
++++ FM_PR_META_PROVIDER=
++++ FM_PR_META_URL=
++++ FM_PR_META_HOST=
++++ FM_PR_META_PATH=
++++ FM_PR_META_NUMBER=
++++ FM_PR_REG_ID=
++++ FM_PR_REG_PROVIDER=
++++ FM_PR_REG_URL=
++++ FM_PR_REG_HOST=
++++ FM_PR_REG_PATH=
++++ FM_PR_REG_NUMBER=
++++ FM_PR_REG_DATA_HASH=
++++ FM_PR_REG_TEMPLATE_HASH=
++++ FM_PR_REG_DATA_IDENTITY=
++++ FM_PR_REG_CHECK_IDENTITY=
++++ FM_PR_POLL_DATA_TMP=
++++ FM_PR_POLL_CHECK_TMP=
++++ FM_PR_POLL_REG_TMP=
++++ FM_PR_POLL_DATA_DEST=
++++ FM_PR_POLL_CHECK_DEST=
++++ FM_PR_POLL_REG_DEST=
++++ FM_PR_POLL_EXPECT_ID=
++++ FM_PR_POLL_EXPECT_PROVIDER=
++++ FM_PR_POLL_EXPECT_URL=
++++ FM_PR_POLL_EXPECT_HOST=
++++ FM_PR_POLL_EXPECT_PATH=
++++ FM_PR_POLL_EXPECT_NUMBER=
++++ FM_PR_POLL_EXPECT_DATA_HASH=
++++ FM_PR_POLL_EXPECT_TEMPLATE_HASH=
++++ FM_PR_POLL_EXPECT_DATA_IDENTITY=
++++ FM_PR_POLL_EXPECT_CHECK_IDENTITY=
++++ FM_PR_POLL_TEMPLATE=
++++ FM_PR_POLL_STATE_DEVICE=
++++ FM_PR_POLL_SNAPSHOT_ID=
++++ FM_PR_POLL_SNAPSHOT_PROVIDER=
++++ FM_PR_POLL_SNAPSHOT_URL=
++++ FM_PR_POLL_SNAPSHOT_HOST=
++++ FM_PR_POLL_SNAPSHOT_PATH=
++++ FM_PR_POLL_SNAPSHOT_NUMBER=
++++ FM_PR_POLL_SNAPSHOT_DATA_HASH=
++++ FM_PR_POLL_SNAPSHOT_TEMPLATE_HASH=
++++ FM_PR_POLL_SNAPSHOT_DATA_IDENTITY=
++++ FM_PR_POLL_SNAPSHOT_CHECK_IDENTITY=
++++ FM_PR_POLL_SNAPSHOT_REG_HASH=
++++ FM_PR_POLL_SNAPSHOT_REG_IDENTITY=
++++ FM_PR_POLL_REARM_DATA_IDENTITY=
++++ FM_PR_POLL_REARM_CHECK_IDENTITY=
++++ FM_PR_RETIRE_ID=
++++ FM_PR_RETIRE_PROVIDER=
++++ FM_PR_RETIRE_URL=
++++ FM_PR_RETIRE_HOST=
++++ FM_PR_RETIRE_PATH=
++++ FM_PR_RETIRE_NUMBER=
++++ FM_PR_RETIRE_DATA_HASH=
++++ FM_PR_RETIRE_TEMPLATE_HASH=
++++ FM_PR_RETIRE_DATA_IDENTITY=
++++ FM_PR_RETIRE_CHECK_IDENTITY=
++++ FM_PR_RETIRE_REG_HASH=
++++ FM_PR_RETIRE_REG_IDENTITY=
++++ FM_PR_RETIRE_RECEIPT_HASH=
++++ FM_PR_RETIRE_RECEIPT_IDENTITY=
++++ FM_PR_RECORD_STATE=
++++ FM_PR_RECORD_MERGED=
++++ FM_PR_POLL_RETIREMENT_REJECTED=
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-parent-channel-lib.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-parent-channel-lib.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ _FM_PARENT_CHANNEL_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-secondmate-parent-lib.sh
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
+++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
++++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++++ pwd
+++++ _FM_CLASSIFY_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ FM_CREW_STATE_BIN=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-crew-state.sh
+++++ case $- in
+++++ _fm_classify_nounset=on
+++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-timeout-lib.sh
++++++ set -u
+++++ '[' on = on ']'
+++++ unset _fm_classify_nounset
+++++ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'
+++++ FM_CLASSIFY_PAUSED_VERB_DEFAULT=paused
+++++ FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
+++++ FM_CLASSIFY_RESOLVE_VERB_DEFAULT=resolved
+++++ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT=captain-held
+++++ FM_CLASSIFY_EVENT_WINDOW_LINES=200
+++++ FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT=pending-reply-
+++++ FM_OPEN_DECISIONS_FOLD_VERSION=9
+++++ FM_STATUS_SNAPSHOT_EVENT_LINE=
+++++ FM_STATUS_SNAPSHOT_EVENT_MTIME=
+++++ FM_STATUS_SNAPSHOT_EVENT_ENDPOINT=
+++++ STATUS_PRESENTATION_REPORTED=
+++++ STATUS_PRESENTATION_CLASSIFIED=
+++++ _FM_CLASSIFY_KEYLESS_PHASE=$'\036default'
+++++ FM_GATE_HUMAN_DECISION='ask-user: authority decision'
+++++ FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'
+++++ FM_WORKTREE_WRITE_MAXDEPTH=6
+++++ FM_WORKTREE_WRITE_TIMEOUT=10
++++ FM_PARENT_CHANNEL_ID=
++++ FM_PARENT_CHANNEL_ROUTE=
+++ FM_MERGE_OUTCOME_ALREADY_RECORDED=false
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-merge-authority-lib.sh
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-merge-authority-lib.sh
++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ pwd
+++ _FM_MERGE_AUTHORITY_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-pr-lib.sh
++++ FM_PR_PROVIDER=
++++ FM_PR_URL=
++++ FM_PR_HOST=
++++ FM_PR_PATH=
++++ FM_PR_OWNER=
++++ FM_PR_REPO=
++++ FM_PR_NUMBER=
++++ FM_PR_DATA_PROVIDER=
++++ FM_PR_DATA_URL=
++++ FM_PR_DATA_HOST=
++++ FM_PR_DATA_PATH=
++++ FM_PR_DATA_NUMBER=
++++ FM_PR_META_PROVIDER=
++++ FM_PR_META_URL=
++++ FM_PR_META_HOST=
++++ FM_PR_META_PATH=
++++ FM_PR_META_NUMBER=
++++ FM_PR_REG_ID=
++++ FM_PR_REG_PROVIDER=
++++ FM_PR_REG_URL=
++++ FM_PR_REG_HOST=
++++ FM_PR_REG_PATH=
++++ FM_PR_REG_NUMBER=
++++ FM_PR_REG_DATA_HASH=
++++ FM_PR_REG_TEMPLATE_HASH=
++++ FM_PR_REG_DATA_IDENTITY=
++++ FM_PR_REG_CHECK_IDENTITY=
++++ FM_PR_POLL_DATA_TMP=
++++ FM_PR_POLL_CHECK_TMP=
++++ FM_PR_POLL_REG_TMP=
++++ FM_PR_POLL_DATA_DEST=
++++ FM_PR_POLL_CHECK_DEST=
++++ FM_PR_POLL_REG_DEST=
++++ FM_PR_POLL_EXPECT_ID=
++++ FM_PR_POLL_EXPECT_PROVIDER=
++++ FM_PR_POLL_EXPECT_URL=
++++ FM_PR_POLL_EXPECT_HOST=
++++ FM_PR_POLL_EXPECT_PATH=
++++ FM_PR_POLL_EXPECT_NUMBER=
++++ FM_PR_POLL_EXPECT_DATA_HASH=
++++ FM_PR_POLL_EXPECT_TEMPLATE_HASH=
++++ FM_PR_POLL_EXPECT_DATA_IDENTITY=
++++ FM_PR_POLL_EXPECT_CHECK_IDENTITY=
++++ FM_PR_POLL_TEMPLATE=
++++ FM_PR_POLL_STATE_DEVICE=
++++ FM_PR_POLL_SNAPSHOT_ID=
++++ FM_PR_POLL_SNAPSHOT_PROVIDER=
++++ FM_PR_POLL_SNAPSHOT_URL=
++++ FM_PR_POLL_SNAPSHOT_HOST=
++++ FM_PR_POLL_SNAPSHOT_PATH=
++++ FM_PR_POLL_SNAPSHOT_NUMBER=
++++ FM_PR_POLL_SNAPSHOT_DATA_HASH=
++++ FM_PR_POLL_SNAPSHOT_TEMPLATE_HASH=
++++ FM_PR_POLL_SNAPSHOT_DATA_IDENTITY=
++++ FM_PR_POLL_SNAPSHOT_CHECK_IDENTITY=
++++ FM_PR_POLL_SNAPSHOT_REG_HASH=
++++ FM_PR_POLL_SNAPSHOT_REG_IDENTITY=
++++ FM_PR_POLL_REARM_DATA_IDENTITY=
++++ FM_PR_POLL_REARM_CHECK_IDENTITY=
++++ FM_PR_RETIRE_ID=
++++ FM_PR_RETIRE_PROVIDER=
++++ FM_PR_RETIRE_URL=
++++ FM_PR_RETIRE_HOST=
++++ FM_PR_RETIRE_PATH=
++++ FM_PR_RETIRE_NUMBER=
++++ FM_PR_RETIRE_DATA_HASH=
++++ FM_PR_RETIRE_TEMPLATE_HASH=
++++ FM_PR_RETIRE_DATA_IDENTITY=
++++ FM_PR_RETIRE_CHECK_IDENTITY=
++++ FM_PR_RETIRE_REG_HASH=
++++ FM_PR_RETIRE_REG_IDENTITY=
++++ FM_PR_RETIRE_RECEIPT_HASH=
++++ FM_PR_RETIRE_RECEIPT_IDENTITY=
++++ FM_PR_RECORD_STATE=
++++ FM_PR_RECORD_MERGED=
++++ FM_PR_POLL_RETIREMENT_REJECTED=
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-afk-contract.sh
++++ set -u
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-afk-contract.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ FM_AFK_CONTRACT_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
+++++ pwd
++++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++++ FM_AFK_CONTRACT_STATE=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
+++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
++++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++++ pwd
+++++ _FM_CLASSIFY_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ FM_CREW_STATE_BIN=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-crew-state.sh
+++++ case $- in
+++++ _fm_classify_nounset=on
+++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-timeout-lib.sh
++++++ set -u
+++++ '[' on = on ']'
+++++ unset _fm_classify_nounset
+++++ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'
+++++ FM_CLASSIFY_PAUSED_VERB_DEFAULT=paused
+++++ FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
+++++ FM_CLASSIFY_RESOLVE_VERB_DEFAULT=resolved
+++++ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT=captain-held
+++++ FM_CLASSIFY_EVENT_WINDOW_LINES=200
+++++ FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT=pending-reply-
+++++ FM_OPEN_DECISIONS_FOLD_VERSION=9
+++++ FM_STATUS_SNAPSHOT_EVENT_LINE=
+++++ FM_STATUS_SNAPSHOT_EVENT_MTIME=
+++++ FM_STATUS_SNAPSHOT_EVENT_ENDPOINT=
+++++ STATUS_PRESENTATION_REPORTED=
+++++ STATUS_PRESENTATION_CLASSIFIED=
+++++ _FM_CLASSIFY_KEYLESS_PHASE=$'\036default'
+++++ FM_GATE_HUMAN_DECISION='ask-user: authority decision'
+++++ FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'
+++++ FM_WORKTREE_WRITE_MAXDEPTH=6
+++++ FM_WORKTREE_WRITE_TIMEOUT=10
++++ FM_AFK_CONTRACT_VERSION=2
++++ FM_AFK_CONTRACT_READABLE_VERSIONS='1 2'
++++ FM_AFK_CONTRACT_REACH_ANNOUNCED='No phone channel is configured; anything that needs you waits for your return.'
++++ FM_AFK_CONTRACT_SPEND_DEFAULT=4
++++ _FM_AFK_CONTRACT_LOCK_TIMEOUT=120
++++ FM_AFK_CONTRACT_LOCK_HELD=
++++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-afk-contract.sh = bin/fm-watch.sh ']'
+++ FM_MERGE_AUTHORITY=
+++ FM_MERGE_AUTHORITY_REASON=
+++ FM_MERGE_AUTHORITY_RECORD_IDENTITY=
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-x-lib.sh
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-x-lib.sh
++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ pwd
+++ _FM_X_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++ command -v fm_backlog_atomic_transition
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-tasks-axi-lib.sh
++++ FM_TASKS_AXI_MIN=0.2.6
++++ FM_TASKS_AXI_COMPATIBLE_MEMO=
++++ unset FM_TASKS_AXI_COMPATIBLE
++++ case "$FM_TASKS_AXI_COMPATIBLE_MEMO" in
++++ FM_TASKS_AXI_COMPATIBLE_MEMO=
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backlog-transition-lib.sh
++++ FM_BACKLOG_TRANSITION_SKIP=
++++ FM_BACKLOG_TRANSITION_ERROR=
++++ FM_BACKLOG_ROW_RESULT=
++++ FM_BACKLOG_ROW_STATE=
++++ FM_BACKLOG_ROW_ERROR=
++++ FM_BACKLOG_ROW_HOLD_KIND=
++++ FM_BACKLOG_CLOSE_REPLAY_RESULT=
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backlog-transition-lib.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-timeout-lib.sh
+++++ set -u
++++ FM_BACKLOG_ROW_SHOW_WEDGED=0
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-env-lib.sh
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-check-lib.sh
+++ FM_CUSTOM_CHECK_HASH=
+++ FM_CUSTOM_CHECK_SNAPSHOT=
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-pending-reply-lib.sh
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-pending-reply-lib.sh
++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ pwd
+++ _FM_PENDING_REPLY_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-marker-lib.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-marker-lib.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ _FM_MARKER_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-operational-input.sh
+++++ FM_OPERATIONAL_MARK=⁣
+++++ FM_OPERATIONAL_PREFIX='⁣FIRSTMATE_OP: '
+++++ FM_OPERATIONAL_VERSION=v1
+++++ FM_OPERATIONAL_HEADER_PREFIX='⁣FIRSTMATE_OP: v1 '
+++++ FM_OPERATIONAL_KINDS='session-start watcher turn-end-guard away-supervisor launch-brief branch-outcome'
+++++ FM_INJECT_MARK=⁣
+++++ FM_FROMFIRST_LABEL='[fm-from-firstmate]'
+++++ FM_FROMFIRST_SEPARATOR=⁣
+++++ FM_FROMFIRST_MARK='[fm-from-firstmate]⁣'
+++++ FM_LEGACY_SESSIONSTART='Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.'
+++++ FM_LEGACY_WATCHER_PREFIX='FIRSTMATE WATCHER WAKE: '
+++++ FM_LEGACY_WATCHER_SUFFIX=$'\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.'
+++++ FM_LEGACY_TURNEND_PREFIX=$'TURN WOULD END BLIND - supervision is off. The watcher cycle is missing, failed, or unhealthy. Follow the harness recovery instruction below before ending the turn.\n\n'
+++++ FM_LEGACY_AWAY_PREFIX='⁣Supervisor escalate ('
+++++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-operational-input.sh = bin/fm-watch.sh ']'
++++ unset _FM_MARKER_LIB_DIR
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
++++ FM_BACKEND_SCRIPT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ FM_BACKEND_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ unset FM_BACKEND_SCRIPT
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
+++++ pwd
++++ FM_BACKEND_DEFAULT_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++++ FM_BACKEND_CONFIG_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/config
++++ FM_BACKEND_KNOWN='tmux herdr zellij orca cmux'
++++ FM_BACKEND_SPAWN='tmux herdr zellij orca cmux'
++++ FM_BACKEND_CMUX_BUNDLE_ID=com.cmuxterm.app
++++ FM_BACKEND_VISIBLE_CAPTURE='tmux herdr zellij'
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-tmux-lib.sh
+++++ dirname -- /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-tmux-lib.sh
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-composer-lib.sh
+++++ FM_COMPOSER_UNICODE_SPACES=()
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0302\0205'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0302\0240'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0341\0232\0200'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0200'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0201'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0202'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0203'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0204'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0205'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0206'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0207'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0210'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0211'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0212'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0250'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0251'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0200\0257'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0342\0201\0237'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ for _fm_composer_space_octal in '\0302\0205' '\0302\0240' '\0341\0232\0200' '\0342\0200\0200' '\0342\0200\0201' '\0342\0200\0202' '\0342\0200\0203' '\0342\0200\0204' '\0342\0200\0205' '\0342\0200\0206' '\0342\0200\0207' '\0342\0200\0210' '\0342\0200\0211' '\0342\0200\0212' '\0342\0200\0250' '\0342\0200\0251' '\0342\0200\0257' '\0342\0201\0237' '\0343\0200\0200'
+++++ printf -v _fm_composer_space_utf8 %b '\0343\0200\0200'
+++++ FM_COMPOSER_UNICODE_SPACES+=("$_fm_composer_space_utf8")
+++++ unset -v _fm_composer_space_octal _fm_composer_space_utf8
+++++ FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|Ctrl\+c:cancel|ctrl\+c to stop|esc[[:space:]]+to[[:space:]]+cancel|esc twice to interrupt|^[[:space:]]*❭ Guide Devin while it works$'
+++++ FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
+++++ FM_DELIVERY_DEVIN_BUSY_REGEX_DEFAULT='esc twice to interrupt|^[[:space:]]*❭ Guide Devin while it works$'
+++++ FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
+++++ FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
+++++ FM_DELIVERY_PI_BUSY_REGEX_DEFAULT='Working\.\.\.'
+++++ FM_OMP_SPINNER_FRAMES_RE='(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|⣾|⣽|⣻|⢿|⡿|⣟|⣯|⣷)'
+++++ FM_DELIVERY_OMP_BUSY_REGEX_DEFAULT='Working…|^[[:space:]]*(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|⣾|⣽|⣻|⢿|⡿|⣟|⣯|⣷)[[:space:]]+[0-9]+[smh]'
+++++ FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT='Ctrl\+c:cancel'
+++++ FM_DELIVERY_CURSOR_BUSY_REGEX_DEFAULT='ctrl\+c to stop'
+++++ FM_DELIVERY_AGY_BUSY_REGEX_DEFAULT='esc[[:space:]]+to[[:space:]]+cancel'
+++++ FM_DELIVERY_KIMI_BUSY_REGEX_DEFAULT='^[[:space:]]*(🌑|🌒|🌓|🌔|🌕|🌖|🌗|🌘)[[:space:]]+·[[:space:]]+'
++++++ printf '%s\n' ❯ › ⟩ → ❭
+++++ FM_COMPOSER_AGENT_PROMPT_GLYPHS=$'❯\n›\n⟩\n→\n❭'
++++++ printf '%s\n' '>' '$' % '#'
+++++ FM_COMPOSER_SHELL_PROMPT_GLYPHS=$'>\n$\n%\n#'
+++++ FM_COMPOSER_IDLE_RE_DEFAULT='^Type a message\.\.\.$|^Ask anything(\.\.\.|…)|^Plan, search, build anything$|^Add a follow-up$|^Ask Devin to build features, fix bugs, or work on your code$'
+++++ FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT='^(Build|Plan)[[:space:]]+·[[:space:]]+'
+++++ FM_COMPOSER_MODE_HINT_RE_DEFAULT='^[[:space:]]*(⏵|⏸)'
+++++ FM_COMPOSER_OMP_STATUS_RE_DEFAULT='^[[:space:]]*(π|󰵗)[[:space:]]+·[[:space:]]|^[[:space:]]*(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|⣾|⣽|⣻|⢿|⡿|⣟|⣯|⣷)[[:space:]]+[0-9]+[smh]([[:space:]]|$)|[[:space:]]·[[:space:]].*[0-9]+(\.[0-9]+)?%/[0-9]+K'
+++++ FM_COMPOSER_PI_STATUS_RE_DEFAULT='^\$[0-9]+(\.[0-9]+)?([[:space:]]|$)'
+++++ FM_COMPOSER_CAPTURE_LINES=20
+++++ FM_COMPOSER_PI_MAX_LINES=8
+++++ FM_COMPOSER_GROK_TITLE_OVERHANG=3
+++++ dirname -- /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-tmux-lib.sh
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-cursor-lib.sh
+++++ FM_CURSOR_PROBE_TIMEOUT=10
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ _FM_CLASSIFY_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ FM_CREW_STATE_BIN=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-crew-state.sh
++++ case $- in
++++ _fm_classify_nounset=on
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-timeout-lib.sh
+++++ set -u
++++ '[' on = on ']'
++++ unset _fm_classify_nounset
++++ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'
++++ FM_CLASSIFY_PAUSED_VERB_DEFAULT=paused
++++ FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
++++ FM_CLASSIFY_RESOLVE_VERB_DEFAULT=resolved
++++ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT=captain-held
++++ FM_CLASSIFY_EVENT_WINDOW_LINES=200
++++ FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT=pending-reply-
++++ FM_OPEN_DECISIONS_FOLD_VERSION=9
++++ FM_STATUS_SNAPSHOT_EVENT_LINE=
++++ FM_STATUS_SNAPSHOT_EVENT_MTIME=
++++ FM_STATUS_SNAPSHOT_EVENT_ENDPOINT=
++++ STATUS_PRESENTATION_REPORTED=
++++ STATUS_PRESENTATION_CLASSIFIED=
++++ _FM_CLASSIFY_KEYLESS_PHASE=$'\036default'
++++ FM_GATE_HUMAN_DECISION='ask-user: authority decision'
++++ FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'
++++ FM_WORKTREE_WRITE_MAXDEPTH=6
++++ FM_WORKTREE_WRITE_TIMEOUT=10
+++ FM_PENDING_REPLY_SCHEMA=fm-pending-reply.v1
+++ FM_PENDING_REPLY_CORR_RE='corr=[A-Fa-f0-9]{16}'
+++ FM_PENDING_REPLY_GRACE_DEFAULT=120
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-busy-lib.sh
+++ FM_BUSY_LIB_VERSION=v1
+++ FM_BUSY_KIMI_VERIFIED_VERSIONS=
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-task-inbox-lib.sh
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-task-inbox-lib.sh
++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ pwd
+++ _FM_TASK_INBOX_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-wake-lib.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-wake-lib.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ FM_WAKE_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
+++++ pwd
++++ FM_WAKE_DEFAULT_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++++ STATE=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ FM_WAKE_QUEUE=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue
++++ FM_WAKE_QUEUE_LOCK=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++++ FM_LOCK_STALE_AFTER=2
+++++ uname
++++ _FM_UNAME=Linux
++++ mkdir -p /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ FM_WATCHER_MATCHED_IDENTITY=
++++ FM_WATCHER_HEALTHY_PID=
++++ FM_WATCHER_HEALTHY_IDENTITY=
++++ FM_WATCHER_VERDICT_OK=false
++++ FM_WATCHER_VERDICT_REASON=stale-beacon
++++ FM_RECOVERY_MARKER_TOKEN=
++++ FM_RECOVERY_MARKER_ACTION=none
++++ FM_WAKE_STATUS_KEY=
++++ FM_WAKE_STATUS_HISTORICAL=false
++++ FM_WAKE_EVENT_LINE=
++++ FM_WAKE_UNREAD_LINES=
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
++++ FM_BACKEND_SCRIPT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ FM_BACKEND_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ unset FM_BACKEND_SCRIPT
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
+++++ pwd
++++ FM_BACKEND_DEFAULT_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++++ FM_BACKEND_CONFIG_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/config
++++ FM_BACKEND_KNOWN='tmux herdr zellij orca cmux'
++++ FM_BACKEND_SPAWN='tmux herdr zellij orca cmux'
++++ FM_BACKEND_CMUX_BUNDLE_ID=com.cmuxterm.app
++++ FM_BACKEND_VISIBLE_CAPTURE='tmux herdr zellij'
+++ FM_TASK_INBOX_SCHEMA=fm-task-inbox.v1
+++ FM_TASK_INBOX_GRACE_DEFAULT=90
+++ FM_TASK_INBOX_RING_MAX_DEFAULT=3
+++ FM_TASK_INBOX_LOCK_WAIT_DEFAULT=5
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-afk-contract.sh
+++ set -u
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-afk-contract.sh
++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ pwd
+++ FM_AFK_CONTRACT_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
++++ pwd
+++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
+++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
+++ FM_AFK_CONTRACT_STATE=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-classify-lib.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ _FM_CLASSIFY_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ FM_CREW_STATE_BIN=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-crew-state.sh
++++ case $- in
++++ _fm_classify_nounset=on
++++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-timeout-lib.sh
+++++ set -u
++++ '[' on = on ']'
++++ unset _fm_classify_nounset
++++ FM_CLASSIFY_CAPTAIN_RE_DEFAULT='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'
++++ FM_CLASSIFY_PAUSED_VERB_DEFAULT=paused
++++ FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
++++ FM_CLASSIFY_RESOLVE_VERB_DEFAULT=resolved
++++ FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT=captain-held
++++ FM_CLASSIFY_EVENT_WINDOW_LINES=200
++++ FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT=pending-reply-
++++ FM_OPEN_DECISIONS_FOLD_VERSION=9
++++ FM_STATUS_SNAPSHOT_EVENT_LINE=
++++ FM_STATUS_SNAPSHOT_EVENT_MTIME=
++++ FM_STATUS_SNAPSHOT_EVENT_ENDPOINT=
++++ STATUS_PRESENTATION_REPORTED=
++++ STATUS_PRESENTATION_CLASSIFIED=
++++ _FM_CLASSIFY_KEYLESS_PHASE=$'\036default'
++++ FM_GATE_HUMAN_DECISION='ask-user: authority decision'
++++ FM_WORKTREE_WRITE_PRUNE='.git node_modules .venv venv __pycache__ .mypy_cache .pytest_cache .ruff_cache .tox target dist build .next .cache vendor'
++++ FM_WORKTREE_WRITE_MAXDEPTH=6
++++ FM_WORKTREE_WRITE_TIMEOUT=10
+++ FM_AFK_CONTRACT_VERSION=2
+++ FM_AFK_CONTRACT_READABLE_VERSIONS='1 2'
+++ FM_AFK_CONTRACT_REACH_ANNOUNCED='No phone channel is configured; anything that needs you waits for your return.'
+++ FM_AFK_CONTRACT_SPEND_DEFAULT=4
+++ _FM_AFK_CONTRACT_LOCK_TIMEOUT=120
+++ FM_AFK_CONTRACT_LOCK_HELD=
+++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-afk-contract.sh = bin/fm-watch.sh ']'
++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-secondmate-liveness-lib.sh
+++ set -u
+++++ dirname -- /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-secondmate-liveness-lib.sh
++++ cd -- /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ pwd -P
+++ FM_SM_LIVE_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
++++ FM_BACKEND_SCRIPT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
++++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-backend.sh
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
+++++ pwd
++++ FM_BACKEND_LIB_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin
++++ unset FM_BACKEND_SCRIPT
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/..
+++++ pwd
++++ FM_BACKEND_DEFAULT_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_ROOT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N
++++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++++ FM_BACKEND_CONFIG_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/config
++++ FM_BACKEND_KNOWN='tmux herdr zellij orca cmux'
++++ FM_BACKEND_SPAWN='tmux herdr zellij orca cmux'
++++ FM_BACKEND_CMUX_BUNDLE_ID=com.cmuxterm.app
++++ FM_BACKEND_VISIBLE_CAPTURE='tmux herdr zellij'
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-remote-readiness-lib.sh
++++ FM_REMOTE_READINESS_OUT=
+++ . /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-timeout-lib.sh
++++ set -u
++ WATCH_LOCK=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++ WATCH_PATH=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-watch.sh
++ WATCHER_DOWNTIME_MARKER=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down
+++ uname
++ '[' Linux = Darwin ']'
++ POLL=1
+++ fm_poll_derived_grace 1
+++ local poll=1 margin=60 derived
+++ case "$poll" in
+++ derived=61
+++ '[' 61 -ge 300 ']'
+++ derived=300
+++ printf '%s\n' 300
++ WATCHER_STALE_GRACE=300
++ WATCHER_STALL_BOUND=900
++ HEARTBEAT=999999
++ HEARTBEAT_MAX=7200
++ CHECK_INTERVAL=999999
++ CHECK_TIMEOUT=30
++ HOME_SUMMARY_INTERVAL=300
++ case "$HOME_SUMMARY_INTERVAL" in
++ SIGNAL_GRACE=30
++ TURNEND_CHURN_ABSORB_SECS=900
++ STALE_ESCALATE_SECS=240
++ BUSY_TURN_MAX_SECS=3600
++ SECONDMATE_WAKE_STALL_SECS=
++ case "$SECONDMATE_WAKE_STALL_SECS" in
++ SECONDMATE_WAKE_STALL_SECS=180
++ SECONDMATE_LIVENESS_SECS=
++ case "$SECONDMATE_LIVENESS_SECS" in
++ SECONDMATE_LIVENESS_SECS=60
++ SECONDMATE_LIVENESS_TIMEOUT=
++ case "$SECONDMATE_LIVENESS_TIMEOUT" in
++ SECONDMATE_LIVENESS_TIMEOUT=120
++ SECONDMATE_LIVENESS_MAX_ATTEMPTS=
++ case "$SECONDMATE_LIVENESS_MAX_ATTEMPTS" in
++ SECONDMATE_LIVENESS_MAX_ATTEMPTS=3
++ SECONDMATE_LIVENESS_WINDOW_SECS=
++ case "$SECONDMATE_LIVENESS_WINDOW_SECS" in
++ SECONDMATE_LIVENESS_WINDOW_SECS=3600
++ PAUSE_RESURFACE_SECS=14400
++ EVENT_CAP_FAIL_MAX=3
++ _event_cap_key=
++ _event_cap_ok=0
++ _event_cap_fails=0
++ FM_WEDGE_DEMAND_INSPECT_COUNT=3
++ STALE_WAIT_DECLARATION=
++ CAPTAIN_CALL_IDENTITY=
++ FM_ACTIVE_CHECK_PID=
++ FM_ACTIVE_CHECK_PGID=
++ FM_CHECK_OUTPUT=
++ FM_CHECK_RESULT=
++ FM_CHECK_SIGNAL_PENDING=
++ '[' bin/fm-watch.sh '!=' bin/fm-watch.sh ']'
++ fm_procevent_launch_confirm_seconds
++ local value=
++ '[' -z '' ']'
++ printf '%s\n' 3
++ return 0
++ EVICTED_PID=
++ EVICTED_BEAT_AGE=
++ BEAT=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-watcher-beat
++ fm_lock_try_acquire /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock pid steal cur rc steal_owner primary_owner current
++ FM_LOCK_HELD_PID=
++ FM_LOCK_OWNER_DIR=
++ FM_LOCK_RECOVERED_PID=
++ fm_lock_try_create /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock allowed_steal_owner= ownerdir
++ FM_LOCK_OWNER_DIR=
+++ fm_lock_owner_dir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
+++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock lock_abs
++++ fm_lock_abs_path /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++++ local path=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock dir base
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ basename /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++++ base=.watch.lock
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ pwd -P
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ printf '%s/%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state .watch.lock
+++ lock_abs=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
+++ mktemp -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.XXXXXX
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock ']'
++ fm_lock_prepare_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
++ printf '%s\n' 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0/pid
++ back=1208305
++ '[' 1208305 = 1208305 ']'
++ ln -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 ']'
++ fm_lock_claim /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 allowed_steal_owner= mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0/pid
++ back=1208305
++ '[' 1208305 '!=' 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0 ']'
++ fm_lock_claim_blocked_by_steal /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock allowed_steal_owner= steal
++ steal=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.steal
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.steal ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.steal ']'
++ return 1
++ return 0
++ FM_LOCK_OWNER_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock.owner.SiOPY0
++ return 0
++ return 0
++ '[' -n '' ']'
++ WATCHER_RECOVERY_PENDING=0
++ '[' -n '' ']'
++ '[' 0 '!=' 1 ']'
++ fm_recovery_marker_reopen_announced /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down
++ fm_recovery_transition /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down reopen-announced
++ local marker=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down action=reopen-announced target= value=
++ case "$action" in
++ _fm_recovery_marker_reopen_announced /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down
++ local marker=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down lock
++ lock=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_acquire_wait /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_try_acquire /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock pid steal cur rc steal_owner primary_owner current
++ FM_LOCK_HELD_PID=
++ FM_LOCK_OWNER_DIR=
++ FM_LOCK_RECOVERED_PID=
++ fm_lock_try_create /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock allowed_steal_owner= ownerdir
++ FM_LOCK_OWNER_DIR=
+++ fm_lock_owner_dir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
+++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock lock_abs
++++ fm_lock_abs_path /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ local path=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock dir base
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ basename /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ base=.watcher-down.lock
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ pwd -P
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ printf '%s/%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state .watcher-down.lock
+++ lock_abs=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
+++ mktemp -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.XXXXXX
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
++ fm_lock_prepare_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
++ printf '%s\n' 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu/pid
++ back=1208305
++ '[' 1208305 = 1208305 ']'
++ ln -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu ']'
++ fm_lock_claim /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu allowed_steal_owner= mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu/pid
++ back=1208305
++ '[' 1208305 '!=' 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu ']'
++ fm_lock_claim_blocked_by_steal /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock allowed_steal_owner= steal
++ steal=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal ']'
++ return 1
++ return 0
++ FM_LOCK_OWNER_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ return 0
++ return 0
++ fm_recovery_marker_read /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down
++ local marker=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down line count
++ FM_RECOVERY_MARKER_TOKEN=
++ '[' -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down ']'
++ return 1
++ fm_lock_release /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock pid current ownerdir
++ fm_current_pid current
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v current %s 1208305
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
+++ fm_lock_link_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu ']'
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu/pid
++ pid=1208305
++ '[' 1208305 = 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu ']'
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_discard_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu ']'
++ fm_lock_clean_known_files /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu/pid /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu/fm-home /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu/pid-identity /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu/role /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu/watcher-path
++ rmdir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.1l7DQu
++ return 0
++ return 0
++ fm_recovery_marker_arm_check /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down
++ fm_recovery_transition /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down arm-check
++ local marker=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down action=arm-check target= value=
++ case "$action" in
++ _fm_recovery_marker_arm_check /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down
++ local marker=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down lock line quarantine
++ FM_RECOVERY_MARKER_ACTION=none
++ lock=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_acquire_wait /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ fm_lock_try_acquire /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock pid steal cur rc steal_owner primary_owner current
++ FM_LOCK_HELD_PID=
++ FM_LOCK_OWNER_DIR=
++ FM_LOCK_RECOVERED_PID=
++ fm_lock_try_create /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock allowed_steal_owner= ownerdir
++ FM_LOCK_OWNER_DIR=
+++ fm_lock_owner_dir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
+++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock lock_abs
++++ fm_lock_abs_path /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++++ local path=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock dir base
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ basename /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++++ base=.wake-queue.lock
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ pwd -P
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ printf '%s/%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state .wake-queue.lock
+++ lock_abs=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
+++ mktemp -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.XXXXXX
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ']'
++ fm_lock_prepare_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
++ printf '%s\n' 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY/pid
++ back=1208305
++ '[' 1208305 = 1208305 ']'
++ ln -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY ']'
++ fm_lock_claim /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY allowed_steal_owner= mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY/pid
++ back=1208305
++ '[' 1208305 '!=' 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY ']'
++ fm_lock_claim_blocked_by_steal /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock allowed_steal_owner= steal
++ steal=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.steal
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.steal ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.steal ']'
++ return 1
++ return 0
++ FM_LOCK_OWNER_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ return 0
++ return 0
++ fm_lock_acquire_wait /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_try_acquire /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock pid steal cur rc steal_owner primary_owner current
++ FM_LOCK_HELD_PID=
++ FM_LOCK_OWNER_DIR=
++ FM_LOCK_RECOVERED_PID=
++ fm_lock_try_create /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock allowed_steal_owner= ownerdir
++ FM_LOCK_OWNER_DIR=
+++ fm_lock_owner_dir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
+++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock lock_abs
++++ fm_lock_abs_path /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ local path=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock dir base
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ basename /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ base=.watcher-down.lock
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ pwd -P
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ printf '%s/%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state .watcher-down.lock
+++ lock_abs=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
+++ mktemp -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.XXXXXX
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
++ fm_lock_prepare_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
++ printf '%s\n' 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18/pid
++ back=1208305
++ '[' 1208305 = 1208305 ']'
++ ln -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 ']'
++ fm_lock_claim /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 allowed_steal_owner= mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18/pid
++ back=1208305
++ '[' 1208305 '!=' 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 ']'
++ fm_lock_claim_blocked_by_steal /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock allowed_steal_owner= steal
++ steal=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal ']'
++ return 1
++ return 0
++ FM_LOCK_OWNER_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ return 0
++ return 0
++ '[' '!' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down ']'
++ '[' '!' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down ']'
++ '[' -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue ']'
++ fm_lock_release /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock pid current ownerdir
++ fm_current_pid current
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v current %s 1208305
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
+++ fm_lock_link_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 ']'
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18/pid
++ pid=1208305
++ '[' 1208305 = 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 ']'
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_discard_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18 ']'
++ fm_lock_clean_known_files /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18/pid /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18/fm-home /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18/pid-identity /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18/role /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18/watcher-path
++ rmdir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.8cSt18
++ return 0
++ fm_lock_release /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock pid current ownerdir
++ fm_current_pid current
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v current %s 1208305
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ']'
+++ fm_lock_link_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY ']'
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY/pid
++ pid=1208305
++ '[' 1208305 = 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY ']'
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ fm_lock_discard_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY ']'
++ fm_lock_clean_known_files /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY/pid /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY/fm-home /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY/pid-identity /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY/role /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY/watcher-path
++ rmdir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.w7L4gY
++ return 0
++ return 0
++ '[' 0 = 1 ']'
++ '[' none = recover ']'
++ HOME_SUMMARY_PID=
++ RECONCILE_REQUEST_PID=
++ PR_POLL_CONTROL_LOCK=
++ PR_POLL_PUBLISH_LOCK=
++ trap watcher_cleanup EXIT
++ watcher_stop_signals
++ trap - HUP TERM
++ trap 'exit 1' INT
++ WATCHER_PID=1208305
++ printf '%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
++ printf '%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-watch.sh
++ FM_WATCH_DELIVERY_PID=1208305
+++ fm_pid_identity 1208305
++ FM_WATCH_DELIVERY_IDENTITY='linux-starttime=11380505 cmdline-hex=62617368002d780062696e2f666d2d77617463682e736800'
++ printf '%s\n' 'linux-starttime=11380505 cmdline-hex=62617368002d780062696e2f666d2d77617463682e736800'
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-heartbeat ']'
++ touch /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-heartbeat
++ fm_pr_poll_retirement_recover_all /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-pr-poll.sh
++ local state=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state template=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-pr-poll.sh receipt id
++ FM_PR_POLL_RETIREMENT_REJECTED=
++ for receipt in "$state"/*.pr-poll-retirement
++ '[' -e '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.pr-poll-retirement' ']'
++ '[' -L '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.pr-poll-retirement' ']'
++ continue
++ '[' -z '' ']'
++ watcher_install_lock_wait
++ :
++ watcher_require_home
++ '[' 1 -eq 1 ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state ']'
++ '[' '!' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock/pid ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin ']'
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock/pid
++ '[' 1208305 '!=' 1208305 ']'
++ touch /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-watcher-beat
++ '[' '!' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/config/fleet-ledger ']'
+++ age_of /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/home-summary.json
+++ local f=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/home-summary.json m now
++++ stat_mtime /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/home-summary.json
++++ stat -c %Y /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/home-summary.json
+++ m=
+++ echo 999999
+++ return
++ '[' 999999 -ge 300 ']'
++ home_summary_refresh_detached
++ '[' -n '' ']'
++ HOME_SUMMARY_PID=1209393
++ reconcile_requests_pending
++ local request
++ '[' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/reconcile-notify ']'
++ return 1
++ pending_reply_remote_observe_this_pass
++ FM_HOME_SUMMARY_IF_IDLE=1
++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-home-summary-refresh.sh --best-effort
+++ age_of /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick
+++ local f=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick m now
++++ stat_mtime /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick
++++ stat -c %Y /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick
+++ m=
+++ echo 999999
+++ return
++ '[' 999999 -ge 60 ']'
++ FM_PENDING_REPLY_REMOTE_OBSERVE=1
++ fm_pending_reply_tick /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++ local state=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state dir rec corr task_id phase delivered meta backend target label busy sm_home harness remote_host
++ local observation observation_task found i observe_bin
++ observation_tasks=()
++ observation_values=()
++ local -a observation_tasks observation_values
+++ fm_pending_reply_dir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++ local state=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++ '[' -n '' ']'
+++ printf %s/pending-replies /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/pending-replies
++ '[' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/pending-replies ']'
++ return 0
++ secondmate_liveness_tick
++ local tick_marker=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick
+++ age_of /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick
+++ local f=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick m now
++++ stat_mtime /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick
++++ stat -c %Y /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick
+++ m=
+++ echo 999999
+++ return
++ '[' 999999 -ge 60 ']'
++ touch /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.secondmate-liveness-tick
+++ date +%s
++ local now=1790835059 meta id kind
++ local bound_marker attempts notify_key reason queued err first_reason= failed=0
++ for meta in "$STATE"/*.meta
++ '[' -e '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.meta' ']'
++ continue
++ '[' -z '' ']'
++ '[' 0 -eq 0 ']'
++ secondmate_wake_stall_tick
+++ date +%s
++ local now=1790835059 threshold=180
++ local meta task kind remote_host home queue row epoch seq row_key marker progress_marker ring_marker progress observed_at observed_key
++ local receipt receipt_dir notify_key queued idle reason episode_alerted already_rung w
++ for meta in "$STATE"/*.meta
++ '[' -e '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.meta' ']'
++ continue
++ return 0
++ '[' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/procevent ']'
++ procevent_surface_queued
++ local key reason captured= stranded= unstarted=
++ PROCEVENT_SURFACED=
++ '[' -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue ']'
++ return 0
++ resurface_after_downtime
++ '[' 0 = 1 ']'
++ '[' 0 -ne 1 ']'
++ watcher_require_home
++ '[' 1 -eq 1 ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state ']'
++ '[' '!' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock/pid ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin ']'
++ fm_recovery_marker_arm_check /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down
++ fm_recovery_transition /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down arm-check
++ local marker=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down action=arm-check target= value=
++ case "$action" in
++ _fm_recovery_marker_arm_check /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down
++ local marker=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down lock line quarantine
++ FM_RECOVERY_MARKER_ACTION=none
++ lock=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_acquire_wait /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ watcher_lock_acquire_wait /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ true
++ '[' 0 -eq 1 ']'
++ watcher_require_home
++ '[' 1 -eq 1 ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state ']'
++ '[' '!' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock/pid ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin ']'
++ fm_lock_try_acquire /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock pid steal cur rc steal_owner primary_owner current
++ FM_LOCK_HELD_PID=
++ FM_LOCK_OWNER_DIR=
++ FM_LOCK_RECOVERED_PID=
++ fm_lock_try_create /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock allowed_steal_owner= ownerdir
++ FM_LOCK_OWNER_DIR=
+++ fm_lock_owner_dir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
+++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock lock_abs
++++ fm_lock_abs_path /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++++ local path=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock dir base
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ basename /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++++ base=.wake-queue.lock
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ pwd -P
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ printf '%s/%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state .wake-queue.lock
+++ lock_abs=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
+++ mktemp -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.XXXXXX
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ']'
++ fm_lock_prepare_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
++ printf '%s\n' 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W/pid
++ back=1208305
++ '[' 1208305 = 1208305 ']'
++ ln -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W ']'
++ fm_lock_claim /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W allowed_steal_owner= mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W/pid
++ back=1208305
++ '[' 1208305 '!=' 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W ']'
++ fm_lock_claim_blocked_by_steal /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock allowed_steal_owner= steal
++ steal=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.steal
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.steal ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.steal ']'
++ return 1
++ return 0
++ FM_LOCK_OWNER_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ return 0
++ return 0
++ return 0
++ fm_lock_acquire_wait /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ watcher_lock_acquire_wait /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ true
++ '[' 0 -eq 1 ']'
++ watcher_require_home
++ '[' 1 -eq 1 ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state ']'
++ '[' '!' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock/pid ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin ']'
++ fm_lock_try_acquire /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock pid steal cur rc steal_owner primary_owner current
++ FM_LOCK_HELD_PID=
++ FM_LOCK_OWNER_DIR=
++ FM_LOCK_RECOVERED_PID=
++ fm_lock_try_create /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock allowed_steal_owner= ownerdir
++ FM_LOCK_OWNER_DIR=
+++ fm_lock_owner_dir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
+++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock lock_abs
++++ fm_lock_abs_path /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ local path=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock dir base
+++++ dirname /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ basename /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++++ base=.watcher-down.lock
+++++ cd /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++++ pwd -P
++++ dir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++++ printf '%s/%s\n' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state .watcher-down.lock
+++ lock_abs=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
+++ mktemp -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.XXXXXX
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
++ fm_lock_prepare_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
++ printf '%s\n' 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL/pid
++ back=1208305
++ '[' 1208305 = 1208305 ']'
++ ln -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL ']'
++ fm_lock_claim /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL allowed_steal_owner= mypid back
++ fm_current_pid mypid
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v mypid %s 1208305
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL/pid
++ back=1208305
++ '[' 1208305 '!=' 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL ']'
++ fm_lock_claim_blocked_by_steal /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ''
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock allowed_steal_owner= steal
++ steal=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal
++ '[' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal ']'
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.steal ']'
++ return 1
++ return 0
++ FM_LOCK_OWNER_DIR=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ return 0
++ return 0
++ return 0
++ '[' '!' -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down ']'
++ '[' '!' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down ']'
++ '[' -s /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue ']'
++ fm_lock_release /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock pid current ownerdir
++ fm_current_pid current
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v current %s 1208305
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ']'
+++ fm_lock_link_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL ']'
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL/pid
++ pid=1208305
++ '[' 1208305 = 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL ']'
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock
++ fm_lock_discard_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL ']'
++ fm_lock_clean_known_files /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL/pid /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL/fm-home /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL/pid-identity /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL/role /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL/watcher-path
++ rmdir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watcher-down.lock.owner.KabJJL
++ return 0
++ fm_lock_release /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock pid current ownerdir
++ fm_current_pid current
++ local fm_pid
++ fm_pid=1208305
++ case "$fm_pid" in
++ '[' 1 -gt 0 ']'
++ printf -v current %s 1208305
++ '[' -L /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ']'
+++ fm_lock_link_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W ']'
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W/pid
++ pid=1208305
++ '[' 1208305 = 1208305 ']'
++ fm_lock_points_to_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W actual
+++ readlink /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ actual=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ '[' /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W = /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W ']'
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock
++ fm_lock_discard_owner /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ local ownerdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ '[' -n /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W ']'
++ fm_lock_clean_known_files /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ local lockdir=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ rm -f /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W/pid /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W/fm-home /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W/pid-identity /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W/role /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W/watcher-path
++ rmdir /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.wake-queue.lock.owner.uNwD6W
++ return 0
++ return 0
++ '[' none = recover ']'
++ return 0
++ inactive_out=
+++ FM_HOME=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state
+++ FM_STATE_OVERRIDE=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
+++ /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/bin/fm-inactive-reconcile.sh scan
++ inactive_out=
++ '[' -n '' ']'
+++ age_of /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-check
+++ local f=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-check m now
++++ stat_mtime /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-check
++++ stat -c %Y /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-check
+++ m=
+++ echo 999999
+++ return
++ '[' 999999 -ge 999999 ']'
++ rejected_checks=
++ contribution_check_output=
++ for c in "$STATE"/*.check.sh
++ '[' -e '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.check.sh' ']'
++ continue
++ '[' -n '' ']'
++ touch /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-check
++ '[' -n '' ']'
+++ scan_signals
+++ local f sig sf
+++ for f in "$STATE"/*.status "$STATE"/*.turn-ended
+++ '[' '!' -e '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.status' ']'
+++ case "$f" in
+++ '[' -L '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.status' ']'
+++ continue
+++ for f in "$STATE"/*.status "$STATE"/*.turn-ended
+++ '[' '!' -e '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.turn-ended' ']'
+++ case "$f" in
+++ continue
+++ return 0
++ pending=
++ '[' -n '' ']'
++ IFS=
++ read -r w
+++ recorded_windows
+++ local meta w seen=
+++ for meta in "$STATE"/*.meta
+++ '[' -e '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.meta' ']'
+++ continue
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.heartbeat-streak
+++ echo 0
++ streak=0
++ '[' 0 -gt 12 ']'
++ hb=999999
++ '[' 999999 -gt 7200 ']'
++ hb=7200
+++ age_of /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-heartbeat
+++ local f=/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-heartbeat m now
++++ stat_mtime /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-heartbeat
++++ stat -c %Y /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.last-heartbeat
+++ m=1790835059
++++ date +%s
+++ now=1790835061
+++ '[' 1790835059 -le 1790835061 ']'
+++ echo 2
++ '[' 2 -ge 7200 ']'
++ event_wait_or_sleep
++ local w b session first_backend= first_session= rec rc
++ windows=()
++ local windows
++ IFS=
++ read -r w
+++ recorded_windows
+++ local meta w seen=
+++ for meta in "$STATE"/*.meta
+++ '[' -e '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/*.meta' ']'
+++ continue
++ '[' 0 -eq 0 ']'
++ sleep 1
++ return
++ :
++ watcher_require_home
++ '[' 1 -eq 1 ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state ']'
++ '[' '!' -d /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state ']'
++ echo 'watcher: exiting - state directory no longer exists: /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state'
+watcher: exiting - state directory no longer exists: /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state
++ exit 1
++ watcher_cleanup
++ local cleanup_status=0 owns_lock=0 transition=release-lock
++ WATCHER_IN_CLEANUP=1
++ pr_poll_publish_release
++ '[' -z '' ']'
++ PR_POLL_PUBLISH_LOCK=
++ pr_poll_control_release
++ '[' -z '' ']'
++ PR_POLL_CONTROL_LOCK=
+++ cat /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state/.watch.lock/pid
+++ true
++ '[' '' = 1208305 ']'
++ fm_active_check_stop
++ local pid= pgid= i
++ '[' -n '' ']'
++ '[' -n '' ']'
++ return 0
++ fm_check_output_cleanup
++ '[' -z '' ']'
++ FM_CHECK_OUTPUT=
++ fm_custom_check_snapshot_cleanup
++ '[' -z '' ']'
++ FM_CUSTOM_CHECK_SNAPSHOT=
++ '[' 0 -eq 1 ']'
++ return 0

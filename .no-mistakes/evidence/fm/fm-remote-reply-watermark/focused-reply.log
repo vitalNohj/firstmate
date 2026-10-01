@@ -1,0 +1,4 @@
+ok - a preempted reply poll cannot publish channel freshness
+ok - a quiet reply window publishes the caught-up watermark the reply guard reads
+ok - repeated supervision ticks leave the real remote reader time to publish freshness
+ok - five late remote answers settle their open records without asking the mate again

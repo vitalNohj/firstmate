@@ -1,0 +1,23 @@
+[
+  {
+    "scenario": "state",
+    "exit": 1,
+    "seconds": 0.976,
+    "reason": "watcher: exiting - state directory no longer exists: /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-state/state",
+    "state_recreated": false
+  },
+  {
+    "scenario": "home",
+    "exit": 1,
+    "seconds": 0.989,
+    "reason": "watcher: exiting - home no longer exists: /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-home",
+    "state_recreated": false
+  },
+  {
+    "scenario": "pending-lock",
+    "exit": 1,
+    "seconds": 0.114,
+    "reason": "watcher: exiting - state directory no longer exists: /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V0SE3MQDEC017AEC6F2G2N/.validation-tmp/lab-pending-lock/state",
+    "state_recreated": false
+  }
+]
