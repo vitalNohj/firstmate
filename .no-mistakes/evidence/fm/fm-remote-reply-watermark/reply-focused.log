@@ -1,0 +1,5 @@
+ok - a blocking non-destructive remote delta reaches durable process-event capture
+ok - a captured delta is applied, acknowledged, and re-armed without a handler
+ok - a preempted reply poll cannot publish channel freshness
+ok - a quiet reply window publishes the caught-up watermark the reply guard reads
+ok - repeated supervision ticks leave the real remote reader time to publish freshness

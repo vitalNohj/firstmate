@@ -1,0 +1,11 @@
+rm: cannot remove '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V31236P1TVW7T7K8FA7XSF/.test-live-tmp/fm-watch-arm-tests.aatpG9/state-dir-removed/state': Directory not empty
+STATE REMOVAL: watcher: started pid=1879681 (beacon fresh)
+watcher: exiting - state directory was torn down (singleton lock removed): /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V31236P1TVW7T7K8FA7XSF/.test-live-tmp/fm-watch-arm-tests.aatpG9/state-dir-removed/state
+watcher: FAILED - watcher cycle exited 1 without an actionable reason
+ok - watch-arm: a watcher exits when its state directory is removed
+CONTENDED LOCK: attempts=2; watcher: exiting - state directory no longer exists: /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V31236P1TVW7T7K8FA7XSF/.test-live-tmp/fm-watch-arm-tests.aatpG9/pending-reply-lock-removed/state
+ok - watch-arm: pending-reply library reload preserves home-aware lock wait
+HOME REMOVAL: watcher: started pid=1881624 (beacon fresh)
+watcher: exiting - home no longer exists: /home/nohj/.no-mistakes/worktrees/4812c8175835/01M3V31236P1TVW7T7K8FA7XSF/.test-live-tmp/fm-watch-arm-tests.aatpG9/home-removed/home
+watcher: FAILED - watcher cycle exited 1 without an actionable reason
+ok - watch-arm: a watcher exits when its home is removed
