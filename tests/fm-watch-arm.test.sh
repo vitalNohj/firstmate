@@ -1045,8 +1045,8 @@ test_watcher_exits_when_its_state_directory_is_removed() {
   pass "watch-arm: a watcher exits when its state directory is removed"
 }
 
-# The same for a deleted home whose state directory still exists elsewhere: the
-# lock is released through the ordinary cleanup so nothing stale is left behind.
+# Pending-reply reconciliation reloads the wake library before taking its lock;
+# that reload must preserve the watcher's deleted-state exit during contention.
 test_watcher_exits_during_pending_reply_lock_wait() {
   local dir home state fakebin out real_mktemp i
   dir=$(make_case pending-reply-lock-removed)
@@ -1090,6 +1090,8 @@ SH
   pass "watch-arm: pending-reply library reload preserves home-aware lock wait"
 }
 
+# The same for a deleted home whose state directory still exists elsewhere: the
+# lock is released through the ordinary cleanup so nothing stale is left behind.
 test_watcher_exits_when_its_home_is_removed() {
   local dir home state fakebin armout
   dir=$(make_case home-removed)
