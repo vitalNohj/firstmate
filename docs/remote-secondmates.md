@@ -99,6 +99,9 @@ It distinguishes preemption from a wait window that closes with no data:
 - Only a genuinely quiet window proves channel freshness.
 - Either outcome can re-arm without losing data.
 
+Routine pending-reply check-ins are now cadence-gated rather than issued on every watcher pass, reducing interruptions of the reply reader without changing interactive preemption.
+[`bin/fm-pending-reply-lib.sh`](../bin/fm-pending-reply-lib.sh)'s remote reply-channel freshness section owns the check-in scheduling contract; [`tests/fm-pending-reply.test.sh`](../tests/fm-pending-reply.test.sh) covers its opt-in and spacing rules.
+
 ### Cancelled and orphaned jobs
 
 A caller cancels its job instead of abandoning it when, before the job completes, the caller disconnects or its caller-side wait expires:

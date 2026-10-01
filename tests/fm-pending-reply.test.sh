@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Test doubles are called by independently linted production libraries.
+# shellcheck disable=SC2329
 # Parent-owned secondmate pending-reply guards (bin/fm-pending-reply-lib.sh).
 #
 # Reproduces the missed-report experience: a marked request is delivered, the
@@ -29,13 +31,16 @@
 #  15. Remote parent-replies.status is not classified as wrong-home
 #  16. An escalated correlation stays retryable while undelivered, is never reset
 #      once delivered, and its delivery-unknown decision still closes on resolve
+#  17. A remote observe check-in runs only when the pass opts in, and a second
+#      check-in inside the reply quiet window is refused
 set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=bin/fm-marker-lib.sh
 . "$ROOT/bin/fm-marker-lib.sh"
-# shellcheck source=bin/fm-pending-reply-lib.sh
+# Production modules are independently linted as canonical roots.
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-pending-reply-lib.sh"
 
 SEND="$ROOT/bin/fm-send.sh"
@@ -622,6 +627,7 @@ test_delivery_confirmation_fallback_reconciles() {
     [ -f "$marker" ] || fail "delivery confirmation fallback marker should persist"
     [ -z "$(fm_pending_reply_get "$rec" delivered_epoch)" ] \
       || fail "failed primary commit should leave delivered_epoch empty"
+    # shellcheck source=/dev/null
     . "$ROOT/bin/fm-pending-reply-lib.sh"
     fm_pending_reply_tick_one "$state" "$corr" unknown \
       || fail "watcher should reconcile the delivery marker"
@@ -696,7 +702,7 @@ test_delivery_confirmation_fallback_reconciles() {
 
 test_delivery_confirmation_serializes_with_reconciliation() {
   (
-    local home state corr rec calls entered release confirm_pid reconcile_pid count i
+    local home state corr rec calls entered release confirm_pid reconcile_pid count
     home=$(setup_parent delivery-confirm-reconcile-race)
     state="$home/state"
     # This fixture clock is intentionally scoped to the isolated subshell.
@@ -722,7 +728,7 @@ test_delivery_confirmation_serializes_with_reconciliation() {
     # The background PID is consumed within this isolated test subshell.
     # shellcheck disable=SC2031
     confirm_pid=$!
-    for i in $(seq 1 100); do
+    for _ in $(seq 1 100); do
       [ -e "$entered" ] && break
       /bin/sleep 0.01
     done
@@ -785,7 +791,7 @@ test_restart_preserves_expectation_and_parent_destination() {
   parent_status=$(fm_pending_reply_get "$rec" parent_status)
   parent_home=$(fm_pending_reply_get "$rec" parent_home)
   # Simulate process restart: re-source library and re-read the same record.
-  # shellcheck source=bin/fm-pending-reply-lib.sh
+  # shellcheck source=/dev/null
   . "$ROOT/bin/fm-pending-reply-lib.sh"
   [ -f "$rec" ] || fail "record must survive restart"
   [ "$(fm_pending_reply_get "$rec" parent_status)" = "$parent_status" ] \
@@ -1600,6 +1606,113 @@ test_escalated_undelivered_correlation_stays_retryable() {
   pass "an escalated correlation stays retryable only while undelivered"
 }
 
+
+test_remote_observe_check_in_waits_out_the_quiet_window() {
+  local home state corr log bin calls
+  home=$(setup_parent remote-observe-gap)
+  state="$home/state"
+  log="$TMP_ROOT/remote-observe-gap.log"
+  : > "$log"
+  bin="$TMP_ROOT/remote-observe-gap-bin"
+  cat > "$bin" <<'SH'
+#!/usr/bin/env bash
+printf 'called\n' >> "$FM_OBSERVE_LOG"
+printf 'idle\n'
+SH
+  chmod +x "$bin"
+  export FM_OBSERVE_LOG="$log"
+  export FM_PENDING_REPLY_REMOTE_OBSERVE_BIN="$bin"
+  export FM_PENDING_REPLY_NOW=10000
+  [ "$(FM_REMOTE_REPLY_WAIT_SECONDS=55 fm_pending_reply_remote_observe_gap_secs)" = 60 ] \
+    || fail "the default quiet window must retain a five-second internal margin"
+  [ "$(FM_REMOTE_REPLY_WAIT_SECONDS=8 fm_pending_reply_remote_observe_gap_secs)" = 9 ] \
+    || fail "short quiet windows must retain at least a one-second margin"
+  export FM_REMOTE_REPLY_WAIT_SECONDS=20
+
+  fm_write_meta "$state/ios.meta" \
+    "window=fm-remote:w1:p1" "harness=claude" "kind=secondmate" "mode=secondmate" \
+    "remote_host=remote-mac" "remote_root=/remote/root" "remote_backend=herdr"
+  corr=$(fm_pending_reply_create "$home" "$state" "ios" "status of the iOS build")
+  fm_pending_reply_mark_delivered "$state" "$corr"
+
+  unset FM_PENDING_REPLY_REMOTE_OBSERVE
+  fm_pending_reply_tick "$state" || fail "tick without an opt-in should succeed"
+  fm_pending_reply_tick "$state" || fail "second tick without an opt-in should succeed"
+  fm_pending_reply_tick "$state" || fail "third tick without an opt-in should succeed"
+  [ ! -s "$log" ] || fail "a pass that does not opt in must not check in on the remote mate"
+  [ ! -e "$(fm_pending_reply_remote_observe_stamp_path "$state" ios)" ] \
+    || fail "a skipped check-in must not record that the lane was occupied"
+
+  export FM_PENDING_REPLY_REMOTE_OBSERVE=1
+  fm_pending_reply_tick "$state" || fail "first opted-in tick should succeed"
+  fm_pending_reply_tick "$state" || fail "repeat opted-in tick in the same second should succeed"
+  fm_pending_reply_tick "$state" || fail "third opted-in tick in the same second should succeed"
+  calls=$(wc -l < "$log" | tr -d ' ')
+  [ "$calls" = 1 ] || fail "one quiet window must absorb repeated check-ins, got $calls"
+  [ "$(fm_pending_reply_remote_observe_epoch "$state" ios)" = 10000 ] \
+    || fail "the check-in must record the epoch that occupied the lane"
+
+  export FM_PENDING_REPLY_NOW=10021
+  fm_pending_reply_tick "$state" || fail "in-gap tick should succeed"
+  calls=$(wc -l < "$log" | tr -d ' ')
+  [ "$calls" = 1 ] || fail "a check-in inside the quiet-window gap must not run, got $calls"
+
+  export FM_PENDING_REPLY_NOW=10022
+  fm_pending_reply_tick "$state" || fail "post-gap tick should succeed"
+  calls=$(wc -l < "$log" | tr -d ' ')
+  [ "$calls" = 2 ] || fail "a check-in after the quiet-window gap should run once more, got $calls"
+  [ "$(fm_pending_reply_remote_observe_epoch "$state" ios)" = 10022 ] \
+    || fail "the later check-in must move the recorded epoch"
+
+  unset FM_PENDING_REPLY_REMOTE_OBSERVE
+  unset FM_PENDING_REPLY_REMOTE_OBSERVE_BIN
+  unset FM_OBSERVE_LOG
+  unset FM_REMOTE_REPLY_WAIT_SECONDS
+  unset FM_PENDING_REPLY_NOW
+  pass "a remote observe check-in waits out the reply quiet window"
+}
+
+test_remote_observe_opt_in_follows_the_liveness_pass() {
+  local dir out
+  dir="$TMP_ROOT/watch-observe-pass"
+  rm -rf "$dir"
+  mkdir -p "$dir/state"
+  touch "$dir/state/.secondmate-liveness-tick"
+  out=$(
+    export FM_HOME="$dir"
+    export FM_STATE_OVERRIDE="$dir/state"
+    export FM_SECONDMATE_LIVENESS_SECS=60
+    # The watcher is its own lint root. Following it from this test pulls the
+    # whole supervision graph into one ShellCheck process.
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-watch.sh"
+    if pending_reply_remote_observe_this_pass; then
+      printf 'fresh=due\n'
+    else
+      printf 'fresh=wait\n'
+    fi
+    rm -f "$dir/state/.secondmate-liveness-tick"
+    if pending_reply_remote_observe_this_pass; then
+      printf 'missing=due\n'
+    else
+      printf 'missing=wait\n'
+    fi
+    touch -d '120 seconds ago' "$dir/state/.secondmate-liveness-tick"
+    if pending_reply_remote_observe_this_pass; then
+      printf 'old=due\n'
+    else
+      printf 'old=wait\n'
+    fi
+  ) || fail "watcher liveness-pass predicate failed to load"$'\n'"$out"
+  printf '%s\n' "$out" | grep -qx 'fresh=wait' \
+    || fail "a fresh liveness marker must not opt in to a remote check-in"$'\n'"$out"
+  printf '%s\n' "$out" | grep -qx 'missing=due' \
+    || fail "a missing liveness marker must opt in to a remote check-in"$'\n'"$out"
+  printf '%s\n' "$out" | grep -qx 'old=due' \
+    || fail "an aged liveness marker must opt in to a remote check-in"$'\n'"$out"
+  pass "a remote observe opt-in follows the endpoint-liveness pass"
+}
+
 # --- run --------------------------------------------------------------------
 
 test_normal_correlated_reply_resolves_once
@@ -1641,5 +1754,7 @@ test_mechanical_helper_writes_parent_channel
 test_remote_parent_replies_is_not_wrong_home
 test_local_parent_replies_is_wrong_home_evidence
 test_escalated_undelivered_correlation_stays_retryable
+test_remote_observe_check_in_waits_out_the_quiet_window
+test_remote_observe_opt_in_follows_the_liveness_pass
 
 printf 'ok - all pending-reply tests passed\n'

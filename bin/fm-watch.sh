@@ -158,7 +158,8 @@
 # evicted with TERM after its recorded identity is re-verified, and this arm
 # starts in its place, printing "watcher: replaced stalled pid <N> (...)". A
 # holder that survives TERM keeps the refusal and the nonzero exit.
-# Once per poll the watcher also checks that its home (when it existed at
+# At each poll, before recovery-state consumption, and on lock-wait retries
+# outside EXIT cleanup, the watcher checks that its home (when it existed at
 # start), its state directory, and its own bin directory still exist; when one
 # is gone it logs "watcher: exiting - <what> no longer exists: <path>" to stderr
 # and exits 1, so a watcher whose temporary home or disposable checkout was
@@ -1007,6 +1008,14 @@ EOF
     wake "$reason"
   done
   return 0
+}
+
+# 0 when this supervision pass is the endpoint-liveness pass.
+# A remote reply check-in is allowed only then. bin/fm-pending-reply-lib.sh
+# owns the further gap that keeps that check-in from cutting the reply
+# reader's quiet window short.
+pending_reply_remote_observe_this_pass() {
+  [ "$(age_of "$STATE/.secondmate-liveness-tick")" -ge "$SECONDMATE_LIVENESS_SECS" ]
 }
 
 # The ordinary-supervision half of the secondmate liveness guarantee, paired
@@ -2006,7 +2015,7 @@ procevent_surface_queued() {
   local key reason captured="" stranded="" unstarted=""
   PROCEVENT_SURFACED=
   [ -s "$FM_WAKE_QUEUE" ] || return 0
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  watcher_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
   while IFS= read -r key; do
     case "$key" in procevent:*) ;; *) continue ;; esac
     [ -e "$(procevent_surfaced_marker "$key")" ] && continue
@@ -2486,6 +2495,7 @@ pr_poll_publish_release() {
 
 watcher_cleanup() {
   local cleanup_status=0 owns_lock=0 transition=release-lock
+  WATCHER_IN_CLEANUP=1
   pr_poll_publish_release || cleanup_status=1
   pr_poll_control_release || cleanup_status=1
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
@@ -2552,9 +2562,9 @@ rerecord_device_shifted_pr_poll() {  # <id>
   local id=$1
   fm_pr_poll_registration_device_shifted "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 1
   PR_POLL_CONTROL_LOCK="$STATE/.control-$id.lock"
-  fm_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
+  watcher_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
   PR_POLL_PUBLISH_LOCK="$STATE/.pr-poll-publish-$id.lock"
-  fm_lock_acquire_wait "$PR_POLL_PUBLISH_LOCK" || exit 1
+  watcher_lock_acquire_wait "$PR_POLL_PUBLISH_LOCK" || exit 1
   if fm_pr_poll_registration_rerecord_device "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
     triage_log "re-recorded PR poll identity for $id after its state volume device number changed"
   else
@@ -2573,7 +2583,9 @@ resurface_after_downtime() {
     return 0
   fi
   if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
+    watcher_require_home
     if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
+      watcher_require_home
       echo "watcher: recovery state could not be consumed safely" >&2
       exit 1
     fi
@@ -2582,7 +2594,7 @@ resurface_after_downtime() {
   wake "check: rearm-resurface"
 }
 
-while :; do
+watcher_require_home() {
   # Home-gone exit: a deleted home, state directory, or code root means this
   # watcher's world is gone (a torn-down temporary home or a discarded
   # disposable checkout). Exit with a logged reason rather than writing state
@@ -2605,6 +2617,42 @@ while :; do
     echo "watcher: exiting - code root no longer exists: $SCRIPT_DIR" >&2
     exit 1
   fi
+}
+
+# fm_lock_acquire_wait retries until the lock appears. Once the state directory
+# is gone that retry never ends, so each attempt re-checks the home first and
+# leaves through watcher_require_home instead of outliving the torn-down home.
+watcher_lock_acquire_wait() {  # <lockdir>
+  local lockdir=$1
+  while true; do
+    [ "${WATCHER_IN_CLEANUP:-0}" -eq 1 ] || watcher_require_home
+    if fm_lock_try_acquire "$lockdir"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+}
+
+# Recovery checks call the shared wait from this process. That wait retries
+# until the lock appears, and a torn-down home never creates it, so this
+# process uses the home-checking wait for every lock it takes.
+watcher_install_lock_wait() {
+  fm_lock_acquire_wait() { watcher_lock_acquire_wait "$@"; }
+}
+watcher_install_lock_wait
+
+# Pending-reply reconciliation reloads fm-wake-lib.sh through dot-sourcing.
+# Restore the process-local wait after each reload so a contended correlation
+# lock cannot strand this watcher after its home disappears.
+.() {
+  local watcher_source_status=0
+  builtin . "$@" || watcher_source_status=$?
+  watcher_install_lock_wait
+  return "$watcher_source_status"
+}
+
+while :; do
+  watcher_require_home
 
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand
@@ -2639,7 +2687,13 @@ while :; do
   # parent reports, observe backend busy/idle turn completion, send one recovery
   # repost after grace, and escalate once if the recovery turn is also missed.
   # No conversation scraping; unresolved records are never silently expired.
-  fm_pending_reply_tick "$STATE" || true
+  # Remote check-ins are limited to the endpoint-liveness pass; the
+  # pending-reply library owns the quiet-window gap on top of that.
+  if pending_reply_remote_observe_this_pass; then
+    FM_PENDING_REPLY_REMOTE_OBSERVE=1 fm_pending_reply_tick "$STATE" || true
+  else
+    FM_PENDING_REPLY_REMOTE_OBSERVE=0 fm_pending_reply_tick "$STATE" || true
+  fi
 
   # Endpoint liveness runs before queue observation: a positively dead or
   # missing secondmate endpoint is relaunched here on a bounded cadence, which
@@ -2721,7 +2775,7 @@ while :; do
           path=$FM_PR_POLL_SNAPSHOT_PATH
           number=$FM_PR_POLL_SNAPSHOT_NUMBER
           PR_POLL_CONTROL_LOCK="$STATE/.control-$id.lock"
-          fm_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
+          watcher_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
           if ! fm_pr_poll_snapshot_matches "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
             pr_poll_control_release || exit 1
             triage_log "PR poll for $id changed before its validated check; skipping the stale snapshot"
