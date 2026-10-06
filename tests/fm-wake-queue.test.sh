@@ -1437,6 +1437,46 @@ test_main_drain_excludes_rows_already_granted_to_branch() {
   pass "main drain and acknowledgement exclude an active branch grant"
 }
 
+# The away posture lets a branch grant name a check-kind row, so the branch
+# ack must close the same publish-before-receipt crash window the main ack
+# does: consuming a secondmate-wake-loop row commits its stall receipt under
+# exactly the granted sequences, keeping a later stall tick from re-alerting a
+# consumed notification.
+test_branch_ack_commits_secondmate_stall_receipts() {
+  local dir state epoch sequence generation receipt
+  dir=$(make_case secondmate-branch-stall)
+  state="$dir/state"
+  epoch=$(( $(date +%s) - 10 ))
+  append_wake "$state" check "secondmate-wake-loop-mate-$epoch-7" \
+    "check: secondmate wake-loop stalled: mate=mate row=7 idle=2s" \
+    || fail "could not seed the stall publication"
+  append_wake "$state" check "secondmate-wake-loop-mate-$epoch-9" \
+    "check: secondmate wake-loop stalled: mate=mate row=9 idle=3s" \
+    || fail "could not seed the ungranted stall publication"
+
+  FM_STATE_OVERRIDE="$state" "$GRANT" activate "$$" branch-stall \
+    || fail "branch owner activation failed"
+  FM_STATE_OVERRIDE="$state" "$GRANT" publish branch-stall 1 \
+    || fail "branch grant publication failed"
+
+  FM_STATE_OVERRIDE="$state" FM_SUPERVISION_ACTOR=branch "$DRAIN" > "$dir/branch.out" 2> "$dir/branch.err" \
+    || fail "branch drain failed: $(cat "$dir/branch.err")"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/branch.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/branch.err")
+  [ -n "$sequence" ] && [ -n "$generation" ] || fail "branch drain omitted its acknowledgement boundary"
+  FM_STATE_OVERRIDE="$state" FM_SUPERVISION_ACTOR=branch "$DRAIN" \
+    --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "branch acknowledgement failed"
+
+  receipt="$state/.secondmate-wake-stall-receipts/mate/$epoch-7"
+  [ "$(cat "$receipt" 2>/dev/null || true)" = "$epoch-7" ] \
+    || fail "branch acknowledgement did not commit the consumed stall row's receipt"
+  receipt="$state/.secondmate-wake-stall-receipts/mate/$epoch-9"
+  [ ! -e "$receipt" ] \
+    || fail "branch acknowledgement committed a stall receipt for a row outside its grant"
+  pass "a branch-actor acknowledgement commits secondmate stall receipts for exactly its granted rows"
+}
+
 # The pending-warning condition and what a drain can actually present must name
 # the same rows. A row reserved by a live branch grant is invisible to a main
 # drain by design, so counting it as "queued for main" told main to run a drain
@@ -1771,6 +1811,69 @@ SH
   pass "wake append publishes atomic recovery evidence before durable rows"
 }
 
+# Recovery mint and wake-delivery logging must not use sibling $() on one
+# command (bash 5.2 CHLD-trap parse landmine). Mint failure semantics stay as
+# before: a pid/date miss still yields a grammar-valid token and a durable row.
+test_recovery_mint_and_delivery_log_avoid_sibling_subst() {
+  local dir state marker generation line
+  dir=$(make_case recovery-mint-sibling-subst)
+  state="$dir/state"
+
+  append_wake "$state" check task 'check: recovery mint' \
+    || fail "recovery mint wake append failed"
+  marker=$(cat "$state/.watcher-down")
+  case "$marker" in
+    pending:handling:*|pending:downtime:*) ;;
+    *) fail "recovery mint did not write a pending marker: $marker" ;;
+  esac
+  generation=${marker##*:}
+  case "$generation" in
+    ''|*[!A-Za-z0-9._-]*) fail "recovery mint produced an empty or invalid generation: [$generation]" ;;
+  esac
+  case "$generation" in
+    [0-9]*.[0-9]*.*) ;;
+    *) fail "recovery mint generation lost pid.epoch.suffix shape: $generation" ;;
+  esac
+
+  # Delivery log: sequential cleaners, then one printf (no sibling $() args).
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1/bin/fm-push-transition-lib.sh"
+    FM_WATCH_DELIVERY_PID=4242
+    FM_WATCH_DELIVERY_IDENTITY="pane'$'\t''id"
+    watch_delivery_publish "signal: delivery log"
+  ' _ "$ROOT" || fail "watch_delivery_publish failed"
+  [ -s "$state/.watch-deliveries.log" ] \
+    || fail "watch_delivery_publish wrote no delivery log"
+  line=$(tail -n 1 "$state/.watch-deliveries.log")
+  case "$line" in
+    4242*$'\t'*signal:\ delivery\ log) ;;
+    *) fail "delivery log line lost pid/identity/reason shape: $line" ;;
+  esac
+
+  # Historical bash 5.2 repro used CHLD + sibling $(); when bash >= 5 is the
+  # runner, confirm the public mint still yields a nonempty generation with no
+  # trap parse error. Bash 5.2 is not installed on this host — skip otherwise.
+  if [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
+    rm -f -- "$state/.watcher-down"
+    FM_STATE_OVERRIDE="$state" bash -c '
+      trap : CHLD
+      # shellcheck disable=SC1090,SC1091
+      . "$1/bin/fm-wake-lib.sh"
+      fm_recovery_marker_publish "$2/.watcher-down" downtime
+    ' _ "$ROOT" "$state" >"$dir/chld.out" 2>"$dir/chld.err" \
+      || fail "bash>=5 CHLD recovery publish failed: $(cat "$dir/chld.err")"
+    ! grep -F 'unexpected EOF while looking for matching' "$dir/chld.err" >/dev/null \
+      || fail "bash>=5 CHLD still hit sibling-\$() parse error: $(cat "$dir/chld.err")"
+    generation=$(cut -d: -f3- "$state/.watcher-down")
+    case "$generation" in
+      ''|*[!A-Za-z0-9._-]*) fail "bash>=5 CHLD mint left empty/invalid generation" ;;
+    esac
+  fi
+
+  pass "recovery mint and delivery log avoid sibling \$()"
+}
+
 test_legacy_generationless_wake_is_adopted() {
   local dir state row sequence generation
   dir=$(make_case legacy-generationless-wake)
@@ -1806,6 +1909,57 @@ test_legacy_generationless_wake_is_adopted() {
 
 # Pin the recovery acknowledgement contract from docs/watcher-continuity.md at
 # the queue-library boundary.
+# A handover (bin/fm-watch-arm.sh --take-over) undoes only the downtime its own
+# watcher stop published over an acknowledged episode. A wake appended between
+# the snapshot and the stop, or an episode that was still open, is left for the
+# next watcher's arm check to surface.
+handover_case() {  # <state> <acked|handling> <append-between 0|1>
+  FM_STATE_OVERRIDE="$1" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1/bin/fm-wake-lib.sh"
+    marker="$STATE/.watcher-down"
+    fm_recovery_marker_publish "$marker" downtime || exit 1
+    fm_recovery_marker_read "$marker" || exit 1
+    case "$2" in
+      acked) fm_recovery_marker_ack "$marker" "${FM_RECOVERY_MARKER_TOKEN##*:}" || exit 1 ;;
+      handling) fm_recovery_marker_begin_handling "$marker" || exit 1 ;;
+    esac
+    fm_recovery_marker_read "$marker" || exit 1
+    printf "before=%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+    fm_recovery_marker_handover_snapshot "$marker" || exit 1
+    [ "$3" = 0 ] || fm_wake_append signal handover "signal: appended during the handover" || exit 1
+    # The stopped watcher closes and publishes downtime, as its EXIT cleanup does.
+    fm_recovery_marker_publish "$marker" downtime || exit 1
+    fm_recovery_marker_handover_restore "$marker" "$FM_RECOVERY_HANDOVER_TOKEN" "$FM_RECOVERY_HANDOVER_SEQ" || exit 1
+    fm_recovery_marker_read "$marker" || exit 1
+    printf "after=%s\n" "$FM_RECOVERY_MARKER_TOKEN"
+  ' _ "$ROOT" "$2" "$3"
+}
+
+test_handover_restore_undoes_only_its_own_stop() {
+  local out before after
+  out=$(handover_case "$(make_case handover-acked)/state" acked 0) || fail "acked handover case failed: $out"
+  before=$(printf '%s\n' "$out" | sed -n 's/^before=//p')
+  after=$(printf '%s\n' "$out" | sed -n 's/^after=//p')
+  case "$before" in acked:downtime:*) ;; *) fail "fixture: the episode was not acknowledged: $out" ;; esac
+  [ "$after" = "$before" ] || fail "a handover with nothing queued left a downtime episode: $out"
+
+  out=$(handover_case "$(make_case handover-appended)/state" acked 1) || fail "appended handover case failed: $out"
+  before=$(printf '%s\n' "$out" | sed -n 's/^before=//p')
+  after=$(printf '%s\n' "$out" | sed -n 's/^after=//p')
+  case "$after" in
+    pending:downtime:*) [ "${after##*:}" != "${before##*:}" ] || fail "fixture: no fresh episode opened: $out" ;;
+    *) fail "a handover hid a wake appended during it: $out" ;;
+  esac
+
+  out=$(handover_case "$(make_case handover-handling)/state" handling 0) || fail "handling handover case failed: $out"
+  before=$(printf '%s\n' "$out" | sed -n 's/^before=//p')
+  after=$(printf '%s\n' "$out" | sed -n 's/^after=//p')
+  case "$before" in pending:handling:*) ;; *) fail "fixture: the episode was not being handled: $out" ;; esac
+  [ "$after" = "pending:downtime:${before##*:}" ] || fail "a handover rewrote an episode main had not acknowledged: $out"
+  pass "a handover undoes only the downtime its own stop published over an acknowledged episode"
+}
+
 test_stale_recovery_generation_cannot_touch_a_newer_episode() {
   local dir state first_err replay_err sequence generation handling_marker
   local newer_marker newer_sequence newer_generation rc
@@ -2042,11 +2196,15 @@ test_interruption_before_and_after_raw_commit() {
   FM_STATE_OVERRIDE="$state" FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT=5 "$DRAIN" > "$before_out" &
   pid=$!
   i=0
-  while [ "$i" -lt 100 ] && [ ! -e "$state/.wake-queue.lock" ]; do
+  while [ "$i" -lt 100 ]; do
+    if [ "$(cat "$state/.wake-queue.lock/pid" 2>/dev/null || true)" = "$pid" ] \
+      && grep -Eq '^(pending|announced):handling:' "$state/.watcher-down" 2>/dev/null; then
+      break
+    fi
     sleep 0.05
     i=$((i + 1))
   done
-  [ -e "$state/.wake-queue.lock" ] || { kill "$pid" 2>/dev/null || true; fail "pre-commit drain never entered its serialized read boundary"; }
+  [ "$i" -lt 100 ] || { kill "$pid" 2>/dev/null || true; fail "pre-commit drain never entered its serialized read boundary"; }
   kill -TERM "$pid" 2>/dev/null || fail "could not interrupt drain before raw commitment"
   set +e
   wait "$pid"
@@ -2740,6 +2898,26 @@ test_wake_queue_prune_task() {
   pass "fm_wake_queue_prune_task: prunes wakes for target task without touching other tasks"
 }
 
+# Scratch a drain minted under the queue lock and never removed was left by a
+# drain that died mid-write; the next locked drain rotates it away.
+test_drain_rotates_orphaned_scratch() {
+  local dir state name
+  dir=$(make_case scratch-rotation)
+  state="$dir/state"
+  for name in .main-eligible-rows.tmp.dead01 .wake-rows.consume.dead02 .wake-queue.retire.dead03 \
+    .wake-queue.ack.dead04 .wake-queue.actor-view.dead05; do
+    : > "$state/$name"
+  done
+  : > "$state/.main-eligible-rows"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "drain failed with orphaned scratch present"
+  for name in .main-eligible-rows.tmp.dead01 .wake-rows.consume.dead02 .wake-queue.retire.dead03 \
+    .wake-queue.ack.dead04 .wake-queue.actor-view.dead05; do
+    [ ! -e "$state/$name" ] || fail "drain left orphaned scratch $name behind"
+  done
+  [ -e "$state/.main-eligible-rows" ] || fail "scratch rotation removed the live main rows claim"
+  pass "drain rotates scratch files an interrupted drain left under the queue lock"
+}
+
 # --- secondmate endpoint liveness tick ---------------------------------------
 # bin/fm-watch.sh's secondmate_liveness_tick drives the shared
 # bin/fm-secondmate-liveness-lib.sh probe+relaunch machinery during ordinary
@@ -3278,6 +3456,7 @@ test_enrichment_preserves_all_unread_lines_and_status_file_failures
 test_slow_annotation_does_not_block_append_and_deleted_file_fails_open
 test_branch_actor_scoped_ack_never_swallows_a_main_owned_row
 test_main_drain_excludes_rows_already_granted_to_branch
+test_branch_ack_commits_secondmate_stall_receipts
 test_main_is_never_told_to_drain_rows_only_the_branch_owns
 test_uncountable_queue_still_raises_the_pending_alarm
 test_unconsumable_rows_are_retired_instead_of_wedging_the_queue
@@ -3287,13 +3466,16 @@ test_actor_filter_precedes_same_key_deduplication
 test_main_reclaims_a_grant_whose_branch_owner_exited
 test_branch_actor_without_eligible_snapshot_refuses
 test_wake_publish_requires_atomic_recovery_evidence
+test_recovery_mint_and_delivery_log_avoid_sibling_subst
 test_legacy_generationless_wake_is_adopted
+test_handover_restore_undoes_only_its_own_stop
 test_stale_recovery_generation_cannot_touch_a_newer_episode
 test_stale_ack_that_consumes_nothing_names_the_current_wake
 test_branch_stale_ack_that_consumes_nothing_names_its_granted_wake
 test_recovery_ack_failure_is_reported
 test_interruption_before_and_after_raw_commit
 test_wake_queue_prune_task
+test_drain_rotates_orphaned_scratch
 test_secondmate_liveness_tick_relaunches_dead_endpoint_once
 test_secondmate_liveness_tick_relaunches_missing_endpoint
 test_secondmate_liveness_tick_relaunches_every_dead_mate_before_waking
