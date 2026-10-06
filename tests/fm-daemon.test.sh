@@ -26,6 +26,18 @@ TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
 
+# What the pinned claude primary received: each typed line, with every
+# record-backed doorbell followed by the envelope its record holds.
+delivered_digest() {  # <sent-log>
+  local line record
+  while IFS= read -r line; do
+    printf '%s\n' "$line"
+    fm_operational_doorbell_path "$line" record || continue
+    cat "$record" 2>/dev/null
+    printf '\n'
+  done <"$1"
+}
+
 test_afk_start_refuses_when_flag_cannot_be_written() {
   local dir state out status
   dir=$(make_supercase afk-start-flag-unwritable)
@@ -344,6 +356,90 @@ EOF
   [ "$(wc -l < "$dir/acked" | tr -d ' ')" = 1 ] \
     || fail "the recovered durable wake was not acknowledged exactly once"
   pass "failed escalation writes retain durable wakes and classification positions"
+}
+
+test_busy_inbox_escalation_reaches_supervision() {
+  local variant=$1 mode=$2 dir state task=busy-inbox win gen pane reason detail buffer sent drain
+  dir=$(make_supercase "busy-inbox-$variant-$mode"); state="$dir/state"
+  win="sess:fm-$task"; pane="$dir/pane.txt"; sent="$dir/sent.log"
+  buffer="$state/.subsuper-escalations"; drain="$dir/daemon-bin"
+  printf '%s\n' "$mode" > "$state/.afk"
+  printf 'working: processing instructions\n' > "$state/$task.status"
+  fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux" "harness=claude"
+  gen=$("$ROOT/bin/fm-busy-event.sh" arm "$state" "$task")
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" "$task" busy --gen "$gen" \
+    --source claude-hook --event UserPromptSubmit
+  printf 'Question awaiting an answer\n' > "$pane"
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_CAPTURE="$pane" \
+    stale_window_is_busy "$win" "$state" || fail "inbox consumer fixture is not busy"
+  case "$variant" in
+    stuck)
+      detail="unread firstmate instruction: stuck-busy after 2 consecutive busy-deferred due doorbells; $state/$task.inbox/001.msg stays unhandled and no doorbell was typed; inspect the worker"
+      ;;
+    write)
+      detail="steering-inbox busy bookkeeping unwritable: $state/$task.inbox/.busy-state cannot be written while $state/$task.inbox/001.msg stays unhandled; inspect the inbox directory"
+      ;;
+    reset)
+      detail="steering-inbox busy bookkeeping unwritable: $state/$task.inbox/.busy-state cannot be reset after a non-busy check; inspect the inbox directory"
+      ;;
+  esac
+  reason="stale: $win ($detail)"
+  mkdir "$drain"
+  cat > "$drain/fm-wake-drain.sh" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = --ack-through ]; then printf '%s\n' ack >> "$dir/acked"; exit 0; fi
+if [ "\${FM_TEST_WAKE_FALLBACK:-0}" != 1 ]; then
+  printf '1\t1\tstale\t$win\t%s\n' "$reason"
+fi
+printf 'WAKE_ACK_REQUIRED: inbox --ack-through 1 --recovery-generation gen\n' >&2
+EOF
+  chmod +x "$drain/fm-wake-drain.sh"
+  FM_DAEMON_DIR="$drain" FM_ESCALATE_BATCH_SECS=999999 handle_durable_wakes "$reason" "$state" \
+    || fail "$variant $mode inbox wake was not handled"
+  [ "$(cat "$buffer" 2>/dev/null)" = "${reason#stale: }" ] \
+    || fail "$variant $mode inbox escalation was absorbed before supervision"
+  [ "$(cat "$dir/acked")" = ack ] || fail "buffered inbox wake was not acknowledged once"
+  [ "$(status_seen_offset "$state" "$task")" = 0 ] || fail "inbox escalation consumed worker status"
+  [ ! -e "$state/.subsuper-stale-$task" ] || fail "inbox escalation entered transient stale recovery"
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=0 FM_ESCALATE_BATCH_SECS=999999 housekeeping "$state"
+  [ "$(cat "$buffer")" = "${reason#stale: }" ] || fail "busy housekeeping lost the inbox escalation"
+  printf '❯ \n' > "$pane"
+  PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_SENT="$sent" FM_FAKE_TMUX_CAPTURE="$pane" \
+    FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=sess:supervisor escalate_flush "$state" \
+    || fail "$variant $mode inbox escalation did not reach the supervisor"
+  assert_contains "$(delivered_digest "$sent")" "${reason#stale: }" "supervisor digest lost the inbox reason"
+  [ ! -s "$buffer" ] || fail "delivered inbox escalation stayed buffered"
+
+  rm "$buffer" "$dir/acked"
+  mkdir "$buffer"
+  ! FM_DAEMON_DIR="$drain" FM_ESCALATE_BATCH_SECS=999999 handle_durable_wakes "$reason" "$state" 2>/dev/null \
+    || fail "unwritable inbox escalation buffer acknowledged its wake"
+  [ ! -e "$dir/acked" ] || fail "failed inbox buffering acknowledged the wake"
+  rmdir "$buffer"
+  FM_DAEMON_DIR="$drain" FM_ESCALATE_BATCH_SECS=999999 FM_TEST_WAKE_FALLBACK=1 \
+    handle_durable_wakes "$reason" "$state" || fail "inbox fallback reason did not recover"
+  [ "$(cat "$buffer")" = "${reason#stale: }" ] || fail "fallback lost the inbox escalation"
+  [ "$(cat "$dir/acked")" = ack ] || fail "recovered inbox buffering did not acknowledge the wake"
+  pass "$variant inbox escalation reaches supervision in $mode mode and survives buffering failure"
+}
+
+test_busy_inbox_dispatch_preserves_other_stale_reasons() {
+  local dir state detail
+  dir=$(make_supercase inbox-dispatch-scope); state="$dir/state"
+  printf 'working: processing instructions\n' > "$state/ordinary.status"
+  for detail in \
+    '' \
+    'busy for 4000s without a turn boundary' \
+    "unread firstmate instruction: $state/ordinary.inbox/001.msg still unhandled after 3 doorbell delivery attempts with an idle pane; inspect the worker" \
+    'steering-inbox ladder bookkeeping unwritable: .ring-state cannot be written' \
+    'steering-inbox retry mark unremovable: .retry-ring cannot be removed'; do
+    FM_ESCALATE_BATCH_SECS=999999 handle_wake "stale: sess:fm-ordinary${detail:+ ($detail)}" "$state" \
+      || fail "ordinary stale handling failed"
+    [ ! -s "$state/.subsuper-escalations" ] || fail "inbox dispatch changed another stale reason: $detail"
+    [ -e "$state/.subsuper-stale-ordinary" ] || fail "inbox dispatch bypassed ordinary stale recovery"
+  done
+  pass "inbox dispatch preserves ordinary stale, busy-turn, and other doorbell routing"
 }
 
 test_catchall_buffer_failure_preserves_position() {
@@ -683,7 +779,7 @@ test_unknown_wake_ack_failure_still_clears_delivered_digest() {
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
     FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state" 2>/dev/null \
     || fail "a delivered digest was reported undelivered after its acknowledgement write failed"
-  grep -F 'unknown wake: frobnicate: ack-write-fails' "$sent" >/dev/null \
+  delivered_digest "$sent" | grep -F 'unknown wake: frobnicate: ack-write-fails' >/dev/null \
     || fail "the digest was not delivered: $(cat "$sent")"
   [ ! -s "$state/.subsuper-escalations" ] \
     || fail "a delivered digest stayed buffered for re-injection: $(cat "$state/.subsuper-escalations")"
@@ -1102,6 +1198,36 @@ test_housekeeping_captain_held_resurfaces_and_resets() {
   pass "housekeeping re-surfaces a forgotten captain hold on the long cadence and resets its window"
 }
 
+# The away record owns the one exception: nobody is there to answer a captain
+# hold, so it is never rechecked. Quiet mode's record is a present captain
+# (bin/fm-afk-contract.sh AWAY OR QUIET), so a quiet daemon rechecks the same
+# hold on the same cadence.
+test_housekeeping_captain_held_silenced_only_by_an_away_record() {
+  local mode dir state fakebin win pane key
+  for mode in away quiet; do
+    dir=$(make_supercase "captain-held-$mode-record")
+    state="$dir/state"; fakebin="$dir/fakebin"
+    win="sess:fm-held-w11r"; pane="$dir/pane.txt"
+    printf 'captain-held [key=route]: tracked by task-decision-route\n' > "$state/held-w11r.status"
+    printf 'idle prompt $\n' > "$pane"
+    key=$(printf '%s' "held-w11r" | tr ':/.' '___')
+    echo $(( $(date +%s) - 5000 )) > "$state/.subsuper-paused-$key"
+    FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_AFK_MODE="$mode" "$ROOT/bin/fm-afk-contract.sh" enter --words 'fixture words' >/dev/null 2>&1 \
+      || fail "fixture: could not record the $mode posture"
+    [ "$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-afk-contract.sh" mode)" = "$mode" ] || fail "fixture: the record is not $mode"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+      FM_STATE_OVERRIDE="$state" FM_PAUSE_RESURFACE_SECS=240 housekeeping "$state"
+    if [ "$mode" = away ]; then
+      ! grep -F "awaiting the captain" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+        || fail "a captain hold was rechecked while the away record exists: $(cat "$state/.subsuper-escalations")"
+    else
+      grep -F "awaiting the captain" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+        || fail "quiet mode's record silenced a captain hold as if the captain were away: $(cat "$state/.subsuper-escalations" 2>/dev/null || true)"
+    fi
+  done
+  pass "housekeeping silences a captain hold only under an away record, never under quiet mode's"
+}
+
 # A crew that RESUMED - whose latest status line no longer declares the wait - drops
 # its pause tracking without escalating. The dimension pinned here is that pane busy
 # state does not GATE that clear: the status append alone ends the wait, on the
@@ -1516,7 +1642,7 @@ test_housekeeping_orca_persistent_stale_resolves_terminal() {
 }
 
 test_escalate_batches_into_one_digest() {
-  local dir state fakebin sent capture n
+  local dir state fakebin sent capture n record
   dir=$(make_supercase batch)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -1528,17 +1654,74 @@ test_escalate_batches_into_one_digest() {
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
     FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state" \
     || fail "escalate_flush failed"
-  grep -F 'FIRSTMATE_OP: v1 away-supervisor: ' "$sent" >/dev/null \
-    || fail "batch digest lacks the exact current away-supervisor kind"
-  grep -F "event A" "$sent" >/dev/null || fail "batch digest missing event A"
-  grep -F "event B" "$sent" >/dev/null || fail "batch digest missing event B"
-  grep -F 'event A: done: PR 1 | event B: done: PR 2' "$sent" >/dev/null \
+  # A Claude Code primary strips U+2063 from submitted prompts, so the digest
+  # travels as a record in this home's operational inbox behind a plain doorbell.
+  record=$(sed -n "s/.*: Firstmate operational input waiting: read '\([^']*\)'.*/\1/p" "$sent" | head -1)
+  [ -n "$record" ] || fail "batch digest was not typed as a record-backed doorbell for the claude primary: $(cat "$sent")"
+  grep -F "$FM_OPERATIONAL_MARK" "$sent" >/dev/null \
+    && fail "the claude primary was typed the invisible marker it strips"
+  [ "$(cd "$(dirname "$record")" && pwd -P)" = "$(cd "$state/operational-inbox" && pwd -P)" ] \
+    || fail "the doorbell names a record outside this home's operational inbox: $record"
+  grep -F "${FM_OPERATIONAL_PREFIX}v1 away-supervisor: " "$record" >/dev/null \
+    || fail "the digest record lacks the exact current away-supervisor envelope"
+  grep -F "event A" "$record" >/dev/null || fail "batch digest missing event A"
+  grep -F "event B" "$record" >/dev/null || fail "batch digest missing event B"
+  grep -F 'event A: done: PR 1 | event B: done: PR 2' "$record" >/dev/null \
     || fail "batch digest did not join events with literal ' | '"
   [ -s "$state/.subsuper-escalations" ] && fail "escalation buffer not cleared after flush"
   [ -e "$state/.subsuper-escalations.since" ] && fail "first-append sidecar not cleared after flush"
   n=$(grep -c '\[ENTER\]' "$sent")
   [ "$n" -eq 1 ] || fail "expected one injected digest, got $n send-keys submits"
   pass "multiple escalations flush as a single batched digest"
+}
+
+test_escalate_marker_preserving_primary_types_envelope() {
+  local dir state fakebin sent capture
+  dir=$(make_supercase batch-typed-envelope)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  sent="$dir/sent.log"; : > "$sent"
+  capture="$dir/pane.txt"; printf '\342\235\257 \n' > "$capture"
+  escalate_add "$state" "event C: done: PR 3"
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=0 FM_DAEMON_PRIMARY_HARNESS=codex \
+    escalate_flush "$state" || fail "escalate_flush failed for a marker-preserving primary"
+  grep -F "${FM_OPERATIONAL_PREFIX}v1 away-supervisor: " "$sent" >/dev/null \
+    || fail "a marker-preserving primary lost the typed away-supervisor envelope"
+  grep -F 'event C: done: PR 3' "$sent" >/dev/null || fail "typed digest missing event C"
+  grep -F 'Firstmate operational input waiting' "$sent" >/dev/null \
+    && fail "a marker-preserving primary was sent a record-backed doorbell"
+  [ ! -e "$state/operational-inbox" ] || fail "a marker-preserving primary published an operational record"
+  pass "a marker-preserving primary still receives the typed U+2063 away-supervisor envelope and no record"
+}
+
+test_record_doorbell_detection() {
+  local dir state other doorbell stray missing
+  dir=$(make_supercase doorbell-detect)
+  state="$dir/state"
+  other="$dir/other-state"
+  mkdir -p "$other"
+  afk_enter "$state"
+  fm_operational_record_write "$state" away-supervisor "Supervisor escalate: done" doorbell \
+    || fail "could not publish an away-supervisor record"
+  message_is_injection "$doorbell" "$state" \
+    || fail "a doorbell for this home's own record was not detected as an injection"
+  should_exit_afk "$state" "$doorbell" \
+    && fail "a doorbell for this home's own record exited afk"
+  fm_operational_record_write "$other" away-supervisor "Supervisor escalate: done" stray \
+    || fail "could not publish another home's record"
+  should_exit_afk "$state" "$stray" \
+    || fail "a doorbell naming another home's record kept afk"
+  missing=${doorbell%.msg\'*}-gone.msg${doorbell##*.msg}
+  should_exit_afk "$state" "$missing" \
+    || fail "a doorbell naming no record kept afk"
+  should_exit_afk "$state" "FIRSTMATE_OP: v1 away-supervisor: Supervisor escalate: done" \
+    || fail "a typed ASCII FIRSTMATE_OP label kept afk"
+  rm -f "$state"/operational-inbox/*.msg
+  should_exit_afk "$state" "$doorbell" \
+    || fail "a doorbell whose record was pruned kept afk"
+  pass "record-backed doorbell: only a doorbell naming this home's own record stays afk; a bare ASCII label, a missing record, and another home's record exit"
 }
 
 test_escalate_batch_age_uses_first_append() {
@@ -1555,7 +1738,7 @@ test_escalate_batch_age_uses_first_append() {
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
     FM_FAKE_TMUX_CAPTURE="$capture" FM_ESCALATE_BATCH_SECS=90 FM_HOUSEKEEPING_TICK=0 \
     housekeeping "$state"
-  grep -F 'event A: done: PR 1 | event B: done: PR 2' "$sent" >/dev/null \
+  delivered_digest "$sent" | grep -F 'event A: done: PR 1 | event B: done: PR 2' >/dev/null \
     || fail "backdated batch did not flush as a joined digest (max-delay measured from last append)"
   [ -s "$state/.subsuper-escalations" ] && fail "escalation buffer not cleared after backdated flush"
   [ -e "$state/.subsuper-escalations.since" ] && fail "first-append sidecar not cleared after flush"
@@ -2188,7 +2371,7 @@ test_max_defer_empty_swallow_types_once_and_alarms() {
   PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_INJECT_CONFIRM_SLEEP=0.05 \
     FM_ESCALATE_BATCH_SECS=99999 FM_MAX_DEFER_SECS=60 housekeeping "$state"
-  [ "$(grep -c 'Supervisor escalate' "$sent" 2>/dev/null || true)" -eq 1 ] \
+  [ "$(delivered_digest "$sent" 2>/dev/null | grep -c 'Supervisor escalate' || true)" -eq 1 ] \
     || fail "max-defer typed the digest more than once"
   [ -s "$state/.subsuper-inject-wedged" ] \
     || fail "stuck max-defer inject did not raise a wedge alarm marker"
@@ -2270,7 +2453,7 @@ test_oversized_digest_is_bounded_and_kept_durable() {
   LOG="$dir/daemon.log" PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_FAKE_SEND_MAX_BYTES=131071 FM_INJECT_CONFIRM_SLEEP=0.05 escalate_flush "$state" \
     || fail "oversized digest was not delivered: $(cat "$dir/daemon.log" 2>/dev/null)"
-  digest=$(grep -F 'Supervisor escalate' "$sent")
+  digest=$(delivered_digest "$sent" | grep -F 'Supervisor escalate')
   [ "$(printf '%s\n' "$digest" | wc -l | tr -d ' ')" -eq 1 ] || fail "expected exactly one typed digest"
   [ "$(printf '%s' "$digest" | LC_ALL=C wc -c | tr -d ' ')" -le 16384 ] \
     || fail "delivered digest is not bounded well below the transport ceilings"
@@ -2299,7 +2482,7 @@ test_digest_budget_counts_omitted_events() {
   afk_enter "$state"
   LOG="$dir/daemon.log" PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" \
     FM_INJECT_CONFIRM_SLEEP=0.05 escalate_flush "$state" || fail "many-event digest was not delivered"
-  digest=$(grep -F 'Supervisor escalate' "$sent")
+  digest=$(delivered_digest "$sent" | grep -F 'Supervisor escalate')
   assert_contains "$digest" 'Supervisor escalate (20 event(s)): event 1: x' "digest header must count every buffered event"
   more=$(printf '%s' "$digest" | sed -n 's/.* | +\([0-9][0-9]*\) more event(s).*/\1/p')
   [ -n "$more" ] || fail "an exhausted budget left no '+K more event(s)' tail: $digest"
@@ -2383,7 +2566,7 @@ test_bounded_digest_full_text_kept_after_typing() {
     escalate_flush "$state"; then
     fail "escalate_flush reported success on a swallowed Enter"
   fi
-  digest=$(grep -F 'Supervisor escalate' "$sent")
+  digest=$(delivered_digest "$sent" | grep -F 'Supervisor escalate')
   full=$(printf '%s' "$digest" | sed -n 's/.*full text of every event: \([^ )]*\).*/\1/p')
   [ -n "$full" ] && [ -f "$full" ] || fail "a typed bounded digest names a full-text file that was removed: $digest"
   cmp -s "$full" "$dir/buffer.orig" || fail "kept full-text file does not hold the buffered event verbatim"
@@ -2995,12 +3178,14 @@ test_inject_msg_herdr_submits_through_backend_dispatch() {
     fm_backend_composer_state() { printf 'empty'; }
     fm_backend_send_text_submit() {
       [ "$1" = herdr ] && [ "$2" = "default:w1:p2" ] || fail "unexpected send_text_submit args: $1 $2"
-      case "$3" in *"hello"*) : ;; *) fail "digest text missing from send_text_submit: $3" ;; esac
+      printf '%s\n' "$3" > "$dir/sent.log"
       printf 'empty'
     }
     FM_SUPERVISOR_BACKEND=herdr FM_SUPERVISOR_TARGET="default:w1:p2" inject_msg "hello" "$state" \
       || fail "inject_msg should succeed when send_text_submit confirms empty"
   ) || fail "herdr successful-submit inject_msg subshell failed"
+  delivered_digest "$dir/sent.log" | grep -F 'hello' >/dev/null \
+    || fail "digest text missing from send_text_submit: $(cat "$dir/sent.log")"
   pass "inject_msg: dispatches busy-guard/composer-guard/submit through the herdr backend and succeeds on a confirmed empty composer"
 }
 
@@ -3070,6 +3255,7 @@ test_housekeeping_persistent_stale_escalates
 test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
 test_housekeeping_captain_held_resurfaces_and_resets
+test_housekeeping_captain_held_silenced_only_by_an_away_record
 test_housekeeping_paused_resumed_cleared
 test_housekeeping_busy_declared_wait_matures_its_window
 test_housekeeping_declared_time_controls_pause_recheck
@@ -3099,6 +3285,8 @@ test_marker_detection
 test_afk_turn_exemption
 test_should_exit_afk_when_afk_inactive
 test_strip_injection_marker
+test_escalate_marker_preserving_primary_types_envelope
+test_record_doorbell_detection
 test_pane_input_pending_detects_partial_input
 test_pane_input_pending_blank_defers_strict
 test_pane_input_pending_requires_proven_empty_prompt
@@ -3117,6 +3305,13 @@ test_unverifiable_identity_surfaces_without_marker
 test_status_read_failure_surfaces_without_advancing_seen
 test_catchall_advances_routine_then_surfaces_append
 test_escalation_buffer_failure_retains_wake_and_position
+test_busy_inbox_escalation_reaches_supervision stuck away
+test_busy_inbox_escalation_reaches_supervision stuck quiet
+test_busy_inbox_escalation_reaches_supervision write away
+test_busy_inbox_escalation_reaches_supervision write quiet
+test_busy_inbox_escalation_reaches_supervision reset away
+test_busy_inbox_escalation_reaches_supervision reset quiet
+test_busy_inbox_dispatch_preserves_other_stale_reasons
 test_catchall_buffer_failure_preserves_position
 test_durable_wake_failure_retains_entire_batch
 test_missing_status_stale_is_acknowledged_without_diagnostic
