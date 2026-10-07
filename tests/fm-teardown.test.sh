@@ -830,7 +830,78 @@ test_local_only_merged_to_local_main_allows() {
 
   expect_code 0 "$rc" "merged-main: teardown should succeed when work is merged into local main"
   ! grep -q REFUSED "$case_dir/stderr" || fail "merged-main: teardown printed a REFUSED line"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    && fail "merged-main: teardown completed but the merged task branch survived"
   pass "local-only worktree with work merged into local main is torn down (no regression)"
+}
+
+test_merged_local_only_branch_dropped_even_when_head_detached() {
+  local case_dir rc
+  case_dir=$(make_case merged-main-detached-head)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "merged work"
+  # Land the work the way bin/fm-merge-local.sh does - a fast-forward of local
+  # main to the task branch - then detach the worktree HEAD, as a worker harness
+  # or a previous partial cleanup can before teardown runs. The old drop read
+  # the branch from HEAD, saw HEAD, and silently skipped, leaving the merged
+  # branch behind.
+  local wt_head
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  git -C "$case_dir/wt" checkout -q --detach HEAD
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "merged-main-detached-head: teardown should succeed"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "merged-main-detached-head: teardown printed a REFUSED line"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    && fail "merged-main-detached-head: the merged task branch survived a detached-HEAD teardown"
+  pass "a merged task branch is dropped even when the worktree HEAD was detached before cleanup"
+}
+
+test_unmerged_recorded_branch_is_kept_and_reported() {
+  local case_dir rc out
+  case_dir=$(make_case unmerged-branch-kept)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "unmerged work"
+  # Detach the worktree HEAD at the (clean, landed) default branch while the
+  # recorded task branch still holds an unmerged commit: the landed-work
+  # refusal validates the worktree HEAD, so teardown proceeds, and the branch
+  # drop must then refuse on the branch ref's own landed proof - keeping the
+  # branch and naming it, never silently skipping.
+  git -C "$case_dir/wt" checkout -q --detach main
+
+  set +e
+  out=$(run_teardown "$case_dir" 2>&1)
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "unmerged-branch-kept: teardown of a clean detached HEAD should succeed"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    || fail "unmerged-branch-kept: the unmerged task branch was deleted"
+  printf '%s\n' "$out" | grep -F 'task branch fm/task-x1 is not confirmed landed; leaving it in place' >/dev/null \
+    || fail "unmerged-branch-kept: the kept branch was not named in teardown output: $out"
+  pass "an unmerged task branch is kept and named in teardown output, not silently skipped"
+}
+
+test_force_discard_teardown_still_drops_an_unmerged_task_branch() {
+  local case_dir rc
+  case_dir=$(make_case force-discard-branch)
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "discarded work"
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "force-discard-branch: --force teardown should succeed"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    && fail "force-discard-branch: --force discard left the discarded task branch behind"
+  pass "a --force discard teardown still drops the task branch under its explicit-discard semantics"
 }
 
 test_no_mistakes_origin_remote_allows() {
@@ -4509,6 +4580,9 @@ test_teardown_closes_a_gerrit_task_with_its_change_url_as_a_note
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_merged_local_only_branch_dropped_even_when_head_detached
+test_unmerged_recorded_branch_is_kept_and_reported
+test_force_discard_teardown_still_drops_an_unmerged_task_branch
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
