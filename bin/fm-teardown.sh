@@ -5,6 +5,16 @@
 # scout tasks before reporting success (a secondmate teardown transitions none,
 # since secondmates are not backlog items), then refresh/prune the project's
 # clone for PR-based ship tasks.
+# Before releasing an owned ordinary task worktree, best-effort delete its local
+# recorded branch (branch=, default fm/<id>), even when HEAD is detached.
+# Branch deletion requires proof about that branch's own tip: containment in a
+# merged PR head, or content already present in the base_branch/default branch
+# (local for local-only tasks, freshly fetched from origin otherwise when present).
+# Remote reachability alone permits worktree cleanup, not branch deletion.
+# --force retains its explicit-discard semantics and bypasses this branch proof.
+# An inconclusive proof or Git deletion failure leaves the branch with a warning;
+# cleanup does not delete remote branches. tests/fm-teardown.test.sh and
+# tests/fm-backend-orca.test.sh cover this boundary.
 # An endpoint whose close could not do its job REFUSES before any record naming
 # it is removed: those records are the only thing that names what survived, so
 # reporting such a close as a completed cleanup strands the endpoint instead of
@@ -1538,8 +1548,10 @@ EOF
 # Is the worktree's PR merged for local work contained in that PR? Resolves the
 # PR from the recorded pr= URL first, then from the branch name, and asks GitHub
 # for both the PR state and head. Returns non-zero when the PR is not merged, the
-# current work is not contained in the PR head, no PR is found, or any gh error
-# occurs - the caller then falls back to the content check.
+# requested revision (default HEAD) is not contained in the PR head, no PR is
+# found, or any gh error occurs - the caller then falls back to the content check.
+# Only HEAD permits the unpushed-patch equivalence fallback; an explicit branch
+# ref must prove its own tip is an ancestor of the merged PR head.
 pr_is_merged() {
   local branch=$1 revision=${2:-HEAD} target view state remainder head resolved_url current landed=0
   if [ -n "$PR_URL" ]; then
@@ -1575,9 +1587,11 @@ pr_is_merged() {
   return 0
 }
 
-# Is the branch's content already present in the up-to-date default branch? Fetches
-# first, then 3-way merges the default branch with HEAD: when HEAD introduces nothing
-# the default branch does not already contain (e.g. its change landed via squash) the
+# Is the requested revision's content already present in the base/default branch?
+# Uses HEAD unless a revision is supplied. Explicit refs in local-only mode use
+# the local target; otherwise fetches origin's target when available, falling back
+# to the local target only without origin. When a 3-way merge introduces nothing
+# the target does not already contain (e.g. its change landed via squash), the
 # merged tree equals the default branch's tree. This isolates branch-only changes, so
 # unrelated commits the default branch gained past the merge-base do not count as
 # "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
@@ -3603,14 +3617,8 @@ fi
 # pruned code root. Best effort - a sweep failure never blocks this teardown.
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
 
-# Best-effort: drop the local task branch so the shared repo does not accumulate refs.
-# The branch name comes from the task's own record (branch=, default fm/<id> - the
-# same resolution fm-spawn writes and fm-merge-local reads), never from the
-# worktree's HEAD: a worktree whose HEAD was already detached when cleanup ran (by
-# the worker's harness or a previous partial cleanup) used to read HEAD here and
-# silently skip the whole drop, leaving the merged task branch behind. The branch is
-# dropped only when its own tip is confirmed landed, and a branch that cannot be
-# deleted is named in the output rather than vanishing into a swallowed error.
+# HEAD may be detached or name unrelated work; only the task record identifies
+# the branch cleanup owns. The header owns the branch-deletion contract.
 task_recorded_branch() {
   local branch
   branch=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
