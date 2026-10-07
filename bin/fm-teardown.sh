@@ -1541,7 +1541,7 @@ EOF
 # current work is not contained in the PR head, no PR is found, or any gh error
 # occurs - the caller then falls back to the content check.
 pr_is_merged() {
-  local branch=$1 target view state remainder head resolved_url current landed=0
+  local branch=$1 revision=${2:-HEAD} target view state remainder head resolved_url current landed=0
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
   else
@@ -1561,10 +1561,10 @@ pr_is_merged() {
   esac
   [ -n "$head" ] || return 1
   ensure_commit_object "$target" "$head" || return 1
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  current=$(git -C "$WT" rev-parse --verify "$revision" 2>/dev/null) || return 1
   if git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null; then
     landed=1
-  elif unpushed_patches_are_in_pr_head "$head"; then
+  elif [ "$revision" = HEAD ] && unpushed_patches_are_in_pr_head "$head"; then
     landed=1
   fi
   [ "$landed" = 1 ] || return 1
@@ -1583,9 +1583,11 @@ pr_is_merged() {
 # "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
 # so the caller refuses rather than guesses.
 content_in_default() {
-  local name=${BASE_BRANCH:-} ref default_tree merged_tree
+  local revision=${1:-HEAD} name=${BASE_BRANCH:-} ref default_tree merged_tree
   [ -n "$name" ] || name=$(default_branch) || return 1
-  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
+  if [ "$revision" != HEAD ] && [ "$MODE" = local-only ]; then
+    ref="refs/heads/$name"
+  elif git -C "$WT" remote get-url origin >/dev/null 2>&1; then
     git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
     ref="refs/remotes/origin/$name"
   elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
@@ -1595,7 +1597,7 @@ content_in_default() {
   fi
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
-  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
+  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" "$revision" 2>/dev/null) || return 1
   merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
   [ "$merged_tree" = "$default_tree" ]
 }
@@ -3617,15 +3619,10 @@ task_recorded_branch() {
   printf '%s\n' "$branch"
 }
 
-# Landed proof for the branch ref itself: an ancestor of the worktree HEAD whose
-# landed state the landed-work refusal already proved (non-force teardowns reach
-# the drop only after validate_worktree_teardown_safety passed), or an ancestor of
-# the default branch. Anything else keeps the branch in place.
 task_branch_is_landed() {
-  local branch=$1 default
-  git -C "$WT" merge-base --is-ancestor "refs/heads/$branch" HEAD 2>/dev/null && return 0
-  default=$(default_branch) || return 1
-  git -C "$WT" merge-base --is-ancestor "refs/heads/$branch" "refs/heads/$default" 2>/dev/null
+  local branch=$1
+  pr_is_merged "$branch" "refs/heads/$branch" && return 0
+  content_in_default "refs/heads/$branch"
 }
 
 drop_task_branch() {

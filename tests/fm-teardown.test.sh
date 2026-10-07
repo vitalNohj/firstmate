@@ -866,7 +866,7 @@ test_unmerged_recorded_branch_is_kept_and_reported() {
   local case_dir rc out
   case_dir=$(make_case unmerged-branch-kept)
   write_meta "$case_dir" local-only ship
-  wt_commit "$case_dir" "unmerged work"
+  wt_commit_file "$case_dir" feature.txt unmerged
   # Detach the worktree HEAD at the (clean, landed) default branch while the
   # recorded task branch still holds an unmerged commit: the landed-work
   # refusal validates the worktree HEAD, so teardown proceeds, and the branch
@@ -885,6 +885,56 @@ test_unmerged_recorded_branch_is_kept_and_reported() {
   printf '%s\n' "$out" | grep -F 'task branch fm/task-x1 is not confirmed landed; leaving it in place' >/dev/null \
     || fail "unmerged-branch-kept: the kept branch was not named in teardown output: $out"
   pass "an unmerged task branch is kept and named in teardown output, not silently skipped"
+}
+
+test_recorded_branch_landing_uses_its_own_tip() {
+  local scenario case_dir rc expected head
+  for scenario in pushed-attached pushed-detached squash-detached pr-detached stale-pr-detached base-detached; do
+    case_dir=$(make_case "branch-tip-$scenario")
+    write_meta "$case_dir" no-mistakes ship
+    wt_commit_file "$case_dir" feature.txt feature
+    head=$(git -C "$case_dir/wt" rev-parse HEAD)
+    expected=keep
+    case "$scenario" in
+      pushed-*)
+        git -C "$case_dir/wt" push -q origin HEAD:fm/task-x1
+        [ "$scenario" != pushed-detached ] || git -C "$case_dir/wt" checkout -q --detach HEAD
+        ;;
+      squash-detached)
+        land_on_origin_main "$case_dir" feature.txt feature
+        git -C "$case_dir/wt" fetch -q origin
+        git -C "$case_dir/wt" checkout -q --detach origin/main
+        expected=drop
+        ;;
+      pr-detached|stale-pr-detached)
+        add_gh_pr_merged_for_head "$case_dir" "$head"
+        if [ "$scenario" = stale-pr-detached ]; then
+          wt_commit_file "$case_dir" extra.txt unmerged
+          git -C "$case_dir/wt" push -q origin HEAD:fm/task-x1
+        else
+          expected=drop
+        fi
+        git -C "$case_dir/wt" checkout -q --detach main
+        ;;
+      base-detached)
+        printf 'base_branch=release\n' >> "$case_dir/state/task-x1.meta"
+        git -C "$case_dir/wt" push -q origin HEAD:release
+        git -C "$case_dir/wt" checkout -q --detach main
+        expected=drop
+        ;;
+    esac
+    set +e
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+    expect_code 0 "$rc" "$scenario: teardown should succeed"
+    if git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/task-x1; then
+      [ "$expected" = keep ] || fail "$scenario: merged branch survived"
+    else
+      [ "$expected" = drop ] || fail "$scenario: unmerged branch was deleted"
+    fi
+  done
+  pass "branch deletion proves the recorded tip landed independently of HEAD and remote reachability"
 }
 
 test_force_discard_teardown_still_drops_an_unmerged_task_branch() {
@@ -4583,6 +4633,7 @@ test_local_only_merged_to_local_main_allows
 test_merged_local_only_branch_dropped_even_when_head_detached
 test_unmerged_recorded_branch_is_kept_and_reported
 test_force_discard_teardown_still_drops_an_unmerged_task_branch
+test_recorded_branch_landing_uses_its_own_tip
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
