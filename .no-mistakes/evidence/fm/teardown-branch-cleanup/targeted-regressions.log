@@ -1,0 +1,6 @@
+ok - local-only worktree with truly unpushed work is refused (safety preserved)
+ok - local-only worktree with work merged into local main is torn down (no regression)
+ok - a merged task branch is dropped even when the worktree HEAD was detached before cleanup
+ok - an unmerged task branch is kept and named in teardown output, not silently skipped
+ok - a --force discard teardown still drops the task branch under its explicit-discard semantics
+ok - branch deletion proves the recorded tip landed independently of HEAD and remote reachability

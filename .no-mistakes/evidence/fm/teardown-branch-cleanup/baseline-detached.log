@@ -1,0 +1,27 @@
+===== detached =====
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/detached/.treehouse/project-1881a8/1/project. Run 'treehouse return /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/detached/.treehouse/project-1881a8/1/project' to release it.
+Before: task ref=ad24cceaa36efe138b9fc1eea48c3cd15ad8191b; HEAD=HEAD; mode=local-only
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/detached/home
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 0s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.pi/extensions/fm-primary-turnend-guard.ts -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+teardown task-x1 complete (window fm-lab-cleanup:fm-task-x1, worktree /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/detached/.treehouse/project-1881a8/1/project)
+Backlog: task-x1 just finished (config/backlog-backend selects manual editing). Update /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/detached/home/data/backlog.md - move task-x1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+ad24cceaa36efe138b9fc1eea48c3cd15ad8191b refs/heads/fm/task-x1
+After: exit=0 task-ref=present expected=absent meta-exists=no
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+1     available    /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/detached/.treehouse/project-1881a8/1/project

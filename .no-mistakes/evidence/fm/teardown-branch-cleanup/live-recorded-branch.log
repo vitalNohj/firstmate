@@ -1,0 +1,57 @@
+===== custom-name =====
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/custom-name/.treehouse/project-b126ea/1/project. Run 'treehouse return /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/custom-name/.treehouse/project-b126ea/1/project' to release it.
+Before: task ref=e651b2a6d42325f6ea1810cb009c27ba39c30bfd; HEAD=HEAD; mode=local-only
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/custom-name/home
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 1s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.pi/extensions/fm-primary-turnend-guard.ts -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+teardown task-x1 complete (window fm-lab-cleanup:fm-task-x1, worktree /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/custom-name/.treehouse/project-b126ea/1/project)
+Backlog: task-x1 just finished (config/backlog-backend selects manual editing). Update /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/custom-name/home/data/backlog.md - move task-x1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+fatal: 'refs/heads/worker/custom' - not a valid ref
+After: exit=0 task-ref=absent expected=absent meta-exists=no
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+1     available    /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/custom-name/.treehouse/project-b126ea/1/project
+SCENARIO PASSED: custom-name
+===== other-checkout =====
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+🌳 Setting up worktree...
+🌳 Leased worktree at /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/other-checkout/.treehouse/project-fcff2e/1/project. Run 'treehouse return /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/other-checkout/.treehouse/project-fcff2e/1/project' to release it.
+Before: task ref=65ed6de317ee60385d58fe68a8765885e44a916e; HEAD=HEAD; mode=local-only
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/other-checkout/home
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 1s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.pi/extensions/fm-primary-turnend-guard.ts -e /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+warning: task branch fm/task-x1 could not be deleted (checked out in another worktree, or git refused); left in place
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+teardown task-x1 complete (window fm-lab-cleanup:fm-task-x1, worktree /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/other-checkout/.treehouse/project-fcff2e/1/project)
+Backlog: task-x1 just finished (config/backlog-backend selects manual editing). Update /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/other-checkout/home/data/backlog.md - move task-x1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+65ed6de317ee60385d58fe68a8765885e44a916e refs/heads/fm/task-x1
+After: exit=0 task-ref=present expected=present meta-exists=no
+A new version of treehouse is available: v2.1.1 → v3.1.2
+Run "treehouse update" to update
+
+1     available    /home/nohj/.no-mistakes/worktrees/4812c8175835/01M4C5DK9WC6RV03YK564SA0NY/.live-validation/other-checkout/.treehouse/project-fcff2e/1/project
+SCENARIO PASSED: other-checkout
