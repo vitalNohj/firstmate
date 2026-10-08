@@ -1076,6 +1076,43 @@ test_ship_teardown_removes_orca_worktree_when_id_path_matches() {
   pass "fm-teardown.sh backend=orca: ship teardown requires a matching Orca id path"
 }
 
+test_ship_teardown_drops_a_merged_task_branch_when_head_detached() {
+  local proj wt data state config id out rc neutral
+  id="orcashipdropz1"
+  proj="$TMP_ROOT/ship-drop-project"
+  wt="$TMP_ROOT/ship-drop-wt"
+  data="$TMP_ROOT/ship-drop-data"
+  state="$TMP_ROOT/ship-drop-state"
+  config="$TMP_ROOT/ship-drop-config"
+  fm_git_worktree "$proj" "$wt" "fm/$id"
+  # Land the work the way bin/fm-merge-local.sh does - a fast-forward of local
+  # main to the task branch - then detach the worktree HEAD before cleanup, the
+  # shape that made the old HEAD-derived branch drop silently skip.
+  git -C "$wt" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' \
+    commit -q --allow-empty -m "merged work"
+  git -C "$proj" update-ref refs/heads/main "$(git -C "$wt" rev-parse HEAD)"
+  git -C "$wt" checkout -q --detach HEAD
+  mkdir -p "$data/$id" "$state" "$config"
+  touch "$state/.last-watcher-beat"
+  fm_write_meta "$state/$id.meta" \
+    "window=fm-$id" "endpoint_task_id=$id" "terminal=term-ship-drop" "worktree=$wt" "project=$proj" \
+    "harness=claude" "kind=ship" "mode=local-only" "yolo=off" \
+    "backend=orca" "orca_worktree_id=wt-ship-drop::/orca/wt-ship-drop"
+  orca_case ship-drop
+  printf '{"ok":true,"result":{"worktree":{"id":"wt-ship-drop::/orca/wt-ship-drop","path":"%s"}}}\n' "$wt" > "$RESP/1.out"
+  neutral=$(neutral_fm_root "$CASE_DIR/neutral")
+  set +e
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$neutral" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    "$ROOT/bin/fm-teardown.sh" "$id" 2>&1 )
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "Orca ship teardown should succeed with a detached HEAD on landed work"$'\n'"$out"
+  git -C "$proj" show-ref --verify --quiet "refs/heads/fm/$id" \
+    && fail "Orca ship teardown completed but the merged task branch survived a detached-HEAD cleanup"
+  pass "fm-teardown.sh backend=orca: drops the merged task branch even when HEAD was detached"
+}
+
 test_ship_teardown_refuses_orca_unresolvable_worktree_id() {
   local proj wt data state config id out rc neutral
   id="orcashipunresolvedz1"
@@ -1394,6 +1431,7 @@ test_teardown_preserves_metadata_when_orca_remove_error_json
 test_scout_teardown_refuses_orca_missing_report_when_path_missing
 test_ship_teardown_refuses_orca_missing_worktree_path
 test_ship_teardown_removes_orca_worktree_when_id_path_matches
+test_ship_teardown_drops_a_merged_task_branch_when_head_detached
 test_ship_teardown_refuses_orca_unresolvable_worktree_id
 test_ship_teardown_refuses_orca_id_path_mismatch
 test_teardown_refuses_orca_missing_worktree_id

@@ -5,6 +5,16 @@
 # scout tasks before reporting success (a secondmate teardown transitions none,
 # since secondmates are not backlog items), then refresh/prune the project's
 # clone for PR-based ship tasks.
+# Before releasing an owned ordinary task worktree, best-effort delete its local
+# recorded branch (branch=, default fm/<id>), even when HEAD is detached.
+# Branch deletion requires proof about that branch's own tip: containment in a
+# merged PR head, or content already present in the base_branch/default branch
+# (local for local-only tasks, freshly fetched from origin otherwise when present).
+# Remote reachability alone permits worktree cleanup, not branch deletion.
+# --force retains its explicit-discard semantics and bypasses this branch proof.
+# An inconclusive proof or Git deletion failure leaves the branch with a warning;
+# cleanup does not delete remote branches. tests/fm-teardown.test.sh and
+# tests/fm-backend-orca.test.sh cover this boundary.
 # An endpoint whose close could not do its job REFUSES before any record naming
 # it is removed: those records are the only thing that names what survived, so
 # reporting such a close as a completed cleanup strands the endpoint instead of
@@ -1538,10 +1548,12 @@ EOF
 # Is the worktree's PR merged for local work contained in that PR? Resolves the
 # PR from the recorded pr= URL first, then from the branch name, and asks GitHub
 # for both the PR state and head. Returns non-zero when the PR is not merged, the
-# current work is not contained in the PR head, no PR is found, or any gh error
-# occurs - the caller then falls back to the content check.
+# requested revision (default HEAD) is not contained in the PR head, no PR is
+# found, or any gh error occurs - the caller then falls back to the content check.
+# Only HEAD permits the unpushed-patch equivalence fallback; an explicit branch
+# ref must prove its own tip is an ancestor of the merged PR head.
 pr_is_merged() {
-  local branch=$1 target view state remainder head resolved_url current landed=0
+  local branch=$1 revision=${2:-HEAD} target view state remainder head resolved_url current landed=0
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
   else
@@ -1561,10 +1573,10 @@ pr_is_merged() {
   esac
   [ -n "$head" ] || return 1
   ensure_commit_object "$target" "$head" || return 1
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  current=$(git -C "$WT" rev-parse --verify "$revision" 2>/dev/null) || return 1
   if git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null; then
     landed=1
-  elif unpushed_patches_are_in_pr_head "$head"; then
+  elif [ "$revision" = HEAD ] && unpushed_patches_are_in_pr_head "$head"; then
     landed=1
   fi
   [ "$landed" = 1 ] || return 1
@@ -1575,17 +1587,21 @@ pr_is_merged() {
   return 0
 }
 
-# Is the branch's content already present in the up-to-date default branch? Fetches
-# first, then 3-way merges the default branch with HEAD: when HEAD introduces nothing
-# the default branch does not already contain (e.g. its change landed via squash) the
+# Is the requested revision's content already present in the base/default branch?
+# Uses HEAD unless a revision is supplied. Explicit refs in local-only mode use
+# the local target; otherwise fetches origin's target when available, falling back
+# to the local target only without origin. When a 3-way merge introduces nothing
+# the target does not already contain (e.g. its change landed via squash), the
 # merged tree equals the default branch's tree. This isolates branch-only changes, so
 # unrelated commits the default branch gained past the merge-base do not count as
 # "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
 # so the caller refuses rather than guesses.
 content_in_default() {
-  local name=${BASE_BRANCH:-} ref default_tree merged_tree
+  local revision=${1:-HEAD} name=${BASE_BRANCH:-} ref default_tree merged_tree
   [ -n "$name" ] || name=$(default_branch) || return 1
-  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
+  if [ "$revision" != HEAD ] && [ "$MODE" = local-only ]; then
+    ref="refs/heads/$name"
+  elif git -C "$WT" remote get-url origin >/dev/null 2>&1; then
     git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
     ref="refs/remotes/origin/$name"
   elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
@@ -1595,7 +1611,7 @@ content_in_default() {
   fi
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
-  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
+  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" "$revision" 2>/dev/null) || return 1
   merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
   [ "$merged_tree" = "$default_tree" ]
 }
@@ -3601,19 +3617,66 @@ fi
 # pruned code root. Best effort - a sweep failure never blocks this teardown.
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
 
-# Best-effort: drop the local task branch so the shared repo does not accumulate refs.
+# HEAD may be detached or name unrelated work; only the task record identifies
+# the branch cleanup owns. The header owns the branch-deletion contract.
+task_recorded_branch() {
+  local branch
+  branch=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
+  [ -n "$branch" ] || branch="fm/$ID"
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$branch"
+}
+
+task_branch_is_landed() {
+  local branch=$1
+  pr_is_merged "$branch" "refs/heads/$branch" && return 0
+  content_in_default "refs/heads/$branch"
+}
+
+drop_task_branch() {
+  local task_branch head lock
+  task_branch=$(task_recorded_branch) || {
+    echo "warning: task $ID's recorded ship branch is not a valid branch name; leaving every branch in place" >&2
+    return 0
+  }
+  git -C "$WT" show-ref --verify --quiet "refs/heads/$task_branch" || return 0
+  if [ "$FORCE" != "--force" ] && ! task_branch_is_landed "$task_branch"; then
+    echo "warning: task branch $task_branch is not confirmed landed; leaving it in place" >&2
+    return 0
+  fi
+  head=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+  if [ "$head" != "$task_branch" ]; then
+    git -C "$WT" branch -D "$task_branch" >/dev/null 2>&1 \
+      || echo "warning: task branch $task_branch could not be deleted (checked out in another worktree, or git refused); left in place" >&2
+    return 0
+  fi
+  if ! git -C "$WT" checkout --detach -q 2>/dev/null; then
+    # A killed worker can leave a transient or stale git index.lock that blocks
+    # the detach; give the drop the same provably-stale cleanup the treehouse
+    # return path applies before leaving the branch in place.
+    lock=$(worktree_git_lock_path "$WT" 2>/dev/null || true)
+    if [ -n "$lock" ] && [ -e "$lock" ] \
+      && fm_lock_is_provably_stale "$lock" "$WT" "$STALE_WORKTREE_LOCK_AGE_SECS"; then
+      rm -f "$lock"
+      echo "teardown: removed provably-stale git lock $lock blocking the task-branch drop" >&2
+      git -C "$WT" checkout --detach -q 2>/dev/null || true
+    fi
+    head=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+    if [ "$head" = "$task_branch" ]; then
+      echo "warning: could not detach $WT from $task_branch; the branch was left in place" >&2
+      return 0
+    fi
+  fi
+  git -C "$WT" branch -D "$task_branch" >/dev/null 2>&1 \
+    || echo "warning: task branch $task_branch could not be deleted (checked out in another worktree, or git refused); left in place" >&2
+}
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
     require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
     ORCA_PATH_MATCH_VERIFIED=1
   fi
   if [ -d "$WT" ]; then
-    branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-    if [ "$branch" != "HEAD" ]; then
-      if git -C "$WT" checkout --detach -q 2>/dev/null; then
-        git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
-      fi
-    fi
+    drop_task_branch
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
       "$WT/.opencode/plugins/fm-busy-state.js" \
       "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
@@ -3626,12 +3689,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
 elif [ "$KIND" != secondmate ] && ! teardown_owns_worktree; then
   :
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
-  branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-  if [ "$branch" != "HEAD" ]; then
-    if git -C "$WT" checkout --detach -q 2>/dev/null; then
-      git -C "$WT" branch -D "$branch" >/dev/null 2>&1 || true
-    fi
-  fi
+  drop_task_branch
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
   rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
     "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
