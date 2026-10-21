@@ -1049,8 +1049,11 @@ fi
 FM_PENDING_REPLY_NOW=$((cadence_epoch + 11)) remote_env bash -c '. "$1/bin/fm-pending-reply-lib.sh"; fm_pending_reply_tick "$2/state"' _ "$ROOT" "$PARENT"
 [ "$(wc -l < "$OBSERVE_LOG" | tr -d ' ')" = 2 ] \
   || fail "supervision did not resume remote observes at the quiet-window boundary"
-printf 'done [corr=%s]: cadence probe complete\n' "$CADENCE_CORR" > "$TMP_ROOT/cadence-done.status"
-fm_pending_reply_try_resolve "$PARENT/state" "$CADENCE_CORR" "$TMP_ROOT/cadence-done.status"
+# Upstream resolves only from the asked task's own status log.
+# A side file that echoes the token must not close this probe.
+printf 'done [corr=%s]: cadence probe complete\n' "$CADENCE_CORR" >> "$PARENT/state/ios.status"
+fm_pending_reply_try_resolve "$PARENT/state" "$CADENCE_CORR" "$PARENT/state/ios.status" \
+  || fail "the cadence probe's own status line did not resolve it"
 unset FM_PENDING_REPLY_REMOTE_OBSERVE FM_PENDING_REPLY_REMOTE_OBSERVE_BIN
 unset FM_OBSERVE_LOG FM_OBSERVE_ROOT
 pass "repeated supervision ticks leave the real remote reader time to publish freshness"
