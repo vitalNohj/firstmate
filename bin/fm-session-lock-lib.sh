@@ -11,6 +11,10 @@
 # Claude session id below matches the id recorded beside a live lock. Neither
 # signal ever fails open: no id, no sidecar, an untrusted id, or a different
 # recorded id leaves the ancestry verdict exactly as it was.
+# A Pi Pocket conversation is the one session that has no harness process of
+# its own; its trusted identity and the conversation-bound ownership rule are
+# the "Pi Pocket conversation identity" section below, and they are inert
+# unless that section's marker proves itself.
 # This file is sourced by scripts and has no side effects on source.
 
 # Cursor process identity is NOT expressible as a command-name pattern and is
@@ -254,7 +258,91 @@ fm_session_lock_same_session() {  # <state> [<ancestry-pids>]
   [ "$recorded" = "$trusted" ]
 }
 
-# Print the pid bin/fm-lock.sh records on lock line 1 for this session. For a
+# --- Pi Pocket conversation identity ----------------------------------------
+# Pi Pocket (a Pi Durable server) runs every conversation, and every bash tool
+# call of every conversation, inside ONE long-lived server process whose name
+# identifies nothing (Node reports `MainThread`). No harness process exists to
+# walk to, and the server pid alone cannot tell two conversations apart. The
+# Firstmate Pi Pocket extension therefore stamps two variables on each bash
+# call it runs: FM_PI_POCKET_CONVERSATION (the conversation id) and
+# FM_PI_POCKET_SERVER_PID (the server's own pid).
+#
+# Trust gate: the server pid is the nearest host of this process. It must be
+# reached by walking up this process's own parent chain (so it is alive and an
+# ancestor), with no verified harness process between the caller and it. A
+# copied or retained marker whose server is gone, or not an ancestor, is
+# ignored, and so is a marker inherited by a harness hand-started from a Pi
+# Pocket bash call, whose own process sits between. Pid 1 is refused because
+# init is every process's ancestor and proves nothing. The conversation id must
+# be a short token of letters, digits, `.`, `_`, `:`, and `-`.
+#
+# A trusted identity makes the server pid the lock anchor and records
+# FM_PI_POCKET_SESSION_PREFIX plus the conversation id in state/.lock-session.
+# Ownership then needs BOTH: line 1 is this server and the sidecar names this
+# conversation, so a sibling conversation of the same server is a live foreign
+# owner while the same conversation re-acquires. A restarted server is a dead
+# line 1, reclaimed through bin/fm-lock.sh's ordinary stale-owner path. The
+# prefix keeps a Pi Pocket record from ever equalling a Claude session id.
+FM_PI_POCKET_SESSION_PREFIX='pi-pocket:'
+
+# Print the trusted Pi Pocket server pid hosting this process, or return 1.
+fm_pi_pocket_trusted_server_pid() {
+  local server=${FM_PI_POCKET_SERVER_PID:-} conversation=${FM_PI_POCKET_CONVERSATION:-} pid=$$ comm args
+  [ -n "$conversation" ] && [ "${#conversation}" -le 128 ] || return 1
+  case "$conversation" in *[!A-Za-z0-9._:-]*) return 1 ;; esac
+  case "$server" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$server" -gt 1 ] || return 1
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    if [ "$pid" = "$server" ]; then
+      printf '%s\n' "$server"
+      return 0
+    fi
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
+    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    fm_harness_process_matches "$comm" "$args" && return 1
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 1 ] || return 1
+  done
+  return 1
+}
+
+# Print the sidecar record of the trusted Pi Pocket conversation, or return 1.
+fm_pi_pocket_session_key() {
+  fm_pi_pocket_trusted_server_pid >/dev/null || return 1
+  printf '%s%s\n' "$FM_PI_POCKET_SESSION_PREFIX" "$FM_PI_POCKET_CONVERSATION"
+}
+
+# True when the lock in state dir $1 was recorded by a Pi Pocket conversation.
+fm_session_lock_recorded_pi_pocket() {  # <state>
+  local recorded
+  recorded=$(fm_session_lock_recorded_session_id "$1") || return 1
+  case "$recorded" in "$FM_PI_POCKET_SESSION_PREFIX"?*) return 0 ;; esac
+  return 1
+}
+
+# Print the identity bin/fm-lock.sh records in state/.lock-session for this
+# session: the trusted Pi Pocket conversation record, else the trusted Claude
+# session id, else return 1.
+fm_session_lock_trusted_key() {
+  fm_pi_pocket_session_key && return 0
+  fm_session_lock_trusted_session_id
+}
+
+# True when recorded lock pid $2 of state dir $1 is a live session holder. A
+# verified harness process is one; a Pi Pocket server has no harness shape, so a
+# lock recorded by a Pi Pocket conversation is held while its server pid is
+# alive. A reused server pid therefore reads as held, which refuses rather than
+# letting two sessions own the home.
+fm_session_lock_holder_alive() {  # <state> <pid>
+  case "$2" in ''|*[!0-9]*) return 1 ;; esac
+  fm_harness_pid_alive "$2" && return 0
+  fm_session_lock_recorded_pi_pocket "$1" || return 1
+  kill -0 "$2" 2>/dev/null
+}
+
+# Print the pid bin/fm-lock.sh records on lock line 1 for this session. A
+# trusted Pi Pocket conversation records its server pid (section above). For a
 # Claude session with a trusted id that is CLAUDE_PID, the model-loop process:
 # never the shared transient daemon and never a front-end that outlives the
 # session, so "recorded pid dead" keeps meaning "session gone" instead of
@@ -264,6 +352,7 @@ fm_session_lock_same_session() {  # <state> [<ancestry-pids>]
 # outermost pid of its contiguous run, exactly as before.
 fm_session_lock_anchor_pid() {
   local pids
+  fm_pi_pocket_trusted_server_pid && return 0
   pids=$(fm_harness_ancestry_pids) || return 1
   if fm_session_lock_trusted_session_id "$pids" >/dev/null; then
     printf '%s\n' "$CLAUDE_PID"
@@ -283,24 +372,33 @@ fm_session_lock_anchor_pid() {
 # bin/fm-lock.sh's ordinary stale-owner path, which refreshes line 1, rather than
 # silently owned with a dead anchor. A missing lock, a malformed lock, a lock
 # held by a harness outside this ancestry under another (or no) session id, or
-# an ancestry that cannot be resolved all fail closed.
+# an ancestry that cannot be resolved all fail closed. A trusted Pi Pocket
+# conversation owns only a lock recorded with its own server pid AND its own
+# conversation record.
 fm_session_lock_owned_by_self() {
-  local state=$1 lock_pid pids
+  local state=$1 lock_pid pids server key recorded
   lock_pid=$(cat "$state/.lock" 2>/dev/null || true)
   case "$lock_pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
+  if server=$(fm_pi_pocket_trusted_server_pid); then
+    [ "$lock_pid" = "$server" ] || return 1
+    key=$(fm_pi_pocket_session_key) || return 1
+    recorded=$(fm_session_lock_recorded_session_id "$state") || return 1
+    [ "$recorded" = "$key" ]
+    return
+  fi
   pids=$(fm_harness_ancestry_pids) || return 1
   fm_harness_pid_listed "$lock_pid" "$pids" && return 0
   fm_session_lock_same_session "$state" "$pids" || return 1
   fm_harness_pid_alive "$lock_pid"
 }
 
-# True when state dir $1 records a live verified harness outside this process's
+# True when state dir $1 records a live session holder outside this process's
 # contiguous harness ancestry that was not recorded by this same trusted Claude
-# session. Sets FM_SESSION_LOCK_FOREIGN_OWNER_PID for a diagnostic caller.
-# Malformed, missing, dead, and ancestry-uncertain locks are not foreign-owner
-# evidence.
+# session or Pi Pocket conversation. Sets FM_SESSION_LOCK_FOREIGN_OWNER_PID for
+# a diagnostic caller. Malformed, missing, dead, and ancestry-uncertain locks
+# are not foreign-owner evidence.
 # shellcheck disable=SC2034 # Output global, read by the sourcing guard caller.
 FM_SESSION_LOCK_FOREIGN_OWNER_PID=
 fm_session_lock_foreign_owner_live() {
@@ -311,10 +409,14 @@ fm_session_lock_foreign_owner_live() {
   case "$lock_pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  fm_harness_pid_alive "$lock_pid" || return 1
-  pids=$(fm_harness_ancestry_pids) || return 1
-  fm_harness_pid_listed "$lock_pid" "$pids" && return 1
-  fm_session_lock_same_session "$state" "$pids" && return 1
+  fm_session_lock_holder_alive "$state" "$lock_pid" || return 1
+  if fm_pi_pocket_trusted_server_pid >/dev/null; then
+    fm_session_lock_owned_by_self "$state" && return 1
+  else
+    pids=$(fm_harness_ancestry_pids) || return 1
+    fm_harness_pid_listed "$lock_pid" "$pids" && return 1
+    fm_session_lock_same_session "$state" "$pids" && return 1
+  fi
   # shellcheck disable=SC2034 # Output global, read by the sourcing guard caller.
   FM_SESSION_LOCK_FOREIGN_OWNER_PID=$lock_pid
   return 0
@@ -329,7 +431,7 @@ fm_session_lock_foreign_owner_live() {
 #   FM_LOCK_INSPECT_PID           recorded pid, or empty
 #   FM_LOCK_INSPECT_LIVE_HARNESS  true|false|unknown
 #
-# held: the recorded pid is a live verified harness.
+# held: the recorded pid is a live session holder (fm_session_lock_holder_alive).
 # stale: the recorded pid is gone.
 # unknown: the file or pid cannot be classified without guessing, including a
 # live process that is not a verified harness. Existence of a lock file, a
@@ -370,7 +472,7 @@ fm_session_lock_inspect() {  # <state>
       ;;
   esac
   if kill -0 "$pid" 2>/dev/null; then
-    if fm_harness_pid_alive "$pid"; then
+    if fm_session_lock_holder_alive "$state" "$pid"; then
       FM_LOCK_INSPECT_STATE=held
       FM_LOCK_INSPECT_LIVE_HARNESS=true
     else
