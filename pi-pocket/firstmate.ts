@@ -170,7 +170,8 @@ async function firstLine(path: string): Promise<string> {
 
 /** Owned when the lock names this server and its sidecar this conversation, as fm_session_lock_owned_by_self decides. */
 async function ownership(home: string, conversationId: ConversationId): Promise<Ownership> {
-    const state = join(home, "state");
+    // The same state directory bin/fm-lock.sh binds, which the scripts the drop-in runs inherit from the server.
+    const state = process.env.FM_STATE_OVERRIDE || join(home, "state");
     const pid = Number(await firstLine(join(state, ".lock")));
     if (!Number.isInteger(pid) || pid <= 1 || !alive(pid)) return "missing";
     const session = await firstLine(join(state, ".lock-session"));
@@ -500,7 +501,9 @@ function createWatchTask(host: Partial<Host>) {
                         return;
                     }
 
-                    let next: WatchState = { ...checkpoint, failures: 0 };
+                    // A ready arm does not end a failure streak: only an actionable close does, so an arm that keeps
+                    // reporting ready and then failing still reaches the retry limit.
+                    let next: WatchState = { ...checkpoint };
                     delete next.predecessor;
                     // Successor first, then the wakes: the fleet is watched again before the model handles them.
                     const recovery = arm.recovery();
@@ -573,7 +576,7 @@ function createWatchTask(host: Partial<Host>) {
                     if (closed.actionable) {
                         const seq = next.seq + 1;
                         const wake: Pending = { kind: "wake", text: closed.message, requestId: requestFor(id, `fm-wake-${String(runtime.taskId)}-${seq}`) };
-                        const read: WatchState = { ...next, seq, predecessor: arm.pid, pending: [...(next.pending ?? []), wake] };
+                        const read: WatchState = { ...next, seq, failures: 0, predecessor: arm.pid, pending: [...(next.pending ?? []), wake] };
                         await runtime.commit(() => ({ status: "running", checkpoint: read }), context);
                         return;
                     }

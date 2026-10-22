@@ -57,6 +57,7 @@ server=$PPID
 printf '%s %s\\n' "$$" "\${FM_WATCH_PREDECESSOR_ARM_PID:-none}" >> "$stub/arms.log"
 trap 'exit 143' TERM
 echo "watcher: started pid=$$ (beacon fresh)"
+if [ -e "$stub/fail-always" ]; then echo "watcher: FAILED - stub arm broke after reporting ready"; exit 0; fi
 while kill -0 "$server" 2>/dev/null; do
   for fire in "$stub"/fire.*; do
     [ -e "$fire" ] || continue
@@ -298,6 +299,23 @@ test("wakes wait while the session is held back by a spend limit, the watcher ke
     );
     await until(async () => (await watchTask(app, id))?.state.checkpoint?.pending === undefined, "an empty queue", LONG);
     assert.equal(lines(join(fmHome, "stub", "arms.log")).length, 3, "delivery started no extra arm");
+});
+
+test("an arm that keeps reporting ready and then failing still exhausts the retry limit and ends visibly", async () => {
+    const { app, id, fmHome } = await started();
+
+    await say(app, id, "start firstmate");
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
+    writeFileSync(join(fmHome, "stub", "fail-always"), "");
+    fire(fmHome, "signal: last good wake");
+    await until(async () => (await watchTask(app, id))?.state.status === "terminal", "the watcher task to give up", 4 * LONG);
+    // The failure is a follow-up: it reaches the session once the wake's turn answers.
+    await until(async () => count(await userTexts(app, id), "could not restore watcher continuity") > 0, "the failure", LONG);
+    const texts = await userTexts(app, id);
+    assert.equal(count(texts, `${WAKE}signal: last good wake`), 1);
+    assert.equal(count(texts, "could not restore watcher continuity after 5 retries"), 1, texts.join("\n---\n"));
+    // The arm that read the good wake, then the first failing one and its five retries.
+    assert.equal(lines(join(fmHome, "stub", "arms.log")).length, 7);
 });
 
 test("the turn-end guard continues a turn that would end blind exactly once", async () => {
