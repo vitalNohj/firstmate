@@ -9,7 +9,9 @@
 # (docs/supervision-protocols/supervision-host.md, whose lines tagged
 # "{<harness>,...} " render only for the listed harnesses), and Grok's arm
 # command becomes the host; on a home that does not run it the output is
-# unchanged.
+# unchanged. A Pi Pocket primary (pi-pocket, docs/supervision-protocols/pi-pocket.md)
+# never runs the host, the supervision branch, or the away daemon, so its away
+# and quiet stanza and repair line say that neither mode runs there.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -101,11 +103,14 @@ if [ -z "$HARNESS" ]; then
 fi
 
 case "$HARNESS" in
-  claude|codex|opencode|pi|grok|cursor|omp) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
+  claude|codex|opencode|pi|grok|cursor|omp|pi-pocket) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
   pi-signed) SNIPPET="$DOC_DIR/pi.md" ;;
   *) HARNESS=unknown; SNIPPET="$DOC_DIR/unknown.md" ;;
 esac
 [ -f "$SNIPPET" ] || SNIPPET="$DOC_DIR/unknown.md"
+# Pi Pocket runs no away daemon, so a leftover away or quiet record has no owner
+# there and the drop-in's attended supervision must continue.
+PI_POCKET_AFK_LINE='away and quiet modes do not run under Pi Pocket and no daemon owns the watcher; run bin/fm-afk-return.sh to close the leftover record, then keep supervising attended through the Pi Pocket drop-in.'
 HOST_SNIPPET=
 grok_arm='bin/fm-watch-arm.sh'
 case "$HARNESS" in
@@ -165,6 +170,10 @@ repair_line() {
     printf '%s\n' 'Watcher repair belongs to the session holding the fleet lock; do not drain, arm, or repair from this read-only session.'
     return 0
   fi
+  if [ "$AFK" -eq 1 ] && [ "$HARNESS" = pi-pocket ]; then
+    printf '%s\n' "$PI_POCKET_AFK_LINE"
+    return 0
+  fi
   if [ "$AFK" -eq 1 ]; then
     if [ "$AFK_MODE" = quiet ]; then
       printf '%s\n' 'Quiet mode owns watcher supervision; load /quiet and ensure the daemon is running instead of starting normal supervision directly.'
@@ -204,6 +213,9 @@ repair_line() {
     cursor)
       printf '%s%s\n' "$prefix" 'watcher supervision is owned by the stop-hook park; inspect the hook registration and watcher startup path before ending the turn.'
       ;;
+    pi-pocket)
+      printf '%s%s\n' "$prefix" 'repair a missing or failed watcher cycle with the Pi Pocket drop-in tool fm_watch_arm_pocket; if that tool is unavailable, the Firstmate Pi Pocket drop-in is not enabled for this conversation, so report that instead of running bin/fm-watch-arm.sh through bash.'
+      ;;
     *)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision according to the session-start block for this harness; do not use shell &.'
       ;;
@@ -233,6 +245,9 @@ ordinary_wake_line() {
     cursor)
       printf '%s\n' '- Ordinary wake: the stop-hook park (bin/fm-turnend-guard-cursor.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.'
       ;;
+    pi-pocket)
+      printf '%s\n' '- Ordinary wake: the Pi Pocket drop-in already owns watcher continuity; do not arm another cycle.'
+      ;;
     *)
       printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'
       ;;
@@ -254,7 +269,9 @@ if [ "$READ_ONLY" -eq 1 ]; then
 else
   printf '%s\n' '- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.'
 fi
-if [ "$AFK" -eq 1 ]; then
+if [ "$AFK" -eq 1 ] && [ "$HARNESS" = pi-pocket ]; then
+  printf '%s\n' "- Away/quiet mode: recorded, but $PI_POCKET_AFK_LINE"
+elif [ "$AFK" -eq 1 ]; then
   if [ "$AFK_MODE" = quiet ]; then
     printf '%s\n' '- Quiet mode: active; load /quiet and keep normal harness supervision paused while the daemon owns the watcher. Ordinary captain chat does NOT exit it - only an explicit /quiet off does.'
   else

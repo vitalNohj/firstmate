@@ -11,8 +11,12 @@
 # This script is push-based: verified harness turn-end hooks invoke it every time
 # the primary is about to end a turn.
 # Claude and codex can block directly by preserving exit status 2 and stderr.
-# OpenCode and pi adapters use the same predicate and force one bounded
-# follow-up because their turn-end events are passive. Grok delegates native
+# OpenCode, pi, and Pi Pocket adapters use the same predicate and force one
+# bounded follow-up because their turn-end events are passive. A Pi Pocket
+# conversation is recognized by its trusted marker ("Pi Pocket conversation
+# identity" in bin/fm-session-lock-lib.sh); when a sibling conversation holds
+# this home's session lock it stands down instead of blocking, because it cannot
+# repair supervision without stealing that lock. Grok delegates native
 # blocking when its running Stop payload advertises that capability, with one
 # bounded resume fallback for payloads from pre-native processes. Cursor calls
 # this guard back with --cursor from bin/fm-turnend-guard-cursor.sh and renders
@@ -198,7 +202,7 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 # --- the actual predicate ----------------------------------------------------
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
-if [ "$CLAUDE_MODE" -eq 1 ]; then
+if [ "$CLAUDE_MODE" -eq 1 ] || [ -n "${FM_PI_POCKET_CONVERSATION:-}" ]; then
   # shellcheck source=bin/fm-session-lock-lib.sh
   . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 fi
@@ -290,6 +294,16 @@ block_stop() {
 if [ "$CLAUDE_MODE" -eq 1 ] && fm_session_lock_foreign_owner_live "$STATE"; then
   printf '{"systemMessage":"FIRSTMATE SUPERVISION IS OWNED BY ANOTHER LIVE SESSION: this read-only session cannot and should not arm or repair the watcher (lock owner pid %s). Allowing this turn to end safely; the owning session must restore supervision."}\n' \
     "$FM_SESSION_LOCK_FOREIGN_OWNER_PID"
+  exit 0
+fi
+
+# The Pi Pocket form of the same ownership conflict: every conversation of one
+# server shares its pid, so only the conversation bound to the lock owns it.
+if [ "$CLAUDE_MODE" -eq 0 ] && [ -n "${FM_PI_POCKET_CONVERSATION:-}" ] \
+  && fm_pi_pocket_trusted_server_pid >/dev/null \
+  && fm_session_lock_foreign_owner_live "$STATE"; then
+  printf 'FIRSTMATE SUPERVISION IS OWNED BY ANOTHER LIVE SESSION: this Pi Pocket conversation does not hold the home lock (owner pid %s) and must not arm or repair the watcher; the owning session must restore supervision.\n' \
+    "$FM_SESSION_LOCK_FOREIGN_OWNER_PID" >&2
   exit 0
 fi
 

@@ -19,6 +19,11 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-turnend-guard)
 fm_git_identity fmtest fmtest@example.invalid
 
+# shellcheck source=tests/pi-pocket-server-fixture.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pi-pocket-server-fixture.sh"
+pi_pocket_fixture_setup "$TMP_ROOT/pi-pocket"
+trap 'stop_servers; fm_test_cleanup' EXIT
+
 REQUIRED_REASON='watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn'
 AWAY_REQUIRED_REASON='Away mode owns watcher supervision'
 
@@ -188,6 +193,7 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-operational-input.sh" "$dir/bin/fm-operational-input.sh"
   cp "$ROOT/bin/fm-supervision-instructions.sh" "$dir/bin/fm-supervision-instructions.sh"
   cp "$ROOT/bin/fm-harness.sh" "$dir/bin/fm-harness.sh"
+  cp "$ROOT/bin/fm-gemini-lib.sh" "$dir/bin/fm-gemini-lib.sh"
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-supervision-engine-lib.sh" "$dir/bin/fm-supervision-engine-lib.sh"
@@ -445,6 +451,83 @@ test_hook_blocks_when_unhealthy_in_primary() {
   assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
   assert_contains "$out" "TURN WOULD END BLIND" "block banner must read as an alarm"
   pass "fm-turnend-guard: blocks with the exact required reason in the primary when unhealthy"
+}
+
+# Run the shared guard as a bash call of a Pi Pocket fixture server, the way the
+# Pi Pocket drop-in's passive turn-end hook invokes it.
+pi_pocket_guard_cmd() {  # <dir> <stop-hook-active>
+  printf 'printf %%s %q | env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS FM_HOME=%q bash %q 2>&1' \
+    "{\"stop_hook_active\":$2}" "$(cd "$1" && pwd)" "$1/bin/fm-turnend-guard.sh"
+}
+
+pi_pocket_lock_cmd() {  # <dir>
+  printf 'env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS FM_HOME=%q %q' \
+    "$(cd "$1" && pwd)" "$ROOT/bin/fm-lock.sh"
+}
+
+test_hook_pi_pocket_owner_gets_one_bounded_follow_up() {
+  local dir fix
+  dir=$(make_primary_dir "$TMP_ROOT/hook-pi-pocket-owner")
+  fix="$TMP_ROOT/pi-pocket/owner-server"
+  start_server "$fix"
+  call "$fix" conv-a self "$(pi_pocket_lock_cmd "$dir")"
+  expect_code 0 "$CALL_RC" "conversation A must acquire the home lock: $CALL_OUT"
+
+  call "$fix" conv-a self "$(pi_pocket_guard_cmd "$dir" false)"
+  expect_code 0 "$CALL_RC" "the owning conversation must end freely with no work in flight"
+  [ -z "$CALL_OUT" ] || fail "the owning conversation's idle turn end produced output: $CALL_OUT"
+
+  : > "$dir/state/task1.meta"
+  call "$fix" conv-a self "$(pi_pocket_guard_cmd "$dir" false)"
+  expect_code 2 "$CALL_RC" "the owning conversation must be blocked with work in flight and no watcher"
+  assert_contains "$CALL_OUT" "TURN WOULD END BLIND" "the Pi Pocket block must carry the alarm banner"
+  assert_contains "$CALL_OUT" "Pi Pocket drop-in tool fm_watch_arm_pocket" "the Pi Pocket block must name the drop-in repair tool"
+  assert_not_contains "$CALL_OUT" "fm_watch_arm_pi" "the Pi Pocket block borrowed the Pi repair tool"
+
+  call "$fix" conv-a self "$(pi_pocket_guard_cmd "$dir" true)"
+  expect_code 0 "$CALL_RC" "the forced continuation's own turn end must be allowed, bounding it to one"
+  [ -z "$CALL_OUT" ] || fail "the bounded second turn end produced output: $CALL_OUT"
+  pass "fm-turnend-guard: a Pi Pocket conversation owning the lock gets the drop-in repair line, bounded to one follow-up"
+}
+
+test_hook_pi_pocket_sibling_conversation_stands_down() {
+  local dir fix pid
+  dir=$(make_primary_dir "$TMP_ROOT/hook-pi-pocket-sibling")
+  fix="$TMP_ROOT/pi-pocket/sibling-server"
+  start_server "$fix"
+  pid=$(server_pid "$fix")
+  call "$fix" conv-a self "$(pi_pocket_lock_cmd "$dir")"
+  expect_code 0 "$CALL_RC" "conversation A must acquire the home lock: $CALL_OUT"
+  : > "$dir/state/task1.meta"
+
+  call "$fix" conv-b self "$(pi_pocket_guard_cmd "$dir" false)"
+  expect_code 0 "$CALL_RC" "a sibling conversation that cannot repair supervision must not be blocked"
+  assert_contains "$CALL_OUT" "OWNED BY ANOTHER LIVE SESSION" "the sibling must get the ownership diagnostic"
+  assert_contains "$CALL_OUT" "owner pid $pid" "the diagnostic must name the owning server"
+  assert_not_contains "$CALL_OUT" "TURN WOULD END BLIND" "the sibling must not get the repair banner"
+
+  call "$fix" conv-a self "$(pi_pocket_guard_cmd "$dir" false)"
+  expect_code 2 "$CALL_RC" "the owning conversation must still be blocked beside the sibling"
+  pass "fm-turnend-guard: a sibling Pi Pocket conversation stands down instead of being blocked"
+}
+
+test_hook_pi_pocket_stale_marker_is_an_ordinary_session() {
+  local dir fix dead
+  dir=$(make_primary_dir "$TMP_ROOT/hook-pi-pocket-stale")
+  fix="$TMP_ROOT/pi-pocket/stale-server"
+  start_server "$fix"
+  call "$fix" conv-a self "$(pi_pocket_lock_cmd "$dir")"
+  expect_code 0 "$CALL_RC" "conversation A must acquire the home lock: $CALL_OUT"
+  : > "$dir/state/task1.meta"
+  sleep 0 &
+  dead=$!
+  wait "$dead"
+
+  call "$fix" conv-b "$dead" "$(pi_pocket_guard_cmd "$dir" false)"
+  expect_code 2 "$CALL_RC" "a marker naming a dead server proves nothing, so the guard must block as for any session"
+  assert_not_contains "$CALL_OUT" "OWNED BY ANOTHER LIVE SESSION" "an untrusted marker must not earn the sibling stand-down"
+  assert_not_contains "$CALL_OUT" "fm_watch_arm_pocket" "an untrusted marker must not select the Pi Pocket repair line"
+  pass "fm-turnend-guard: an untrusted Pi Pocket marker changes nothing"
 }
 
 test_hook_blocks_from_fm_home_state() {
@@ -2322,6 +2405,9 @@ test_hook_silent_with_live_lock_and_fresh_beacon
 test_hook_non_claude_health_ignores_claude_budget_contention
 test_hook_blocks_with_live_lock_and_stale_beacon
 test_hook_blocks_when_unhealthy_in_primary
+test_hook_pi_pocket_owner_gets_one_bounded_follow_up
+test_hook_pi_pocket_sibling_conversation_stands_down
+test_hook_pi_pocket_stale_marker_is_an_ordinary_session
 test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_sources_cadence
 test_hook_x_mode_only_blocks_in_default_mode
