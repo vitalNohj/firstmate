@@ -44,6 +44,28 @@ FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=3666
 Before that boundary existed, a Codex session started from an environment that had retained `CLAUDECODE=1` reported `claude`, and session start emitted Claude's Stop-owned supervision protocol to a Codex primary.
 The same live shape, reproduced with a real process named `codex` and no installed harness, now reports `codex` with the marker present and `claude` with the marker present and ancestry blinded, which is what proves the case is not vacuous.
 
+### Pi Pocket conversation identity
+
+A Pi Pocket server has no harness-shaped process: on 2026-10-21, Pi Pocket 0.19.0 under Node v24.21.0 on Linux 7.0.0 ran as a `bin/pi-pocket.js` launcher with a `src/server/main.ts` server child, and `ps -o comm=` reported `MainThread` for both.
+`bin/fm-harness.sh ancestry <server-pid>` reported no verdict for that server, a user service, and Pi Pocket sets no harness marker, so neither layer can name Pi Pocket by itself.
+Detection and the session lock therefore trust the Firstmate-owned `FM_PI_POCKET_CONVERSATION` and `FM_PI_POCKET_SERVER_PID` pair only under the gate `bin/fm-session-lock-lib.sh` owns ("Pi Pocket conversation identity").
+The portable regression builds a real orphaned server process named `MainThread` that runs each call as its direct child, as Pi Pocket does, and needs no Pi Pocket install:
+
+```sh
+bin/fm-test-run.sh tests/fm-pi-pocket-identity.test.sh
+```
+
+Observed output on 2026-10-21:
+
+```text
+ok - detection: pi-pocket only for a live ancestor server; stale, non-ancestor, pid 1, malformed, and nested markers are ignored
+ok - session lock: one conversation holds the home; a sibling conversation and another harness are refused; the same conversation re-acquires
+ok - session lock: a restarted server's conversation reclaims the home; a stale marker and a sibling do not
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=6989
+```
+
+The extension that sets the pair is not part of this record, so no live Pi Pocket conversation has yet been observed carrying it.
+
 ### A real Codex session holding a retained Claude marker
 
 The portable regression builds its process tree from renamed executables, so the same guarantee is proven again against the real installed Codex.

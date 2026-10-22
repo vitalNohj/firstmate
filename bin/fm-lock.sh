@@ -34,6 +34,14 @@
 # the sidecar, as for a line 1 in the ancestry, and a later acquisition
 # re-anchors.
 #
+# A trusted Pi Pocket conversation anchors on its server pid and records its
+# conversation in the same sidecar ("Pi Pocket conversation identity" in
+# bin/fm-session-lock-lib.sh). Every conversation of that server shares the
+# pid, so for it an equal line 1 proves nothing and ownership is the lib's
+# owned_by_self verdict alone: a sibling conversation is refused as a live
+# owner, the same conversation re-acquires, and a restarted server's dead pid
+# is reclaimed like any stale owner.
+#
 # Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
 #        fm-lock.sh status    print holder and liveness; always exits 0.
 #                             A held lock is not proof the holder is consuming
@@ -70,6 +78,13 @@ if [ "${1:-}" = "status" ]; then
 fi
 
 me=$(fm_session_lock_anchor_pid) || { echo "error: cannot locate harness process in ancestry" >&2; exit 1; }
+PI_POCKET=0
+fm_pi_pocket_trusted_server_pid >/dev/null && PI_POCKET=1
+# True when recorded line-1 pid $1 is this session's anchor by pid alone,
+# which never holds for a Pi Pocket conversation (header).
+recorded_is_me() {  # <recorded-pid>
+  [ "$PI_POCKET" -eq 0 ] && [ "$1" = "$me" ]
+}
 probe=$(mktemp "$STATE/.lock-write.XXXXXX" 2>/dev/null) || {
   echo "error: cannot write session lock; operate read-only until resolved" >&2
   exit 1
@@ -161,7 +176,7 @@ remember_lock_session() {
 # byte-identical.
 publish_lock_session() {
   local trusted recorded tmp
-  if trusted=$(fm_session_lock_trusted_session_id); then
+  if trusted=$(fm_session_lock_trusted_key); then
     if recorded=$(fm_session_lock_recorded_session_id "$STATE") && [ "$recorded" = "$trusted" ]; then
       return 0
     fi
@@ -206,7 +221,7 @@ confirm_own_lock() {  # <recorded-pid>
     waited=1
   fi
   recorded=$(cat "$LOCK" 2>/dev/null || true)
-  if [ "$recorded" = "$me" ] || fm_session_lock_owned_by_self "$STATE"; then
+  if recorded_is_me "$recorded" || fm_session_lock_owned_by_self "$STATE"; then
     if [ "$recorded" != "$me" ] && pids=$(fm_harness_ancestry_pids) \
       && ! fm_harness_pid_listed "$recorded" "$pids" \
       && fm_lock_acquire_wait_max "$LEASE_LOCK" "$LEASE_LOCK_WAIT"; then
@@ -238,11 +253,11 @@ refuse_live_owner() {  # <recorded-pid>
 
 if [ -f "$LOCK" ] && [ ! -L "$LOCK" ]; then
   old=$(cat "$LOCK" 2>/dev/null || true)
-  if [ "$old" = "$me" ] || fm_session_lock_owned_by_self "$STATE"; then
+  if recorded_is_me "$old" || fm_session_lock_owned_by_self "$STATE"; then
     confirm_own_lock "$old"
     old=$(cat "$LOCK" 2>/dev/null || true)
   fi
-  if [ -z "$REANCHOR" ] && fm_harness_pid_alive "$old"; then
+  if [ -z "$REANCHOR" ] && fm_session_lock_holder_alive "$STATE" "$old"; then
     refuse_live_owner "$old"
   fi
 fi
@@ -270,10 +285,10 @@ if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
   }
   # A re-anchor decided above has held the claim lock since, so line 1 is the
   # pid it recorded and needs no second verdict.
-  if [ -z "$REANCHOR" ] && [ "$old" != "$me" ] && fm_harness_pid_alive "$old"; then
+  if [ -z "$REANCHOR" ] && ! recorded_is_me "$old" && fm_session_lock_holder_alive "$STATE" "$old"; then
     fm_session_lock_owned_by_self "$STATE" && confirm_own_lock "$old"
     old=$(cat "$LOCK" 2>/dev/null || true)
-    if [ -z "$REANCHOR" ] && [ "$old" != "$me" ] && fm_harness_pid_alive "$old"; then
+    if [ -z "$REANCHOR" ] && ! recorded_is_me "$old" && fm_session_lock_holder_alive "$STATE" "$old"; then
       refuse_live_owner "$old"
     fi
   fi

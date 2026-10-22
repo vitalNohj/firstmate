@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|devin|commandcode|polytoken|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|pi-pocket|agy|devin|commandcode|polytoken|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -76,6 +76,10 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-gemini-lib.sh
 . "$SCRIPT_DIR/fm-gemini-lib.sh"
+# Pi Pocket's marker trust gate is owned by the session-lock lib, so detection
+# and the session lock accept exactly the same conversation identity.
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 # Print the harness named by a verified environment marker, or nothing when no
 # marker is present. Markers only report what the environment CLAIMS; detect_own
@@ -128,6 +132,14 @@ harness_marker() {
     echo omp
     return
   fi
+  # Pi Pocket (a Pi Durable server) publishes no harness marker and its server
+  # process is named MainThread, so neither layer could see it. The Firstmate Pi
+  # Pocket extension sets FM_PI_POCKET_CONVERSATION and FM_PI_POCKET_SERVER_PID
+  # on every bash call it runs, and bin/fm-spawn.sh clears both at every launch
+  # boundary. Like FM_OMP_HARNESS the pair is Firstmate-owned and never evidence
+  # on its own: pi_pocket_marker_proven demands the live server as this
+  # process's nearest host, so a copied, stale, or inherited pair changes nothing.
+  pi_pocket_marker_proven && { echo pi-pocket; return; }
   [ "${CLAUDECODE:-}" = "1" ] && { echo claude; return; }
   if [ "${PI_CODING_AGENT:-}" = "true" ]; then
     if [ "${FM_PI_HARNESS:-}" = pi-signed ]; then echo pi-signed; else echo pi; fi
@@ -165,6 +177,24 @@ ancestry_names_omp() {
     [ "$(basename -- "$comm")" = omp ] && return 0
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
     [ -n "$pid" ] && [ "$pid" -gt 1 ] || return 1
+  done
+  return 1
+}
+
+# True when the Pi Pocket marker is trusted: the session-lock lib's trust gate
+# ("Pi Pocket conversation identity" in bin/fm-session-lock-lib.sh) accepts it,
+# and no process this file recognizes as a harness sits between this process and
+# that server, so a worker of any adapter started below a Pi Pocket bash call is
+# never read as Pi Pocket. A proven marker is structural evidence: the server is
+# this process's nearest host, which is why detect_own keeps it outright.
+pi_pocket_marker_proven() {
+  local server pid=$$
+  server=$(fm_pi_pocket_trusted_server_pid) || return 1
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    [ "$pid" = "$server" ] && return 0
+    [ -z "$(harness_process_verdict "$pid")" ] || return 1
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    case "$pid" in '' | *[!0-9]*) return 1 ;; esac
   done
   return 1
 }
@@ -415,7 +445,7 @@ supervision_primary_pin() {
   local pin=${FM_SUPERVISION_PRIMARY_HARNESS:-}
   [ "${FM_SUPERVISION_ACTOR:-}" = branch ] && [ -n "$pin" ] || return 0
   case "$pin" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|agy|devin|commandcode|polytoken)
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|pi-pocket|agy|devin|commandcode|polytoken)
       printf '%s\n' "$pin"
       ;;
     *)
@@ -439,6 +469,9 @@ supervision_primary_pin() {
 #   - Different harness, interpreter-args ancestor only: the marker wins, because
 #     a harness-shaped path in some node process's arguments is weaker evidence
 #     than a harness publishing its own identity.
+#   - A pi-pocket marker is already proven against the ancestry up to its server
+#     (pi_pocket_marker_proven), so it stands; a harness above that server, such
+#     as a pane Pi Pocket was started from, does not own this process tree.
 # The supervision-branch primary pin, when it applies, answers before either
 # evidence layer is read.
 detect_own() {
@@ -446,6 +479,7 @@ detect_own() {
   pin=$(supervision_primary_pin) || exit 2
   [ -z "$pin" ] || { echo "$pin"; return; }
   marker=$(harness_marker)
+  [ "$marker" != pi-pocket ] || { echo pi-pocket; return; }
   ancestry=$(harness_ancestry)
   if [ -z "$ancestry" ]; then
     if [ -n "$marker" ]; then echo "$marker"; else echo unknown; fi
