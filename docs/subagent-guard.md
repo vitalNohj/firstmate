@@ -186,6 +186,7 @@ Applicability turns on one question: does the harness expose built-in delegation
 | omp | present, per bundled material | Not wired and unverified. omp ships a built-in task delegation tool: its bundled docs list `tools/task.md` and the captain-level `task.maxConcurrency` setting governs it. No Firstmate delegation seatbelt is wired for it yet, and its status stays unverified until a live tool enumeration is recorded the way the Codex row was. |
 | OpenCode | present, exact tokens unconfirmed | Not wired pending live verification. See below. |
 | Pi | none reported | Not wired pending live verification. See below. |
+| Pi Pocket | `subagent`, `team`, `schedule`, `session_start`, `session_send`, `session_schedule`, `session_watch_pr`, `watch_pr`, `repo_watch` | Wired in the drop-in `pi-pocket/firstmate.ts` and verified in a real Pi Pocket app. See below. |
 
 ### Codex, verified not applicable
 
@@ -221,6 +222,15 @@ SUBAGENT_TOOL=no
 
 `multi_tool_use.parallel` batches calls to the tools above; it does not spawn an agent.
 Codex is therefore not applicable today, and this table row is the tripwire: if a future Codex release adds a delegated-agent tool, wire `.codex/hooks.json` the same way its `Bash` PreToolUse entries already forward stdin to a checker.
+
+### Pi Pocket, wired in the drop-in
+
+The Firstmate Pi Pocket drop-in's Pi Durable `beforeTool` hook blocks, only in a session whose folder is a Firstmate home, each Pi Pocket tool in the table row above, because each starts or steers work outside the fleet.
+The names come from Pi Pocket's built-in tool list (`docs/extensions/names.md` in its checkout), not from the stems, which miss `team` and the `session_*` tools.
+Its observing tools (`sessions`, `session_read`, `session_follow`, `session_stop`, `session_archive`, `approvals`) stay available.
+Every other tool except the coding tools, `mcp__*` tools, and the drop-in's own repair tool still goes through `bin/fm-subagent-pretool-check.sh --tool <name>`, so the stem rule covers tools Pi Pocket adds later.
+`FM_ALLOW_SUBAGENT=1` in the Pi Pocket server's environment is the same escape hatch.
+`tests/fm-pi-pocket-dropin.test.sh` proves the block in a Firstmate home and its absence in any other session.
 
 ### Grok, OpenCode, and Pi, inspected but not wired
 
