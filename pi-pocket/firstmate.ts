@@ -244,20 +244,24 @@ function userText(message: { role: string; content: unknown } | undefined): stri
 // ---------------------------------------------------------------------------------------------------------------
 // The watcher task
 
-type Pending = { message: string; requestId: string };
+/** One delivery the model has not had yet: a watcher wake, or a restart's session-start digest. */
+type Pending = { kind: "wake" | "digest"; text: string; requestId: string };
 type WatchInput = { home: string; boot: string };
 type WatchState = {
     phase: "arm";
     /** The server process this checkpoint ran under; another one means a restart re-drove the task. */
     boot: string;
-    /** Wakes delivered so far, which keys the next one. */
+    /** Wakes read so far, which keys the next one. */
     seq: number;
     /** Consecutive failed arm cycles. */
     failures: number;
     /** The arm that just closed, handed to its successor. */
     predecessor?: string;
-    /** A wake read but not delivered yet: kept here, so a restart delivers it once. */
-    pending?: Pending;
+    /**
+     * Deliveries read but not made yet, oldest first: kept here, so a restart delivers each once. The watcher keeps
+     * cycling while they wait, so a spend limit holds the model's turns back, never the fleet's monitoring.
+     */
+    pending?: Pending[];
 };
 type WatchRuntime = TaskRuntime<WatchInput, WatchState, null, object>;
 
@@ -404,8 +408,8 @@ function createWatchTask(host: Partial<Host>) {
      * Deliver `content` as one follow-up keyed on `requestId`: a re-driven delivery finds the submission it already
      * made. While the session is past a spend limit it waits rather than start a turn nobody may pay for.
      */
-    const deliver = async (runtime: WatchRuntime, context: Context, content: string, requestId: string) => {
-        const signal = signalsOf(runtime.signal, context.abortSignal);
+    const deliver = async (runtime: WatchRuntime, context: Context, content: string, requestId: string, stop?: AbortSignal) => {
+        const signal = signalsOf(runtime.signal, context.abortSignal, stop);
         let told = false;
         for (;;) {
             const reason = heldBack(runtime.conversationId);
@@ -424,18 +428,24 @@ function createWatchTask(host: Partial<Host>) {
                 stop();
             }
         }
+        signal.throwIfAborted();
         const conversation = await runtime.conversation(runtime.conversationId, context);
         if (conversation === undefined) throw new Error("the Firstmate session is gone");
         await conversation.submit({ type: "input", content, whenBusy: "followUp", requestId }, context);
     };
 
-    /** Deliver a failure, with any wake still pending, and end the task: the model repairs with the tool. */
+    const contentOf = async (home: string, pending: Pending) =>
+        pending.kind === "digest" ? pending.text : encode(home, "watcher", wakeText(pending.text));
+
+    /** Deliver whatever is still pending, then the failure, and end the task: the model repairs with the tool. */
     const fail = async (task: { state: { checkpoint: WatchState }; input: WatchInput }, runtime: WatchRuntime, context: Context, failure: string) => {
         const { home } = task.input;
         const checkpoint = task.state.checkpoint;
-        const message = checkpoint.pending === undefined ? failure : `${checkpoint.pending.message}\n\n${failure}`;
-        const requestId = checkpoint.pending?.requestId ?? requestFor(runtime.conversationId, `fm-watch-failed-${String(runtime.taskId)}-${checkpoint.seq}`);
-        await deliver(runtime, context, await encode(home, "watcher", wakeText(message)), requestId);
+        for (const pending of checkpoint.pending ?? []) {
+            await deliver(runtime, context, await contentOf(home, pending), pending.requestId);
+        }
+        const requestId = requestFor(runtime.conversationId, `fm-watch-failed-${String(runtime.taskId)}-${checkpoint.seq}`);
+        await deliver(runtime, context, await encode(home, "watcher", wakeText(failure)), requestId);
         await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
     };
 
@@ -453,11 +463,16 @@ function createWatchTask(host: Partial<Host>) {
                 if (checkpoint.boot !== BOOT) {
                     // A server restart re-drove the task: take the lock again as this conversation and give the model
                     // the digest, once per server process, before the watcher runs again.
+                    // The digest queues ahead of any wake that was waiting, and is delivered like one, so a spend
+                    // limit does not keep the watcher from running again.
                     const digest =
                         (await runtime.memo<string>(`x.firstmate.start-${BOOT}`, context)) ??
                         (await runtime.memo<string>(`x.firstmate.start-${BOOT}`, await sessionStart(home, id, "startup"), context));
-                    await deliver(runtime, context, digest, requestFor(id, `fm-start-${String(runtime.taskId)}-${BOOT}`));
-                    await runtime.commit(() => ({ status: "running", checkpoint: { ...checkpoint, boot: BOOT } }), context);
+                    const start: Pending = { kind: "digest", text: digest, requestId: requestFor(id, `fm-start-${String(runtime.taskId)}-${BOOT}`) };
+                    await runtime.commit(
+                        () => ({ status: "running", checkpoint: { ...checkpoint, boot: BOOT, pending: [start, ...(checkpoint.pending ?? [])] } }),
+                        context,
+                    );
                     return;
                 }
 
@@ -487,27 +502,79 @@ function createWatchTask(host: Partial<Host>) {
 
                     let next: WatchState = { ...checkpoint, failures: 0 };
                     delete next.predecessor;
-                    if (checkpoint.pending !== undefined) {
-                        // Successor first, then the wake: the fleet is watched again before the model handles it.
-                        const recovery = arm.recovery();
-                        const detail = recovery === undefined ? "" : await confirmHandling(home, recovery);
-                        const message = detail === "" ? checkpoint.pending.message : `${checkpoint.pending.message}\n\n${detail}`;
-                        await deliver(runtime, context, await encode(home, "watcher", wakeText(message)), checkpoint.pending.requestId);
-                        delete next.pending;
-                        await runtime.commit(() => ({ status: "running", checkpoint: next }), context);
+                    // Successor first, then the wakes: the fleet is watched again before the model handles them.
+                    const recovery = arm.recovery();
+                    const waiting = next.pending ?? [];
+                    const newest = waiting.findLastIndex((pending) => pending.kind === "wake");
+                    if (recovery !== undefined && newest >= 0) {
+                        const detail = await confirmHandling(home, recovery);
+                        if (detail !== "") {
+                            const pending = waiting.map((item, index) => (index === newest ? { ...item, text: `${item.text}\n\n${detail}` } : item));
+                            next = { ...next, pending };
+                            const confirmed = next;
+                            await runtime.commit(() => ({ status: "running", checkpoint: confirmed }), context);
+                        }
                     }
 
-                    const closed = classify(await arm.closed);
+                    // Deliver the pending queue one by one while this arm keeps watching. A delivery waiting out a
+                    // spend limit never holds the watcher: when the arm closes, the delivery stops where it is and
+                    // the next cycle, with its successor running, takes the queue up again under the same request ids.
+                    const halt = new AbortController();
+                    let delivering: Promise<{ delivered: string } | { stopped: true }> | undefined;
+                    const deliverNext = () => {
+                        const first = next.pending?.[0];
+                        delivering =
+                            first === undefined
+                                ? undefined
+                                : contentOf(home, first)
+                                      .then((content) => deliver(runtime, context, content, first.requestId, halt.signal))
+                                      .then(
+                                          () => ({ delivered: first.requestId }),
+                                          (error: unknown) => {
+                                              if (halt.signal.aborted || signal.aborted) return { stopped: true as const };
+                                              throw error;
+                                          },
+                                      );
+                    };
+                    deliverNext();
+                    let ran: Ran | undefined;
+                    try {
+                        while (ran === undefined) {
+                            const event = await Promise.race([
+                                arm.closed.then((closed) => ({ closed })),
+                                ...(delivering === undefined ? [] : [delivering]),
+                            ]);
+                            if ("closed" in event) {
+                                ran = event.closed;
+                            } else if ("delivered" in event) {
+                                const pending = (next.pending ?? []).filter((item) => item.requestId !== event.delivered);
+                                next = { ...next, pending };
+                                if (pending.length === 0) delete next.pending;
+                                const delivered = next;
+                                await runtime.commit(() => ({ status: "running", checkpoint: delivered }), context);
+                                deliverNext();
+                            } else {
+                                // Stopped by an abort: wait for the arm, which the abort retires, to close.
+                                delivering = undefined;
+                            }
+                        }
+                    } finally {
+                        halt.abort();
+                        const settled = await delivering?.catch(() => undefined);
+                        if (settled !== undefined && "delivered" in settled) {
+                            const pending = (next.pending ?? []).filter((item) => item.requestId !== settled.delivered);
+                            next = { ...next, pending };
+                            if (pending.length === 0) delete next.pending;
+                        }
+                    }
+
+                    const closed = classify(ran);
                     signal.throwIfAborted();
                     if (closed.actionable) {
                         const seq = next.seq + 1;
-                        next = {
-                            ...next,
-                            seq,
-                            predecessor: arm.pid,
-                            pending: { message: closed.message, requestId: requestFor(id, `fm-wake-${String(runtime.taskId)}-${seq}`) },
-                        };
-                        await runtime.commit(() => ({ status: "running", checkpoint: next }), context);
+                        const wake: Pending = { kind: "wake", text: closed.message, requestId: requestFor(id, `fm-wake-${String(runtime.taskId)}-${seq}`) };
+                        const read: WatchState = { ...next, seq, predecessor: arm.pid, pending: [...(next.pending ?? []), wake] };
+                        await runtime.commit(() => ({ status: "running", checkpoint: read }), context);
                         return;
                     }
                     await retry({ ...task, state: { ...task.state, checkpoint: next } }, runtime, context, closed.message, arm.pid, false);

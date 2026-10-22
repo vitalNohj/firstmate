@@ -186,7 +186,7 @@ if (process.argv.includes("--child")) {
     fire(fmHome, "signal: crash wake");
     await until(async () => {
         const task = await watchTask(app, id);
-        return task?.state.checkpoint?.pending !== undefined && lines(join(fmHome, "stub", "arms.log")).length >= 2;
+        return task?.state.checkpoint?.pending?.length === 1 && lines(join(fmHome, "stub", "arms.log")).length >= 2;
     }, "the held-back wake", LONG);
     process.stdout.write(`held ${String(id)}\n`);
     await new Promise(() => {});
@@ -266,7 +266,7 @@ test("seatbelts block a persistent cd, a backgrounded watcher, and Pi Pocket's d
     assert.ok(free.every((text) => !text.includes("Tool call blocked")), free.join("\n"));
 });
 
-test("a wake waits while the session is held back by a spend limit, then arrives once", async () => {
+test("wakes wait while the session is held back by a spend limit, the watcher keeps cycling, and each wake arrives once", async () => {
     const { app, id, fmHome } = await started();
 
     await say(app, id, "start firstmate");
@@ -278,12 +278,26 @@ test("a wake waits while the session is held back by a spend limit, then arrives
     fire(fmHome, "signal: held wake");
     await until(async () => (await watchTask(app, id))?.state.checkpoint?.pending !== undefined, "the pending wake", LONG);
     await until(() => lines(join(fmHome, "stub", "arms.log")).length === 2, "the successor arm", LONG);
+    // A second wake while the first still waits: the successor's close is read and a third arm starts anyway.
+    fire(fmHome, "check: second held wake");
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 3, "the arm after the second held wake", LONG);
+    await until(async () => (await watchTask(app, id))?.state.checkpoint?.pending?.length === 2, "two pending wakes", LONG);
+    const arms = lines(join(fmHome, "stub", "arms.log"));
+    assert.equal(arms[2]!.split(" ")[1], arms[1]!.split(" ")[0], "the third arm succeeds the second");
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(count(await userTexts(app, id), WAKE), 0, "no wake while held back");
 
     await app.spend.setSessionBudget(owner(app), id, null);
-    await until(async () => count(await userTexts(app, id), `${WAKE}signal: held wake`) === 1, "the released wake", LONG);
-    assert.equal(count(await userTexts(app, id), WAKE), 1);
+    await until(async () => count(await userTexts(app, id), `${WAKE}check: second held wake`) === 1, "the released wakes", LONG);
+    const texts = await userTexts(app, id);
+    assert.equal(count(texts, `${WAKE}signal: held wake`), 1);
+    assert.equal(count(texts, WAKE), 2);
+    assert.ok(
+        texts.findIndex((text) => text.includes(`${WAKE}signal: held wake`)) < texts.findIndex((text) => text.includes(`${WAKE}check: second held wake`)),
+        "the wakes arrive in the order they were read",
+    );
+    await until(async () => (await watchTask(app, id))?.state.checkpoint?.pending === undefined, "an empty queue", LONG);
+    assert.equal(lines(join(fmHome, "stub", "arms.log")).length, 3, "delivery started no extra arm");
 });
 
 test("the turn-end guard continues a turn that would end blind exactly once", async () => {
