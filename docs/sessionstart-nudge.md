@@ -43,6 +43,7 @@ Codex's interactive TUI has no tracked session-open, compaction, or re-emit chan
 | Grok | Nudge | [Grok](#grok) |
 | Cursor | Run | [Cursor](#cursor) |
 | omp | Run | [omp](#omp) |
+| Pi Pocket | Nudge at first open, run after a server restart or compaction | [Pi Pocket](#pi-pocket) |
 | Cursor compaction | Uncovered | [Cursor compaction](#cursor-compaction) |
 
 ### Why the run tier exists
@@ -367,6 +368,16 @@ So the source is derived following the Cursor precedent:
 
 A later in-process `clear` re-emits only when this lock owner completed a full startup.
 `before_agent_start` message delivery was verified to reach model context on 18.1.11.
+
+### Pi Pocket
+
+The transport is the Firstmate Pi Pocket drop-in, `pi-pocket/firstmate.ts`, copied into Pi Pocket's extensions folder by `bin/fm-pi-pocket-install.sh`.
+Pi Pocket has no session-open event, so the first open is a nudge: in a session whose folder is a Firstmate home the drop-in adds a prompt section that asks for `bin/fm-session-start.sh` when the session has no digest yet.
+That first run takes the session lock for the session through the bash marker, and the drop-in then starts its watcher task.
+After a Pi Pocket server restart the watcher task runs `bin/fm-sessionstart-run.sh --source startup` itself before it arms again, so the restarted server takes the lock back for the same session.
+After a compaction its `beforeRequest` hook runs `--source compact` and sends the re-emitted digest as a steering input.
+Each run is kept behind Pi Durable's `api.memo` and delivered with a request id, so a replayed task or hook delivers it once.
+The delivery size limit and truncation note match Pi's.
 
 ### Cursor compaction
 

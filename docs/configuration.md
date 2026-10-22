@@ -922,6 +922,10 @@ Primary-session watcher wake protocols are rendered at session start by [`bin/fm
 
 Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Cursor's stop hook parks on the watcher, Grok uses background-notify cycles, Codex uses bounded foreground checkpoints, Pi and pi-signed use the same two tracked primary extensions, omp uses its own two tracked `.omp/extensions/` files with a blocking `session_stop` turn-end hook, OpenCode uses its TUI plugin, and Pi Pocket uses the Firstmate Pi Pocket drop-in's durable background task.
 
+To run a primary in Pi Pocket, run [`bin/fm-pi-pocket-install.sh`](../bin/fm-pi-pocket-install.sh), which copies [`pi-pocket/firstmate.ts`](../pi-pocket/firstmate.ts) into Pi Pocket's extensions folder, turn Firstmate on in Pi Pocket's Menu -> Extensions, and open a Pi Pocket session whose folder is the Firstmate home.
+The drop-in acts only in a session whose folder is a Firstmate home, so every other Pi Pocket session and every herdr or Pi primary is unaffected.
+Run the installer again after updating Firstmate; it skips when no Pi Pocket checkout is present and leaves an up-to-date copy alone.
+
 ### Choose the worker harness
 
 `config/crew-harness` is a local, gitignored file containing one adapter name for crewmate and scout launches.

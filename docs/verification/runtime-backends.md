@@ -64,7 +64,19 @@ ok - session lock: a restarted server's conversation reclaims the home; a stale 
 FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=6989
 ```
 
-The extension that sets the pair is not part of this record, so no live Pi Pocket conversation has yet been observed carrying it.
+The Firstmate Pi Pocket drop-in, `pi-pocket/firstmate.ts`, sets the pair on every bash call of a session whose folder is a Firstmate home.
+On 2026-10-22 its suite loaded it into a real Pi Pocket 0.19.0 app (commit `4f5db52`, Node v24.21.0, Linux) on temporary data directories, where a bash call carried that session's id and the app's own pid, the session start bound the lock to that session, and a session in another folder carried neither:
+
+```sh
+bin/fm-test-run.sh tests/fm-pi-pocket-dropin.test.sh
+```
+
+```text
+ok - install: copies the drop-in, is idempotent, refreshes a stale copy, and skips without a Pi Pocket checkout
+ok - drop-in: lock binding, wake delivery, marker scope, seatbelts, held-back delivery, turn-end guard, and crash restart in a real Pi Pocket app
+```
+
+That app is the Pi Pocket server code in-process, not the installed user service, which has not yet been observed carrying the pair.
 
 ### A real Codex session holding a retained Claude marker
 

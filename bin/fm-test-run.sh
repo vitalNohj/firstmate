@@ -308,7 +308,8 @@ family_for_basename() {
       printf '%s\n' pure-contract-unit
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
-    fm-session-lock-ancestry.test.sh|fm-pi-pocket-identity.test.sh|fm-cursor-primary.test.sh|\
+    fm-session-lock-ancestry.test.sh|fm-pi-pocket-identity.test.sh|fm-pi-pocket-dropin.test.sh|\
+    fm-cursor-primary.test.sh|\
     fm-parent-channel-scan-exclusion.test.sh|\
     fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-drain-unread-status.test.sh|\
@@ -1567,6 +1568,11 @@ families_for_changed_path() {
       # Whether an arriving outcome still lets the captain type is a fact only
       # a real Pi TUI can answer, so the live guards are selected too.
       printf '%s\n' live-harness-optin
+      ;;
+    pi-pocket/*|tests/fm-pi-pocket-dropin.ts|bin/fm-pi-pocket-install.sh)
+      # The Pi Pocket drop-in, its app tests, and its installer are proven only
+      # by the suite that loads the drop-in into a real Pi Pocket app.
+      printf '%s\n' __script__:fm-pi-pocket-dropin.test.sh
       ;;
     .pi/extensions/lib/fm-operational-input.ts)
       # The same rule for the operational-input library, whose reach is wider:
