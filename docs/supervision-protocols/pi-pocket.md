@@ -16,6 +16,11 @@ When this conversation owns supervision:
 
 The turn-end guard is passive here: when `bin/fm-turnend-guard.sh` returns 2, the drop-in continues the turn once with the guard text, and it bounds that to one forced continuation per turn.
 
-No supervision branch runs under Pi Pocket: every actionable wake is delivered to this conversation, and the lease, outcome-store, and `fm_branch_processed` contracts of `docs/pi-supervision-branch.md` do not apply here.
+Once this conversation holds the lock, the drop-in starts the supervision branch: a linked Pi Pocket session titled "Firstmate supervision" in this home's folder, listed under this conversation, which the captain can open to watch it work.
+The drop-in offers it each actionable wake first, and a wake it takes never reaches this conversation; wakes it may not take, and wakes it could not handle, arrive here as usual, with the reason when it failed.
+The lease and outcome-store contracts of `docs/pi-supervision-branch.md` apply: before this conversation steers, controls lifecycle, or cleans up a task, claim its lease with `bin/fm-lease.sh claim <task>` and release it afterwards; a refused claim means the branch is acting on that task right now.
+The branch's captain outcomes arrive here as a supervision processing request; process it, then call `fm_branch_processed` with the `through` it names exactly once, because an outcome that is not acknowledged is presented again.
+For example, a request listing `[seq 41] claude-mod: PR ready for merge` is processed by telling the captain about the PR and then calling `fm_branch_processed` with through=41; an answer without that call leaves seq 41 open.
+When the captain asks what the fleet has been doing, read the store with `fm_branch_outcomes`.
 Away and quiet modes are not available under Pi Pocket, because the away daemon delivers by typing into a terminal pane and a Pi Pocket conversation has none.
 If the captain asks for `/afk` or `/quiet`, say that supervision cannot be handed off from Pi Pocket yet and keep supervising attended; do not run `bin/fm-afk-launch.sh`.

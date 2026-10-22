@@ -2,11 +2,14 @@
  * Firstmate: runs a Firstmate primary's main chat inside Pi Pocket. In a session whose folder is a Firstmate home it
  * marks every bash call with the session's Pi Pocket identity, keeps the watcher running as a durable background task
  * once the session holds the home's lock, delivers each watcher wake as a follow-up, guards turn ends and tool calls
- * the way Firstmate's Pi extensions do, and offers the fm_watch_arm_pocket repair tool. Every other session is
- * untouched. Install it with Firstmate's bin/fm-pi-pocket-install.sh, then turn it on in Menu → Extensions.
+ * the way Firstmate's Pi extensions do, and offers the fm_watch_arm_pocket repair tool. Once the session holds the
+ * lock it also starts the supervision branch: one linked Pi Pocket session per home, titled "Firstmate supervision",
+ * that takes the routine wakes it may handle and records their outcomes in the durable store, which reach the main
+ * session as processing requests (docs/pi-supervision-branch.md "Pi Pocket"). Every other session is untouched.
+ * Install it with Firstmate's bin/fm-pi-pocket-install.sh, then turn it on in Menu → Extensions.
  */
 import { spawn } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -18,10 +21,11 @@ import {
     hook,
     section,
     ToolTask,
+    wrapSection,
     wrapTool,
 } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import type { ConversationId, ToolExecutionApi, TaskRuntime } from "@earendil-works/pi-durable";
+import type { ConversationHandle, ConversationId, ToolExecutionApi, TaskRuntime } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import type { Host } from "./_pocket.d.ts";
 
@@ -59,6 +63,43 @@ const POCKET_DELEGATION = new Set([
 /** Coding tools the delegation script never matches: no script run for them. */
 const CODING_TOOLS = new Set(["read", "write", "edit", "bash"]);
 
+/** The supervision branch: its title in Pi Pocket's session list, its tools, and the tools main uses for its outcomes. */
+const BRANCH_TITLE = "Firstmate supervision";
+const REPORT_TOOL = "fm_branch_report";
+const OUTCOMES_TOOL = "fm_branch_outcomes";
+const PROCESSED_TOOL = "fm_branch_processed";
+const BRANCH_TOOLS = new Set(["read", "bash", REPORT_TOOL]);
+/** The branch's first message, before any wake: it only has to wait. */
+const BRANCH_INTRO =
+    "This is the Firstmate supervision session for this home. The Firstmate drop-in sends it each routine fleet wake the main Firstmate session hands over. Nothing to do until the first wake: reply only with \"ready\".";
+/** State files the drop-in owns, under the home's state directory (operational-home-layout). */
+const BRANCH_RECORD = ".pocket-branch";
+const BRANCH_TURN = ".pocket-branch-turn";
+const BRANCH_PROCESSING = ".pocket-branch-processing";
+const MIRROR_CURSOR = ".pocket-branch-mirror";
+const MIRROR_FEED = ".pocket-branch-mirror-feed";
+/** The dialog mirror's bounds: per entry, per wake, and for a branch that has seen nothing of this main session yet. */
+const MIRROR_ENTRY_CHARS = 4000;
+const MIRROR_ITEMS = 40;
+const MIRROR_FRESH_ITEMS = 12;
+/** Consecutive branch failures that latch it off, and the cooling-off period, which doubles up to its maximum. */
+const LATCH_THRESHOLD = 2;
+const LATCH_BASE_MS = 5 * 60 * 1000;
+const LATCH_MAX_MS = 60 * 60 * 1000;
+// The Pi branch's processing request, word for word (.pi/extensions/fm-branch-supervision.ts), so main processes
+// a Pi Pocket branch's outcomes under the same contract.
+const PROCESSING_INSTRUCTION =
+    "This is a supervision processing request delivered automatically by the supervision branch. " +
+    "It was not typed by the captain. " +
+    "The outcomes below are stored durably, and each was recorded earlier, possibly before a restart or a switch of primary, so the captain may already have seen it and it may already have been handled; each fleet event is already handled, so do not re-drain, re-run, or acknowledge the wake. " +
+    "Each outcome says what was true when it was recorded and how long ago, so check the task's current state first. " +
+    "An abbreviated line is incomplete: read the full outcome before acting on, relaying, or acknowledging it, using that line's lookup --seqs command. " +
+    "First sort the outcomes by that current state into still open and already settled, such as a decision since answered, a PR since merged, or a task since finished. " +
+    "Your reply to the captain covers only the still-open outcomes: give the captain a visible response where one is due, answer or escalate a decision, or act on a blocker or failure. " +
+    "Write that reply as if the settled outcomes had never been listed: leave them out entirely, without naming them, summarizing them, or saying they are settled, because checking them is all the processing they need. " +
+    "When every outcome below is processed, call fm_branch_processed with through={N} exactly once. " +
+    "Until that call the outcomes stay open and are presented again; an answer that does not make that call never counts as processing.";
+
 function positive(name: string, fallback: number): number {
     const value = Number(process.env[name]);
     return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -71,6 +112,8 @@ const READY_TIMEOUT_MS = positive("FM_WATCH_ARM_READY_TIMEOUT_MS", 12000);
 const RETIRE_TIMEOUT_MS = 1000;
 /** How long a held-back delivery waits before it asks again, when no limit change wakes it first. */
 const HELD_RECHECK_MS = positive("FM_POCKET_HELD_RECHECK_MS", 30000);
+/** How long one branch turn may run before its wake goes to main instead. */
+const BRANCH_TURN_TIMEOUT_MS = positive("FM_POCKET_BRANCH_TURN_TIMEOUT_MS", 20 * 60 * 1000);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Processes
@@ -168,10 +211,14 @@ async function firstLine(path: string): Promise<string> {
     return ((await readFile(path, "utf8").catch(() => "")).split("\n")[0] ?? "").trim();
 }
 
+/** The same state directory bin/fm-lock.sh binds, which the scripts the drop-in runs inherit from the server. */
+function stateOf(home: string): string {
+    return process.env.FM_STATE_OVERRIDE || join(home, "state");
+}
+
 /** Owned when the lock names this server and its sidecar this conversation, as fm_session_lock_owned_by_self decides. */
 async function ownership(home: string, conversationId: ConversationId): Promise<Ownership> {
-    // The same state directory bin/fm-lock.sh binds, which the scripts the drop-in runs inherit from the server.
-    const state = process.env.FM_STATE_OVERRIDE || join(home, "state");
+    const state = stateOf(home);
     const pid = Number(await firstLine(join(state, ".lock")));
     if (!Number.isInteger(pid) || pid <= 1 || !alive(pid)) return "missing";
     const session = await firstLine(join(state, ".lock-session"));
@@ -243,10 +290,455 @@ function userText(message: { role: string; content: unknown } | undefined): stri
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Durable records
+
+async function readJson<T>(path: string): Promise<T | undefined> {
+    try {
+        return JSON.parse(await readFile(path, "utf8")) as T;
+    } catch {
+        return undefined;
+    }
+}
+
+/** Replace `path` whole, owner-only: a write that fails or is interrupted leaves the old record. */
+async function writeJson(path: string, value: unknown): Promise<void> {
+    const staged = `${path}.tmp-${SERVER_PID}`;
+    await writeFile(staged, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    await rename(staged, path);
+}
+
+function jsonLines(text: string): Record<string, unknown>[] | undefined {
+    const rows: Record<string, unknown>[] = [];
+    for (const line of text.split("\n")) {
+        if (line.trim() === "") continue;
+        try {
+            const row = JSON.parse(line) as unknown;
+            if (row === null || typeof row !== "object") return undefined;
+            rows.push(row as Record<string, unknown>);
+        } catch {
+            return undefined;
+        }
+    }
+
+    return rows;
+}
+
+const say = (text: string, isError = false) => ({ output: [{ type: "text" as const, text }], ...(isError ? { isError } : {}) });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The supervision branch
+
+/**
+ * The pairing of this home's main session with its supervision branch, in state/.pocket-branch. `start` numbers the
+ * branch starts for this main session, which keys Pi Pocket's idempotent start: a retried start returns the same
+ * session, and a branch the captain deleted is replaced by a new one.
+ */
+type BranchRecord = {
+    main: number;
+    branch: number;
+    start: number;
+    /**
+     * Set while a start is under way, before Pi Pocket names the new session: every session in the home but main is
+     * then treated as the branch, so the new session's first turn never runs under main's supervisor contract.
+     */
+    starting?: boolean;
+};
+
+/** The branch turn handling one wake, in state/.pocket-branch-turn, so a restart resumes it instead of starting another. */
+type BranchTurn = {
+    /** The wake's own request id, which names the turn. */
+    wake: string;
+    branch: number;
+    /** The branch input's request id: a resumed turn finds the submission it made. */
+    request: string;
+    /** The queue rows granted to the branch, and the tasks it may report on unless the claim is unscoped. */
+    rows: string[];
+    tasks: string[];
+    unscoped: boolean;
+    prompt: string;
+    /** Where main's dialog mirror stands once this turn records an outcome. */
+    mirror: MirrorCursor;
+    started: number;
+    /** The outcome sequences fm_branch_report recorded for this turn. */
+    reports: number[];
+};
+
+/** The newest main-session transcript entry the branch has been shown, in state/.pocket-branch-mirror. */
+type MirrorCursor = { main: number; entry: number };
+
+/** The captain outcomes main was last asked to process, in state/.pocket-branch-processing. */
+type Processing = { main: number; through: number };
+
+async function branchRecord(home: string): Promise<BranchRecord | undefined> {
+    const record = await readJson<BranchRecord>(join(stateOf(home), BRANCH_RECORD));
+
+    return Number.isSafeInteger(record?.main) && Number.isSafeInteger(record?.branch) ? record : undefined;
+}
+
+const branchPrompts = new Map<string, Promise<string>>();
+
+/** The branch's system prompt, byte-stable per Firstmate version, from its one owner bin/fm-branch-prompt.sh. */
+function branchPrompt(home: string): Promise<string> {
+    let prompt = branchPrompts.get(home);
+    if (prompt === undefined) {
+        prompt = run("bash", [join(home, "bin", "fm-branch-prompt.sh")], { cwd: home, env: { FM_HOME: home }, limit: 4 * 1024 * 1024 }).then((ran) => {
+            if (ran.code === 0 && ran.stdout.length >= 1024) return ran.stdout;
+            branchPrompts.delete(home);
+
+            return "FIRSTMATE SUPERVISION SESSION: bin/fm-branch-prompt.sh could not produce the supervision prompt, so take no fleet action and run no command: answer each wake only with one line saying it could not be handled here, and the wake goes back to the main Firstmate session.";
+        });
+        branchPrompts.set(home, prompt);
+    }
+
+    return prompt;
+}
+
+/** The branch's bash identity: main's Pi Pocket marker, as the Pi branch shares main's process, and the branch actor. */
+function branchEnv(home: string, main: ConversationId): Record<string, string> {
+    return {
+        ...markerEnv(home, main),
+        FM_SUPERVISION_ACTOR: "branch",
+        FM_LEASE_HOLDER_PID: SERVER_PID,
+        FM_SUPERVISION_PRIMARY_HARNESS: "pi-pocket",
+    };
+}
+
+const TYPE_FLAGS = process.execArgv.filter((arg) => /^--(?:experimental-)?(?:strip|transform)-types$/.test(arg));
+
+/** bin/fm-branch-dispatch.mjs, the one command-line owner of which rows the branch may claim and of its wake text. */
+function dispatch(home: string, args: string[], input: string): Promise<Ran> {
+    return run(process.execPath, [...TYPE_FLAGS, join(home, "bin", "fm-branch-dispatch.mjs"), ...args], { cwd: home, env: { FM_HOME: home }, input });
+}
+
+function script(home: string, name: string, args: string[], env: Record<string, string> = {}): Promise<Ran> {
+    return run(join(home, "bin", name), args, { cwd: home, env: { FM_HOME: home, ...env } });
+}
+
+function fields(text: string): Map<string, string> {
+    const map = new Map<string, string>();
+    for (const line of text.split("\n")) {
+        const at = line.indexOf("=");
+        if (at > 0) map.set(line.slice(0, at), line.slice(at + 1).trim());
+    }
+
+    return map;
+}
+
+const words = (text: string | undefined) => (text ?? "").split(/\s+/).filter((word) => word !== "");
+
+function capped(text: string): string {
+    if (text.length <= MIRROR_ENTRY_CHARS) return text;
+    const keep = Math.floor((MIRROR_ENTRY_CHARS - 80) / 2);
+
+    return `${text.slice(0, keep)}\n[... ${String(text.length - 2 * keep)} characters omitted ...]\n${text.slice(-keep)}`;
+}
+
+/** One mirrored line of main's dialog: what the captain typed or main answered, never tool traffic or Firstmate's inputs. */
+function mirrorItem(message: { role: string; content: unknown }): string | undefined {
+    if (message.role === "user") {
+        const text = userText(message).trim();
+        if (text === "" || text.startsWith(OPERATIONAL_PREFIX) || text.startsWith(COMPACTED) || text.startsWith(GUARD_HEADER)) return undefined;
+
+        return `[captain] ${capped(text)}`;
+    }
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+        const text = (message.content as { type?: string; text?: string }[])
+            .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
+            .join("")
+            .trim();
+
+        return text === "" ? undefined : `[main] ${capped(text)}`;
+    }
+
+    return undefined;
+}
+
+/** A request id for unrequested work, paid by whoever asked last in the session, as Pi Pocket's schedules do. */
+function requests(host: Partial<Host>) {
+    return (conversationId: ConversationId, key: string) => {
+        const requester = typeof host.requesterOf === "function" ? host.requesterOf(conversationId) : undefined;
+
+        return requester === undefined ? `fm-${clientKey(key)}` : `p:${requester}:${clientKey(key)}`;
+    };
+}
+
+/** How one wake was routed: the branch handled it (with main's next processing request, if any), or main takes it. */
+type Routed = { handled: true; follow?: Pending } | { handled: false; text: string };
+
+/**
+ * The supervision branch's main-side half, run by the main session's watcher task: it starts or reattaches the
+ * branch, offers it each wake, runs the turn that handles one, and turns the outcome store into processing requests.
+ */
+function createSupervision(host: Partial<Host>) {
+    const requestFor = requests(host);
+    const heldBack = (id: ConversationId) => (typeof host.heldBack === "function" ? host.heldBack(id) : undefined);
+    const grantGeneration = `pocket-${BOOT}`;
+    /** Homes whose wake grant names this server, and whose outcome store this server validated. */
+    const activated = new Set<string>();
+    const initialized = new Set<string>();
+    /** Consecutive failed branch turns per home, and when the latched-off branch may be tried again. */
+    const latches = new Map<string, { failures: number; until: number; cooldown: number }>();
+    const told = new Set<string>();
+
+    const tell = (conversationId: ConversationId, message: string) => {
+        if (told.has(message)) return;
+        told.add(message);
+        host.notice?.("warning", message, conversationId);
+    };
+
+    /** This home's branch for the main session, started once and reattached after a restart; undefined without one. */
+    async function ensure(runtime: WatchRuntime, context: Context, home: string): Promise<ConversationId | undefined> {
+        const main = runtime.conversationId;
+        const record = await branchRecord(home);
+        if (record?.main === Number(main) && (await runtime.conversation(record.branch as unknown as ConversationId, context)) !== undefined) {
+            return record.branch as unknown as ConversationId;
+        }
+        const linked = host.linkedSessions;
+        if (typeof linked?.start !== "function") {
+            tell(main, "Firstmate's supervision session needs Pi Pocket's linked sessions, which this Pi Pocket does not offer, so every wake goes to this session.");
+            return undefined;
+        }
+        // A start that was under way when the server stopped is retried under the same key, so it is the same session.
+        const start = record?.main !== Number(main) ? 0 : record.starting === true ? record.start : record.start + 1;
+        const path = join(stateOf(home), BRANCH_RECORD);
+        await writeJson(path, { main: Number(main), branch: 0, start, starting: true } satisfies BranchRecord);
+        try {
+            const { session } = await linked.start(main, { title: BRANCH_TITLE, message: BRANCH_INTRO, cwd: home }, `firstmate-supervision-${hash(home)}-${String(start)}`);
+            await writeJson(path, { main: Number(main), branch: Number(session), start } satisfies BranchRecord);
+
+            return session;
+        } catch (error) {
+            await rm(path, { force: true });
+            tell(main, `Firstmate could not start its supervision session, so wakes go to this session until it can: ${(error as Error).message}`);
+            return undefined;
+        }
+    }
+
+    async function activate(home: string): Promise<boolean> {
+        if (activated.has(home)) return true;
+        if ((await script(home, "fm-wake-grant.sh", ["activate", SERVER_PID, grantGeneration])).code !== 0) return false;
+        activated.add(home);
+
+        return true;
+    }
+
+    /** End the recorded turn: free its rows for main, drop the branch's leases, and forget it. */
+    async function finish(home: string): Promise<void> {
+        if (await activate(home)) await script(home, "fm-wake-grant.sh", ["release", grantGeneration]);
+        await script(home, "fm-lease.sh", ["release-actor", "--actor", "branch"], { FM_SUPERVISION_ACTOR: "branch", FM_LEASE_HOLDER_PID: SERVER_PID });
+        await rm(join(stateOf(home), BRANCH_TURN), { force: true });
+    }
+
+    /** What the captain and main said since the branch's last wake; a branch new to this main session gets the newest few. */
+    async function mirror(runtime: WatchRuntime, context: Context, home: string): Promise<{ feed: string; cursor: MirrorCursor }> {
+        const main = Number(runtime.conversationId);
+        const view = await runtime.context(runtime.conversationId, context);
+        const cursor = await readJson<MirrorCursor>(join(stateOf(home), MIRROR_CURSOR));
+        const after = cursor?.main === main && Number.isSafeInteger(cursor.entry) ? cursor.entry : undefined;
+        const items: string[] = [];
+        let newest = after ?? 0;
+        view.entries.forEach((entry, index) => {
+            const id = Number(entry.id);
+            newest = Math.max(newest, id);
+            if (after !== undefined && id <= after) return;
+            for (const message of view.contributions[index] ?? []) {
+                const item = mirrorItem(message as never);
+                if (item !== undefined) items.push(item);
+            }
+        });
+
+        return { feed: items.slice(-(after === undefined ? MIRROR_FRESH_ITEMS : MIRROR_ITEMS)).join("\n"), cursor: { main, entry: newest } };
+    }
+
+    function failed(home: string, pending: Pending, why: string): Routed {
+        const latch = latches.get(home) ?? { failures: 0, until: 0, cooldown: LATCH_BASE_MS };
+        latch.failures += 1;
+        if (latch.failures >= LATCH_THRESHOLD) {
+            latch.until = Date.now() + latch.cooldown;
+            latch.cooldown = Math.min(LATCH_MAX_MS, latch.cooldown * 2);
+        }
+        latches.set(home, latch);
+
+        return { handled: false, text: `${pending.text}\n\nThe supervision session did not handle this wake (${why}), so it is yours to handle.` };
+    }
+
+    /** Wait for the branch's turn to settle, until its deadline; a halted wait leaves the turn running for the next cycle. */
+    function settle(wait: Promise<unknown>, remaining: number, stop: AbortSignal): Promise<"settled" | "late"> {
+        stop.throwIfAborted();
+
+        return new Promise((resolve, reject) => {
+            const halt = () => {
+                clearTimeout(timer);
+                reject(stop.reason);
+            };
+            const timer = setTimeout(() => {
+                stop.removeEventListener("abort", halt);
+                resolve("late");
+            }, Math.max(0, remaining));
+            stop.addEventListener("abort", halt, { once: true });
+            wait.then(
+                () => {
+                    clearTimeout(timer);
+                    stop.removeEventListener("abort", halt);
+                    resolve("settled");
+                },
+                (error: unknown) => {
+                    clearTimeout(timer);
+                    stop.removeEventListener("abort", halt);
+                    reject(error);
+                },
+            );
+        });
+    }
+
+    /** Offer one wake to the branch and run the turn that handles it; anything the branch cannot take goes to main. */
+    async function route(runtime: WatchRuntime, context: Context, home: string, pending: Pending, stop: AbortSignal): Promise<Routed> {
+        try {
+            return await turn(runtime, context, home, pending, stop);
+        } catch (error) {
+            if (stop.aborted || runtime.signal.aborted || context.abortSignal?.aborted) throw error;
+            await finish(home).catch(() => {});
+
+            return failed(home, pending, (error as Error).message);
+        }
+    }
+
+    async function turn(runtime: WatchRuntime, context: Context, home: string, pending: Pending, stop: AbortSignal): Promise<Routed> {
+        const main = runtime.conversationId;
+        const state = stateOf(home);
+        const turnPath = join(state, BRANCH_TURN);
+        const toMain: Routed = { handled: false, text: pending.text };
+        let current = await readJson<BranchTurn>(turnPath);
+        if (current !== undefined && current.wake !== pending.requestId) {
+            // A turn for a wake that is no longer waiting: it was settled before its record went away.
+            await finish(home);
+            current = undefined;
+        }
+        if (current === undefined) {
+            const latch = latches.get(home);
+            if (latch !== undefined && latch.failures >= LATCH_THRESHOLD && Date.now() < latch.until) return toMain;
+            const branch = await ensure(runtime, context, home);
+            if (branch === undefined || heldBack(main) !== undefined) return toMain;
+            if (!(await activate(home))) return failed(home, pending, "its wake grant could not be activated");
+            const offer = fields((await dispatch(home, ["offer"], `${pending.text.split("\n")[0] ?? ""}\n`)).stdout);
+            const rows = words(offer.get("rows"));
+            if (offer.get("eligible") !== "1" || offer.get("corrupted") !== "0" || rows.length === 0) return toMain;
+            const { feed, cursor } = await mirror(runtime, context, home);
+            const feedPath = join(state, MIRROR_FEED);
+            await writeFile(feedPath, feed, { mode: 0o600 });
+            const prompted = await dispatch(home, ["wake-prompt", "--report", REPORT_TOOL, "--mirror-file", feedPath], pending.text);
+            await rm(feedPath, { force: true });
+            if (prompted.code !== 0 || prompted.stdout.trim() === "") return failed(home, pending, "its wake prompt could not be built");
+            current = {
+                wake: pending.requestId,
+                branch: Number(branch),
+                request: requestFor(branch, `fm-branch-${hash(pending.requestId)}`),
+                rows,
+                tasks: words(offer.get("tasks")),
+                unscoped: offer.get("unscoped") === "1",
+                prompt: prompted.stdout.replace(/\n+$/, ""),
+                mirror: cursor,
+                started: Date.now(),
+                reports: [],
+            };
+            await writeJson(turnPath, current);
+            if ((await script(home, "fm-wake-grant.sh", ["publish", grantGeneration, ...rows])).code !== 0) {
+                await finish(home);
+                return toMain;
+            }
+        } else if (await activate(home)) {
+            // Resumed: after a restart the grant must name this server again; the rows may already be consumed.
+            await script(home, "fm-wake-grant.sh", ["publish", grantGeneration, ...current.rows]);
+        }
+
+        const branch = current.branch as unknown as ConversationId;
+        const conversation: ConversationHandle | undefined = await runtime.conversation(branch, context);
+        if (conversation === undefined) {
+            await finish(home);
+            return failed(home, pending, "the supervision session is gone");
+        }
+        const submission = await conversation.submit({ type: "input", content: current.prompt, whenBusy: "followUp", requestId: current.request }, context);
+        const outcome = await settle(submission.wait(context), current.started + BRANCH_TURN_TIMEOUT_MS - Date.now(), signalsOf(stop, runtime.signal, context.abortSignal));
+        if (outcome === "late") {
+            await submission.abort(context).catch(() => undefined);
+            await conversation.abort(context).catch(() => undefined);
+        }
+        const reports = (await readJson<BranchTurn>(turnPath))?.reports ?? [];
+        await finish(home);
+        if (reports.length === 0) {
+            return failed(home, pending, outcome === "late" ? "its turn ran past its deadline" : "its turn ended without recording an outcome");
+        }
+        latches.delete(home);
+        await writeJson(join(state, MIRROR_CURSOR), current.mirror);
+        const follow = await present(home, main);
+
+        return follow === undefined ? { handled: true } : { handled: true, follow };
+    }
+
+    function outcomes(home: string, args: string[]): Promise<Ran> {
+        return script(home, "fm-branch-outcome.sh", args);
+    }
+
+    /**
+     * Mark the stored outcomes read and, when captain outcomes wait for main, the processing request that lists them,
+     * as the Pi branch presents them. Routine outcomes stay in the store and the supervision session's own transcript.
+     */
+    async function present(home: string, main: ConversationId): Promise<Pending | undefined> {
+        if (!initialized.has(home)) {
+            const ran = await outcomes(home, ["processed-init"]);
+            if (ran.code !== 0) {
+                tell(main, `Firstmate's supervision outcomes could not be read: ${ran.stderr.trim() || "the outcome store failed validation"}`);
+                return undefined;
+            }
+            initialized.add(home);
+        }
+        const unread = await outcomes(home, ["unread"]);
+        const read = unread.code === 0 ? jsonLines(unread.stdout) : undefined;
+        const newest = Math.max(0, ...(read ?? []).map((row) => Number(row.seq)).filter(Number.isSafeInteger));
+        if (newest > 0) await outcomes(home, ["mark-read", "--through", String(newest)]);
+        const listed = await outcomes(home, ["unprocessed"]);
+        const rows = listed.code === 0 ? jsonLines(listed.stdout) : undefined;
+        const valid = rows?.every(
+            (row) => Number.isSafeInteger(row.seq) && typeof row.task === "string" && typeof row.summary === "string" && /^[0-9]+[mhd]$/.test(String(row.recordedAgo)),
+        );
+        if (rows === undefined || valid !== true) {
+            tell(main, "Firstmate's supervision outcomes could not be presented: the outcome store listed a row that breaks its contract. Nothing was marked processed.");
+            return undefined;
+        }
+        const processingPath = join(stateOf(home), BRANCH_PROCESSING);
+        if (rows.length === 0) {
+            await rm(processingPath, { force: true });
+            return undefined;
+        }
+        const through = Number(rows[rows.length - 1]!.seq);
+        await writeJson(processingPath, { main: Number(main), through } satisfies Processing);
+        const listedRows = rows.map((row) => `[seq ${String(row.seq)}, recorded ${String(row.recordedAgo)} ago] ${String(row.task)}: ${String(row.summary)}`).join("\n");
+        const body = `${PROCESSING_INSTRUCTION.replace("{N}", String(through))}\n\n${listedRows}`;
+
+        return { kind: "outcomes", text: await encode(home, "branch-outcome", body), requestId: requestFor(main, `fm-outcomes-${BOOT}-${String(through)}`) };
+    }
+
+    /** End a recorded turn whose wake no longer waits in `pending`, so its rows return to main's drain. */
+    async function reconcile(home: string, pending: readonly Pending[]): Promise<void> {
+        const current = await readJson<BranchTurn>(join(stateOf(home), BRANCH_TURN));
+        if (current !== undefined && !pending.some((item) => item.requestId === current.wake && item.kind === "wake" && item.main !== true)) {
+            await finish(home);
+        }
+    }
+
+    return { ensure, route, present, reconcile };
+}
+
+type Supervision = ReturnType<typeof createSupervision>;
+
+// ---------------------------------------------------------------------------------------------------------------
 // The watcher task
 
-/** One delivery the model has not had yet: a watcher wake, or a restart's session-start digest. */
-type Pending = { kind: "wake" | "digest"; text: string; requestId: string };
+/**
+ * One delivery the model has not had yet: a watcher wake (`main` when it must not go to the branch), a restart's
+ * session-start digest, or a processing request for the branch's captain outcomes.
+ */
+type Pending = { kind: "wake" | "digest" | "outcomes"; text: string; requestId: string; main?: boolean };
 type WatchInput = { home: string; boot: string };
 type WatchState = {
     phase: "arm";
@@ -392,18 +884,12 @@ function hash(text: string): string {
     return value.toString(16).padStart(8, "0");
 }
 
-function createWatchTask(host: Partial<Host>) {
+function createWatchTask(host: Partial<Host>, supervision: Supervision) {
     const heldBack = (id: ConversationId) =>
         typeof host.heldBack === "function" ? host.heldBack(id) : undefined;
     const whenLimitsChange = (listener: () => void) =>
         typeof host.onLimitsChanged === "function" ? host.onLimitsChanged(listener) : () => {};
-
-    /** A request id for unrequested work, paid by whoever asked last in the session, as Pi Pocket's schedules do. */
-    const requestFor = (conversationId: ConversationId, key: string) => {
-        const requester = typeof host.requesterOf === "function" ? host.requesterOf(conversationId) : undefined;
-
-        return requester === undefined ? `fm-${clientKey(key)}` : `p:${requester}:${clientKey(key)}`;
-    };
+    const requestFor = requests(host);
 
     /**
      * Deliver `content` as one follow-up keyed on `requestId`: a re-driven delivery finds the submission it already
@@ -436,12 +922,14 @@ function createWatchTask(host: Partial<Host>) {
     };
 
     const contentOf = async (home: string, pending: Pending) =>
-        pending.kind === "digest" ? pending.text : encode(home, "watcher", wakeText(pending.text));
+        pending.kind === "wake" ? encode(home, "watcher", wakeText(pending.text)) : pending.text;
 
     /** Deliver whatever is still pending, then the failure, and end the task: the model repairs with the tool. */
     const fail = async (task: { state: { checkpoint: WatchState }; input: WatchInput }, runtime: WatchRuntime, context: Context, failure: string) => {
         const { home } = task.input;
         const checkpoint = task.state.checkpoint;
+        // Every wake goes to main from here on: no branch turn may keep rows from main's drain.
+        await supervision.reconcile(home, []).catch(() => {});
         for (const pending of checkpoint.pending ?? []) {
             await deliver(runtime, context, await contentOf(home, pending), pending.requestId);
         }
@@ -470,10 +958,11 @@ function createWatchTask(host: Partial<Host>) {
                         (await runtime.memo<string>(`x.firstmate.start-${BOOT}`, context)) ??
                         (await runtime.memo<string>(`x.firstmate.start-${BOOT}`, await sessionStart(home, id, "startup"), context));
                     const start: Pending = { kind: "digest", text: digest, requestId: requestFor(id, `fm-start-${String(runtime.taskId)}-${BOOT}`) };
-                    await runtime.commit(
-                        () => ({ status: "running", checkpoint: { ...checkpoint, boot: BOOT, pending: [start, ...(checkpoint.pending ?? [])] } }),
-                        context,
-                    );
+                    // Captain outcomes the branch stored before the restart that main has not processed follow it.
+                    const outcomes = (await ownership(home, id)) === "owned" ? await supervision.present(home, id) : undefined;
+                    const waiting = (checkpoint.pending ?? []).filter((item) => item.kind !== "outcomes");
+                    const queued = [start, ...(outcomes === undefined ? [] : [outcomes]), ...waiting];
+                    await runtime.commit(() => ({ status: "running", checkpoint: { ...checkpoint, boot: BOOT, pending: queued } }), context);
                     return;
                 }
 
@@ -486,6 +975,11 @@ function createWatchTask(host: Partial<Host>) {
                     await fail(task, runtime, context, `watcher: FAILED - no live session holds the lock; run bin/fm-session-start.sh to reclaim it, then call ${REPAIR_TOOL} to re-arm`);
                     return;
                 }
+                // The supervision session exists while this session supervises: started once, reattached after a
+                // restart, and replaced only when the captain removed it.
+                // Neither may stop the watcher: without a branch every wake simply goes to main.
+                await supervision.ensure(runtime, context, home).catch(() => undefined);
+                await supervision.reconcile(home, checkpoint.pending ?? []).catch(() => undefined);
 
                 const arm = startArm(home, id, checkpoint.predecessor);
                 const stop = () => void arm.retire();
@@ -512,7 +1006,8 @@ function createWatchTask(host: Partial<Host>) {
                     if (recovery !== undefined && newest >= 0) {
                         const detail = await confirmHandling(home, recovery);
                         if (detail !== "") {
-                            const pending = waiting.map((item, index) => (index === newest ? { ...item, text: `${item.text}\n\n${detail}` } : item));
+                            // A wake whose handling handoff failed stays with main, which owns that repair.
+                            const pending = waiting.map((item, index) => (index === newest ? { ...item, text: `${item.text}\n\n${detail}`, main: true } : item));
                             next = { ...next, pending };
                             const confirmed = next;
                             await runtime.commit(() => ({ status: "running", checkpoint: confirmed }), context);
@@ -522,22 +1017,36 @@ function createWatchTask(host: Partial<Host>) {
                     // Deliver the pending queue one by one while this arm keeps watching. A delivery waiting out a
                     // spend limit never holds the watcher: when the arm closes, the delivery stops where it is and
                     // the next cycle, with its successor running, takes the queue up again under the same request ids.
+                    // A wake goes to the supervision session first: one it handled is done, with main's processing
+                    // request for any captain outcome in its place; one it cannot take goes to main the same way.
                     const halt = new AbortController();
-                    let delivering: Promise<{ delivered: string } | { stopped: true }> | undefined;
+                    type Done = { delivered: string; then?: Pending };
+                    let delivering: Promise<Done | { stopped: true }> | undefined;
+                    const handle = async (first: Pending): Promise<Done> => {
+                        if (first.kind === "wake" && first.main !== true) {
+                            const routed = await supervision.route(runtime, context, home, first, halt.signal);
+                            if (routed.handled) return { delivered: first.requestId, ...(routed.follow === undefined ? {} : { then: routed.follow }) };
+                            return { delivered: first.requestId, then: { ...first, text: routed.text, main: true } };
+                        }
+                        await deliver(runtime, context, await contentOf(home, first), first.requestId, halt.signal);
+
+                        return { delivered: first.requestId };
+                    };
+                    const settleDone = (done: Done) => {
+                        const rest = (next.pending ?? []).filter((item) => item.requestId !== done.delivered && item.requestId !== done.then?.requestId);
+                        const pending = done.then === undefined ? rest : [done.then, ...rest];
+                        next = { ...next, pending };
+                        if (pending.length === 0) delete next.pending;
+                    };
                     const deliverNext = () => {
                         const first = next.pending?.[0];
                         delivering =
                             first === undefined
                                 ? undefined
-                                : contentOf(home, first)
-                                      .then((content) => deliver(runtime, context, content, first.requestId, halt.signal))
-                                      .then(
-                                          () => ({ delivered: first.requestId }),
-                                          (error: unknown) => {
-                                              if (halt.signal.aborted || signal.aborted) return { stopped: true as const };
-                                              throw error;
-                                          },
-                                      );
+                                : handle(first).catch((error: unknown) => {
+                                      if (halt.signal.aborted || signal.aborted) return { stopped: true as const };
+                                      throw error;
+                                  });
                     };
                     deliverNext();
                     let ran: Ran | undefined;
@@ -550,9 +1059,7 @@ function createWatchTask(host: Partial<Host>) {
                             if ("closed" in event) {
                                 ran = event.closed;
                             } else if ("delivered" in event) {
-                                const pending = (next.pending ?? []).filter((item) => item.requestId !== event.delivered);
-                                next = { ...next, pending };
-                                if (pending.length === 0) delete next.pending;
+                                settleDone(event);
                                 const delivered = next;
                                 await runtime.commit(() => ({ status: "running", checkpoint: delivered }), context);
                                 deliverNext();
@@ -564,11 +1071,7 @@ function createWatchTask(host: Partial<Host>) {
                     } finally {
                         halt.abort();
                         const settled = await delivering?.catch(() => undefined);
-                        if (settled !== undefined && "delivered" in settled) {
-                            const pending = (next.pending ?? []).filter((item) => item.requestId !== settled.delivered);
-                            next = { ...next, pending };
-                            if (pending.length === 0) delete next.pending;
-                        }
+                        if (settled !== undefined && "delivered" in settled) settleDone(settled);
                     }
 
                     const closed = classify(ran);
@@ -650,12 +1153,130 @@ async function hookCwd(api: unknown, conversationId: ConversationId, context: Co
     return agent?.cwd ?? process.cwd();
 }
 
+/** The supervision branch a session is, with the main session it serves, or undefined for any other session. */
+async function branchOf(home: string | undefined, conversationId: ConversationId): Promise<ConversationId | undefined> {
+    if (home === undefined) return undefined;
+    const record = await branchRecord(home);
+    if (record === undefined) return undefined;
+    const id = Number(conversationId);
+    const branch = record.branch === id || (record.starting === true && record.main !== id);
+
+    return branch ? (record.main as unknown as ConversationId) : undefined;
+}
+
 export default function createFirstmate(host: Partial<Host> = {}) {
-    const watch = createWatchTask(host);
+    const supervision = createSupervision(host);
+    const watch = createWatchTask(host, supervision);
 
     const marked = createBashTool({
         prepare: (execution, api) => {
             Object.assign(execution.env, markerEnv(execution.cwd, api.conversationId));
+        },
+    });
+    // The branch's bash: main's marker and the branch actor, read-only inside its shell so an accidental reassignment
+    // fails instead of acting as main (the Pi branch's guard, bin/fm-lease-lib.sh owns the threat model).
+    const branchBash = (main: ConversationId) =>
+        createBashTool({
+            prepare: (execution) => {
+                Object.assign(execution.env, branchEnv(execution.cwd, main));
+                execution.command = `readonly FM_SUPERVISION_ACTOR FM_LEASE_HOLDER_PID\n(\n${execution.command}\n)`;
+            },
+        });
+
+    const report = defineTool({
+        name: REPORT_TOOL,
+        description:
+            "Record the outcome of one handled fleet event in the durable outcome store; the main Firstmate session is asked to process each captain outcome. Only the Firstmate supervision session reports, and only on the tasks of the wake it is handling.",
+        parameters: Type.Object({
+            task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
+            verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {
+                description: 'Use captain or routine exactly as the "Verdict: routine or captain" section of your system prompt decides; that section is the one owner of the rule.',
+            }),
+            summary: Type.String({ description: "One or two sentences in captain outcome language; include the full https:// PR URL when a PR is involved" }),
+            wake: Type.Optional(Type.String({ description: "The wake reason line this outcome answers" })),
+            silent: Type.Optional(
+                Type.Boolean({ description: "True only for an eligible routine no-change outcome; captain outcomes are never silent, and actions, state changes, or new results stay rendered" }),
+            ),
+        }),
+        execute: async (args, api) => {
+            const home = await homeOf(api.env?.cwd);
+            if ((await branchOf(home, api.conversationId)) === undefined || home === undefined) {
+                return say("report refused: only the Firstmate supervision session records outcomes", true);
+            }
+            const task = args.task.trim();
+            const summary = args.summary.trim();
+            if (task === "" || summary === "") return say("invalid report: task, verdict (routine|captain), and summary are required", true);
+            if (args.silent === true && args.verdict !== "routine") return say("invalid report: --silent true requires the routine verdict", true);
+            const turnPath = join(stateOf(home), BRANCH_TURN);
+            const current = await readJson<BranchTurn>(turnPath);
+            if (current?.branch !== Number(api.conversationId)) return say("report refused: no wake is being handled in this session right now", true);
+            if (!current.unscoped && !current.tasks.includes(task)) {
+                return say(
+                    `report refused: the wake being handled (row ${current.rows.join(", ")}) names ${[...current.tasks].sort().join(", ")}, not ${task}; report only that task, never fleet or a task from memory`,
+                    true,
+                );
+            }
+            const appendArgs = ["append", "--task", task, "--verdict", args.verdict, "--summary", summary, "--silent", String(args.silent === true)];
+            const wake = args.wake?.trim() ?? "";
+            if (wake !== "") appendArgs.push("--wake", wake);
+            const appended = await script(home, "fm-branch-outcome.sh", appendArgs);
+            const seq = Number(appended.stdout.trim());
+            if (appended.code !== 0 || !Number.isSafeInteger(seq) || seq < 1) {
+                return say(`outcome store append failed: ${appended.stderr.trim() || `exit ${String(appended.code)}`}`, true);
+            }
+            await writeJson(turnPath, { ...current, reports: [...current.reports, seq] });
+
+            return say(`recorded seq ${String(seq)} [${args.verdict}]; ${args.verdict === "captain" ? "the main Firstmate session is asked to process it" : "it stays in the outcome store"}`);
+        },
+    });
+
+    const outcomesTool = defineTool({
+        name: OUTCOMES_TOOL,
+        description:
+            "Read the durable outcome store of the supervision branch: what fleet events it handled, each verdict, and each summary. Use when the captain asks what happened in the fleet.",
+        parameters: Type.Object({
+            recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
+        }),
+        replay: "safe",
+        execute: async (args, api) => {
+            const home = await homeOf(api.env?.cwd);
+            if (home === undefined) return say("could not read the outcome store: this session does not work in a Firstmate home", true);
+            const recent = typeof args.recent === "number" && args.recent >= 1 ? String(Math.floor(args.recent)) : "20";
+            const listed = await script(home, "fm-branch-outcome.sh", ["list", "--recent", recent]);
+            if (listed.code !== 0) return say(`could not read the outcome store: ${listed.stderr.trim() || `exit ${String(listed.code)}`}`, true);
+
+            return say(listed.stdout.trim() === "" ? "(no branch outcomes recorded)" : listed.stdout);
+        },
+    });
+
+    const processed = defineTool({
+        name: PROCESSED_TOOL,
+        description:
+            "Acknowledge that every captain-facing supervision outcome up to a sequence number has been processed by this conversation. Call it exactly once after handling a supervision processing request, with through set to the highest sequence that request listed; an outcome that is not acknowledged is presented again.",
+        parameters: Type.Object({
+            through: Type.Number({ description: "The highest outcome sequence number this conversation has processed" }),
+        }),
+        execute: async (args, api, context) => {
+            const through = Number.isSafeInteger(args.through) && args.through >= 1 ? args.through : undefined;
+            if (through === undefined) return say("acknowledgement refused: through must be a positive outcome sequence number", true);
+            const home = await homeOf(api.env?.cwd);
+            if (home === undefined || (await ownership(home, api.conversationId)) !== "owned") {
+                return say("acknowledgement refused: this session does not own the fleet lock", true);
+            }
+            const active = await readJson<Processing>(join(stateOf(home), BRANCH_PROCESSING));
+            if (active?.main !== Number(api.conversationId) || through > active.through) {
+                return say(`acknowledgement refused: seq ${String(through)} was not listed in the active processing request`, true);
+            }
+            const marked = await script(home, "fm-branch-outcome.sh", ["mark-processed", "--through", String(through)]);
+            if (marked.code !== 0) return say(`acknowledgement refused: ${marked.stderr.trim() || `exit ${String(marked.code)}`}`, true);
+            // The next batch, if any, follows as its own processing request.
+            const next = await supervision.present(home, api.conversationId);
+            if (next !== undefined) {
+                const conversation = await api.conversation(api.conversationId, context);
+                await conversation?.submit({ type: "input", content: next.text, whenBusy: "followUp", requestId: next.requestId }, context);
+            }
+
+            return say(`processed through seq ${String(through)}; ${next === undefined ? "no captain outcome remains unprocessed" : "newer captain outcomes remain unprocessed and follow as the next processing request"}`);
         },
     });
 
@@ -684,16 +1305,27 @@ export default function createFirstmate(host: Partial<Host> = {}) {
 
     return defineExtension({
         name: "firstmate",
-        tools: [repair],
+        tools: [repair, report, outcomesTool, processed],
         tasks: [watch],
         sections: [
             section("firstmate", async (input) => {
-                if ((await homeOf(input.env?.cwd)) === undefined) return undefined;
+                const home = await homeOf(input.env?.cwd);
+                if (home === undefined) return undefined;
+                if ((await branchOf(home, input.conversationId)) !== undefined) return branchPrompt(home);
 
-                return `The Firstmate Pi Pocket drop-in is active in this session. It marks every bash call with this session's Pi Pocket identity, runs the Firstmate watcher as a durable background task once this session holds the home's session lock, delivers each watcher wake as a follow-up input, and runs the session start again after a server restart or a compaction. If this session has no Firstmate session-start digest yet, run \`bin/fm-session-start.sh\` once before anything else. Repair a missing or failed watcher only with the ${REPAIR_TOOL} tool.`;
+                return `The Firstmate Pi Pocket drop-in is active in this session. It marks every bash call with this session's Pi Pocket identity, runs the Firstmate watcher as a durable background task once this session holds the home's session lock, delivers each watcher wake as a follow-up input, and runs the session start again after a server restart or a compaction. If this session has no Firstmate session-start digest yet, run \`bin/fm-session-start.sh\` once before anything else. Repair a missing or failed watcher only with the ${REPAIR_TOOL} tool. The linked session "${BRANCH_TITLE}" is this home's supervision branch: it handles the routine wakes it may take, and its captain outcomes reach this session as processing requests to acknowledge with ${PROCESSED_TOOL}.`;
             }),
         ],
         wraps: [
+            // The supervision session's prompt is bin/fm-branch-prompt.sh alone: the home's AGENTS.md is main's
+            // supervisor contract, and its skills list is main's, so neither is rendered there.
+            ...["project_context", "skills"].map((key) =>
+                wrapSection(key, (inner) => ({
+                    ...inner,
+                    render: async (input, context) =>
+                        (await branchOf(await homeOf(input.env?.cwd), input.conversationId)) === undefined ? inner.render(input, context) : undefined,
+                })),
+            ),
             // In a Firstmate home every bash call carries the marker; the call that binds the home's lock to this
             // session (its session start) also starts the watcher. A watcher that later ends stays ended until the
             // repair tool, so a failing one cannot restart itself on every call. Every other session gets Pi Pocket's
@@ -703,6 +1335,8 @@ export default function createFirstmate(host: Partial<Host> = {}) {
                 execute: async (args, api, context) => {
                     const home = await homeOf(api.env?.cwd);
                     if (home === undefined) return bash.execute(args, api, context);
+                    const main = await branchOf(home, api.conversationId);
+                    if (main !== undefined) return branchBash(main).execute(args, api, context);
                     const before = await ownership(home, api.conversationId);
                     const result = await marked.execute(args, api, context);
                     if (before !== "owned" && (await ownership(home, api.conversationId)) === "owned") {
@@ -718,6 +1352,13 @@ export default function createFirstmate(host: Partial<Host> = {}) {
                 beforeTool: async (call, api, context) => {
                     const home = await homeOf(await hookCwd(api, api.conversationId, context));
                     if (home === undefined) return undefined;
+                    const branch = (await branchOf(home, api.conversationId)) !== undefined;
+                    if (branch && !BRANCH_TOOLS.has(call.name)) {
+                        return { block: `[supervision-branch] the Firstmate supervision session uses only read, bash, and ${REPORT_TOOL}; ${call.name} belongs to the main Firstmate session.` };
+                    }
+                    if (!branch && call.name === REPORT_TOOL) {
+                        return { block: `[supervision-branch] only the Firstmate supervision session records outcomes with ${REPORT_TOOL}.` };
+                    }
                     if (call.name === "bash") {
                         const command = (call.arguments as { command?: unknown }).command;
                         if (typeof command !== "string") return undefined;
@@ -732,7 +1373,9 @@ export default function createFirstmate(host: Partial<Host> = {}) {
                             block: `[subagent-dispatch] the firstmate primary delegates fleet work only through bin/fm-spawn.sh; Pi Pocket's ${call.name} tool starts work with no fleet record and no supervision.`,
                         };
                     }
-                    if (CODING_TOOLS.has(call.name) || call.name === REPAIR_TOOL || call.name.startsWith("mcp__")) return undefined;
+                    if (CODING_TOOLS.has(call.name) || [REPAIR_TOOL, REPORT_TOOL, OUTCOMES_TOOL, PROCESSED_TOOL].includes(call.name) || call.name.startsWith("mcp__")) {
+                        return undefined;
+                    }
                     const block = await seatbelt(home, "fm-subagent-pretool-check.sh", ["--tool", call.name], "denied by the subagent-dispatch PreToolUse seatbelt");
 
                     return block === undefined ? undefined : { block };
@@ -747,6 +1390,7 @@ export default function createFirstmate(host: Partial<Host> = {}) {
                     const after = messages.slice(summary + 1).some((message) => userText(message as never).startsWith(`${OPERATIONAL_PREFIX}session-start:`));
                     if (after) return undefined;
                     const home = await homeOf(await hookCwd(api, api.conversationId, context));
+                    // The supervision session never owns the lock, so it never gets the digest.
                     if (home === undefined || (await ownership(home, api.conversationId)) !== "owned") return undefined;
                     const runtime = api as Partial<Pick<ToolExecutionApi, "conversation">>;
                     if (typeof runtime.conversation !== "function") return undefined;
@@ -771,7 +1415,8 @@ export default function createFirstmate(host: Partial<Host> = {}) {
                         return undefined;
                     }
                     const home = await homeOf(await hookCwd(api, api.conversationId, context));
-                    if (home === undefined) return undefined;
+                    // The supervision session's turns end with their report; supervision continuity is main's.
+                    if (home === undefined || (await branchOf(home, api.conversationId)) !== undefined) return undefined;
                     const key = "x.firstmate.turn-end-guard";
                     let verdict = await api.memo<{ code: number; text: string }>(key, context);
                     if (verdict === undefined) {

@@ -21,6 +21,7 @@ This document stays the owner and the contract.
 | How fleet-wide heartbeat reviews are routed | [Heartbeat routing](#heartbeat-routing) |
 | Prompt caching and the branch model | [Cost model and the byte-stable prefix](#cost-model-and-the-byte-stable-prefix) |
 | What changes while the captain is away | [Postures](#postures) |
+| How the branch runs for a Pi Pocket primary | [Pi Pocket](#pi-pocket) |
 | Which tests pin this contract | [Verification](#verification) |
 
 ## Overview
@@ -65,7 +66,7 @@ This document records the shape it landed as, and the delivering PR cites the bo
 This in-process supervision branch is Pi-only by construction:
 
 - The branch lives in `.pi/extensions/fm-branch-supervision.ts`, which only a Pi primary ever loads.
-  No other harness gains branch supervision behavior.
+  No other harness gains this in-process branch.
 - In a home with no branch state, the bash-side additions remain inert (`tests/fm-branch-supervision.test.sh`).
   `bin/fm-lease-lib.sh` owns how a pre-existing lease is honored on any harness.
   A home on any harness that already has an outcome store still receives the shared drain compatibility recovery described in [Lost-wake outcome backstop](#lost-wake-outcome-backstop).
@@ -73,6 +74,7 @@ This in-process supervision branch is Pi-only by construction:
 
 On a non-Pi home that runs the supervision host, the host runs the branch beside the primary, away and on Claude and Cursor also attended.
 [supervision-host.md](supervision-host.md) owns its scope and mechanism.
+A Pi Pocket primary gets the branch from the Firstmate Pi Pocket drop-in instead, as a visible linked session; [Pi Pocket](#pi-pocket) owns what differs there.
 
 ## Components and their owners
 
@@ -637,6 +639,56 @@ It sets these limits:
 Ordinary cleanup of landed ships and completed scouts needs no authority relocation; [`bin/fm-branch-prompt.sh`](../bin/fm-branch-prompt.sh) owns the branch's cleanup instructions in both postures, including lease acquisition and refusal reporting.
 The generated prompt includes the [scout-completion](../.agents/skills/scout-completion/SKILL.md) and [captain-hold-lifecycle](../.agents/skills/captain-hold-lifecycle/SKILL.md) policies verbatim so their completion gate reaches hosts without automatic skill loading.
 
+## Pi Pocket
+
+A Pi Pocket primary runs the same branch contract through the Firstmate Pi Pocket drop-in ([`pi-pocket/firstmate.ts`](../pi-pocket/firstmate.ts)), which owns everything in this section.
+Only the attended posture applies there, because away and quiet modes do not run under Pi Pocket ([`docs/supervision-protocols/pi-pocket.md`](supervision-protocols/pi-pocket.md)).
+
+### A visible linked session
+
+Once the main session holds the lock, its durable watcher task starts the branch through Pi Pocket's linked sessions: one session per home, titled "Firstmate supervision", in the home's folder.
+Pi Pocket lists it under the main session, so the captain can open it and watch each wake arrive and be handled.
+Pi Pocket bills it to the main session's budget, as it does every linked session.
+
+The pairing is recorded in `state/.pocket-branch`.
+Each watcher cycle reuses the recorded session while it exists and belongs to the same main session.
+The start is keyed so a retry, including one a server restart interrupted, returns the same session rather than a second one.
+A new main session that takes over the lock gets its own linked branch, and a branch the captain removed is replaced.
+
+### What makes it the branch
+
+The drop-in recognizes the branch by that record and gives it the Pi branch's contract:
+
+- Its system prompt is [`bin/fm-branch-prompt.sh`](../bin/fm-branch-prompt.sh)'s output in place of the home's `AGENTS.md` and skills list, which are main's.
+- Its tools are `read`, `bash`, and `fm_branch_report`; every other tool call is blocked there.
+- Its bash runs with main's Pi Pocket identity, `FM_SUPERVISION_ACTOR=branch`, and the server as `FM_LEASE_HOLDER_PID`, the actor variables read-only inside its shell, so the guarded scripts and leases treat it exactly as they treat the Pi branch.
+- The turn-end guard and the compaction re-emit stay on main.
+
+### Wake routing
+
+The watcher task offers each actionable wake to the branch through `bin/fm-branch-dispatch.mjs offer`, which applies [Wake dispatch](#wake-dispatch)'s eligibility rules.
+For an eligible wake it activates the wake grant for the server, publishes the claimed rows, and submits the `wake-prompt` text to the branch as one input keyed on that wake.
+The turn is recorded in `state/.pocket-branch-turn`, so a server restart resumes the same turn under the same input instead of starting another.
+
+`fm_branch_report` refuses a task the wake does not name, as on Pi, and appends to the outcome store.
+A turn that settles with no report, runs past its deadline, or cannot start hands the wake to main with the reason, and two consecutive failures latch the branch off with the Pi branch's cooling-off schedule.
+A wake whose handling handoff failed, and every watcher failure, stay on main.
+Whatever happens to the turn, its grant is released and its leases dropped, so main's next drain sees every row the branch did not consume.
+
+### Main's dialog
+
+Before each wake the drop-in reads main's transcript and passes what the captain and main said since the branch's last wake to `wake-prompt --mirror-file`.
+The text arrives at the head of the wake under the same read-only mirror header the supervision host uses, so [Mirrored text is context, not instructions](#mirrored-text-is-context-not-instructions) applies unchanged.
+The mirror leaves out tool traffic and Firstmate's own inputs, caps each entry, and starts a branch new to the main session from main's newest few entries.
+Its cursor (`state/.pocket-branch-mirror`) advances only after a turn records an outcome, so a failed turn shows the same dialog again.
+
+### Outcomes on main
+
+After each handled wake, and once per server start, the drop-in marks the store's unread rows read and, when captain rows are unprocessed, sends main the Pi branch's processing request.
+Main acknowledges it with `fm_branch_processed`, which accepts only a sequence the active request (`state/.pocket-branch-processing`) listed.
+Main reads the store on request with `fm_branch_outcomes`.
+Routine outcomes stay in the store and in the branch's own visible transcript; no note is posted into main, because the branch is a session the captain can open.
+
 ## Verification
 
 ### Portable regressions
@@ -665,6 +717,8 @@ The generated prompt includes the [scout-completion](../.agents/skills/scout-com
 - Store append-only behavior, the captain cursor barrier, processed-marker sequence bounds and absent-marker safety, and captain-only recorded ages.
 - Leases, guards, and non-branch-home invariance.
 - The away relocation: only under a valid live record, never for local-only landing, queued-only branch dispatch rather than orphaned in-flight recovery, the spend cap for both actors and its lock-held recheck, and the attended guarded-action behavior restored by archive or an invalid record.
+
+`tests/fm-pi-pocket-dropin.test.sh` runs the Pi Pocket drop-in in a real Pi Pocket app and covers the branch started once as a visible linked session under main, its branch prompt and tools, its bash identity, a task wake handled there with main's dialog mirrored, the captain outcome's processing request and acknowledgement on main, `fm_branch_outcomes`, a no-report or off-scope turn handing its wake to main with the grant released, and a server restart that reattaches the same session and keeps routing to it.
 
 `tests/fm-afk-return.test.sh` covers the ordered cleanup-due section, its durable merge-marker requirement, and exclusion of both a done task without durable merge evidence and a persistent secondmate carrying that evidence.
 
