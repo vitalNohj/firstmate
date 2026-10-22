@@ -35,6 +35,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=tests/wake-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
+# shellcheck source=tests/pi-pocket-server-fixture.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pi-pocket-server-fixture.sh"
 
 SESSION_START="$ROOT/bin/fm-session-start.sh"
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
@@ -45,7 +47,8 @@ SESSION_START_SECOND_MATE_TMP="/tmp/fm-$SESSION_START_SECOND_MATE_ID"
 SESSION_START_HERDR_SECOND_MATE_ID="fmtest-herdr-${TMP_ROOT##*.}"
 SESSION_START_HERDR_SECOND_MATE_TMP="/tmp/fm-$SESSION_START_HERDR_SECOND_MATE_ID"
 FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT" "$SESSION_START_SECOND_MATE_TMP" "$SESSION_START_HERDR_SECOND_MATE_TMP")
-trap fm_test_cleanup EXIT
+pi_pocket_fixture_setup "$TMP_ROOT/pi-pocket"
+trap 'stop_servers; fm_test_cleanup' EXIT
 fm_git_identity fmtest fmtest@example.invalid
 
 # --- world builders ----------------------------------------------------------
@@ -2946,6 +2949,39 @@ EOF
   pass "session start accepts current Pi markers written before lock acquisition"
 }
 
+# A Pi Pocket primary is proven only by a live server in the real process
+# ancestry, so this case runs session start as a bash call of the real
+# Pi Pocket-shaped fixture server instead of behind the fake ps.
+test_pi_pocket_primary_renders_its_protocol_without_pi_diagnostics() {
+  local rec root home fakebin fix cmd
+  rec=$(new_world pi-pocket-supervision-block)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  fix="$TMP_ROOT/pi-pocket-server"
+  start_server "$fix"
+  cmd=$(printf 'env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT FM_HOME=%q FM_ROOT_OVERRIDE=%q PATH=%q %q 2>&1' \
+    "$home" "$root" "$fakebin:$BASE_PATH" "$SESSION_START")
+
+  call "$fix" conv-a self "$cmd"
+  expect_code 0 "$CALL_RC" "Pi Pocket session start failed: $CALL_OUT"
+  assert_contains "$CALL_OUT" "lock acquired: harness pid $(server_pid "$fix")" "the Pi Pocket conversation did not take the lock on its server"
+  assert_contains "$CALL_OUT" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: pi-pocket" "pi-pocket supervision block missing"
+  assert_contains "$CALL_OUT" "Mode: Pi Pocket drop-in background wake." "pi-pocket snippet missing from session start"
+  assert_contains "$CALL_OUT" "Follow the supervision operating instructions block above for harness 'pi-pocket'." "next step did not name the pi-pocket block"
+  assert_not_contains "$CALL_OUT" "PI_WATCH_EXTENSION" "a Pi Pocket primary got the Pi extension diagnostic"
+  assert_not_contains "$CALL_OUT" "OMP_WATCH_EXTENSION" "a Pi Pocket primary got the omp extension diagnostic"
+
+  : > "$home/state/.afk"
+  call "$fix" conv-a self "$cmd"
+  expect_code 0 "$CALL_RC" "Pi Pocket session start with an away record failed: $CALL_OUT"
+  assert_contains "$CALL_OUT" "no daemon runs under Pi Pocket" "next step did not say no daemon runs under Pi Pocket"
+  assert_contains "$CALL_OUT" "- Away/quiet mode: recorded, but away and quiet modes do not run under Pi Pocket" "supervision block did not flag the ownerless record"
+  assert_not_contains "$CALL_OUT" "ensure the daemon is running" "a Pi Pocket primary was told to run the away daemon"
+  pass "session start renders the Pi Pocket protocol for a Pi Pocket primary, with no Pi extension diagnostic and no away daemon"
+}
+
 test_omp_supervision_block_and_diagnostic() {
   local rec root home fakebin out block_count
   rec=$(new_world omp-supervision-block)
@@ -3092,6 +3128,7 @@ test_pi_diagnostic_rejects_stale_loaded_marker
 test_pi_diagnostic_rejects_handoff_generation_marker
 test_pi_diagnostic_accepts_prelock_loaded_marker
 test_omp_supervision_block_and_diagnostic
+test_pi_pocket_primary_renders_its_protocol_without_pi_diagnostics
 test_omp_diagnostic_accepts_prelock_loaded_marker
 test_pi_diagnostic_rejects_missing_turnend_guard_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker

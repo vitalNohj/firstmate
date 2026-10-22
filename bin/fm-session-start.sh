@@ -1049,6 +1049,13 @@ drain, spawn, steer, merge, or repair fleet state from here. Only a session
 with verified fleet-lock ownership may perform mutable follow-up.
 
 EOF
+elif [ "$AFK_PRESENT" -eq 1 ] && [ "$PRIMARY_HARNESS" = pi-pocket ]; then
+  cat <<'EOF'
+An away or quiet record is present, but no daemon runs under Pi Pocket.
+Follow the supervision operating instructions block above: close the leftover
+record and keep supervising attended through the Pi Pocket drop-in.
+
+EOF
 elif [ "$AFK_PRESENT" -eq 1 ] && [ "$AFK_MODE" = quiet ]; then
   cat <<'EOF'
 Quiet mode is active. Follow the supervision operating instructions block

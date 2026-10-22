@@ -441,6 +441,12 @@ Each passive adapter owns a loop latch:
 - Pi keeps the latch across internal tool turns and clears it only when the generated follow-up settles or delivery fails.
 - OpenCode's forced follow-up is supported for persistent TUI sessions and remains fail-open in headless `opencode run`.
 
+A Pi Pocket primary uses the same passive shape: the guard renders the Pi Pocket repair line, and the caller owns the one-follow-up latch.
+The Firstmate Pi Pocket drop-in that calls the guard ships separately, so no Pi Pocket registration appears in the table above yet.
+Every conversation of one Pi Pocket server shares that server's pid, so a conversation that the session lock does not name cannot repair supervision without stealing the lock.
+The guard therefore lets such a sibling conversation end its turn with an ownership diagnostic, the passive counterpart of the Claude [foreign session-lock owner](#foreign-session-lock-owner) exit.
+It applies only when the Pi Pocket marker passes its trust gate in `bin/fm-session-lock-lib.sh` ("Pi Pocket conversation identity"); an untrusted marker changes nothing.
+
 ### Grok capability selection
 
 Grok makes exactly one typed capability decision from each running Stop payload:
@@ -598,7 +604,8 @@ It also covers true-reason banner wording and reason-keyed episode dedup survivi
 - That the adapter never exits 2.
 
 `tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
-`tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.
+`tests/fm-supervision-instructions.test.sh` covers recovery-line ownership, pi-signed's identity-preserving reuse of Pi's protocol, and the Pi Pocket protocol and repair lines.
+`tests/fm-turnend-guard.test.sh` covers the Pi Pocket owner's bounded block, the sibling-conversation stand-down, and an untrusted marker over a real Pi Pocket-shaped server process (`tests/pi-pocket-server-fixture.sh`).
 `tests/fm-omp-harness.test.sh` covers the omp extension pair over a fake omp API (forced continuation on exit 2, the `stop_hook_active` bound, the seatbelt block, the ownership proof).
 
 The opt-in live tests are:

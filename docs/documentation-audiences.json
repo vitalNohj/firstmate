@@ -462,6 +462,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": "docs/supervision-protocols/pi-pocket.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": "docs/supervision-protocols/pi.md",
       "audience": "agent-runtime"
     },

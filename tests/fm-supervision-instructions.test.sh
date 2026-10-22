@@ -304,6 +304,61 @@ test_pi_snippet_uses_effective_extension_path() {
   pass "pi supervision snippet renders the effective extension path"
 }
 
+test_pi_pocket_protocol_is_drop_in_owned() {
+  local home config out ordinary
+  home="$TMP_ROOT/pi-pocket-home"
+  config="$TMP_ROOT/pi-pocket-config"
+  mkdir -p "$home/state" "$config"
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness pi-pocket)
+  assert_contains "$out" "primary harness: pi-pocket" "pi-pocket heading missing"
+  assert_contains "$out" "Mode: Pi Pocket drop-in background wake." "pi-pocket snippet missing"
+  assert_contains "$out" "durable background task of this conversation" "pi-pocket protocol does not give the watcher to the drop-in"
+  assert_contains "$out" "never use shell \`&\`" "pi-pocket protocol lost the shell & ban"
+  assert_contains "$out" "never hold a foreground wait on the watcher" "pi-pocket protocol lost the foreground-wait ban"
+  assert_contains "$out" "No supervision branch runs under Pi Pocket" "pi-pocket protocol does not say every wake lands in this conversation"
+  assert_contains "$out" "Away and quiet modes are not available under Pi Pocket" "pi-pocket protocol does not rule out /afk and /quiet"
+  assert_contains "$out" "- Away/quiet mode: inactive." "pi-pocket inactive away stanza missing"
+  assert_not_contains "$out" "fm_watch_arm_pi" "pi-pocket protocol borrowed the Pi repair tool"
+  assert_not_contains "$out" "__FM_" "pi-pocket protocol left a placeholder unsubstituted"
+  ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
+  assert_contains "$ordinary" "Pi Pocket drop-in already owns watcher continuity" "pi-pocket ordinary-wake line does not leave continuity to the drop-in"
+  assert_not_contains "$ordinary" "fm_watch_arm_pocket" "pi-pocket ordinary-wake line incorrectly calls the repair tool"
+
+  : > "$config/supervision-host"
+  assert_equals "$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness pi-pocket)" "$out" \
+    "pi-pocket must never render the supervision host protocol"
+  rm -f "$config/supervision-host"
+
+  out=$(FM_HOME="$home" "$RENDER" --harness pi-pocket --repair-line)
+  assert_contains "$out" "Pi Pocket drop-in tool fm_watch_arm_pocket" "pi-pocket repair line does not name the drop-in tool"
+  assert_contains "$out" "instead of running bin/fm-watch-arm.sh through bash" "pi-pocket repair line allows a bash arm"
+  out=$(FM_HOME="$home" "$RENDER" --harness pi-pocket --queue-pending 1 --repair-line)
+  assert_contains "$out" "After draining queued wakes, repair" "pi-pocket repair line lost the queue-pending prefix"
+  out=$(FM_HOME="$home" "$RENDER" --harness pi-pocket --read-only 1 --repair-line)
+  assert_contains "$out" "session holding the fleet lock" "pi-pocket read-only repair line missing"
+  pass "pi-pocket renders the drop-in-owned protocol, its own repair line, and never the supervision host"
+}
+
+test_pi_pocket_leftover_away_record_has_no_daemon() {
+  local home out mode
+  home="$TMP_ROOT/pi-pocket-afk-home"
+  mkdir -p "$home/state"
+  for mode in away quiet; do
+    out=$(FM_HOME="$home" "$RENDER" --harness pi-pocket --afk 1 --afk-mode "$mode")
+    assert_contains "$out" "- Away/quiet mode: recorded, but away and quiet modes do not run under Pi Pocket" \
+      "pi-pocket $mode record did not say no daemon runs"
+    assert_not_contains "$out" "load /afk" "pi-pocket $mode record sent the model to /afk"
+    assert_not_contains "$out" "load /quiet" "pi-pocket $mode record sent the model to /quiet"
+    out=$(FM_HOME="$home" "$RENDER" --harness pi-pocket --afk 1 --afk-mode "$mode" --repair-line)
+    assert_contains "$out" "run bin/fm-afk-return.sh to close the leftover record" \
+      "pi-pocket $mode repair line did not close the leftover record"
+    assert_not_contains "$out" "ensure the daemon is running" "pi-pocket $mode repair line asked for a daemon"
+  done
+  out=$(FM_HOME="$home" "$RENDER" --harness pi --afk 1 --repair-line)
+  assert_contains "$out" "Away mode owns watcher supervision; load /afk" "the Pi away repair line changed"
+  pass "pi-pocket treats a leftover away or quiet record as ownerless instead of daemon-owned"
+}
+
 test_supervision_host_protocol_on_a_claude_home_unless_off
 test_supervision_host_protocol_on_every_arm_owner
 test_selected_harness_block_only
@@ -316,3 +371,5 @@ test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify
 test_grok_command_sources_effective_config
 test_pi_snippet_uses_effective_extension_path
+test_pi_pocket_protocol_is_drop_in_owned
+test_pi_pocket_leftover_away_record_has_no_daemon
