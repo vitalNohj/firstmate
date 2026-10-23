@@ -25,7 +25,7 @@ import {
     wrapTool,
 } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import type { ConversationHandle, ConversationId, ToolExecutionApi, TaskRuntime } from "@earendil-works/pi-durable";
+import type { ConversationHandle, ConversationId, HookApi, ToolExecutionApi, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import type { Host } from "./_pocket.d.ts";
 
@@ -45,6 +45,10 @@ const DIGEST_LIMIT = 512 * 1024;
 const DIGEST_TRUNCATED =
     "\n\nPI POCKET SESSION-START DELIVERY TRUNCATED - the digest exceeded 512 KiB. Treat omitted context as unread and inspect the named files directly before acting on it.";
 const MANUAL_START = "Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.";
+/** The entry a fresh conversation's session-start digest is placed as, ahead of the model's first answer. */
+const START_KIND = "x.firstmate.session-start";
+/** The shell model, stated because models trained on a persistent shell otherwise prefix a defensive cd. */
+const SHELL_MODEL = "Every bash call starts a new shell in this conversation's working directory; a cd never carries over to the next call.";
 const GUARD_HEADER =
     "TURN WOULD END BLIND - supervision is off. The watcher cycle is missing, failed, or unhealthy. Follow the harness recovery instruction below before ending the turn.\n\n";
 
@@ -1122,25 +1126,32 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision) {
 
 type WatchTask = ReturnType<typeof createWatchTask>;
 
-/** Start the conversation's watcher task unless one is live. True when this call started it. */
+/**
+ * Start the conversation's watcher task unless one is live. True when this call started it. The commit returns
+ * nothing, so a hook's task runtime, whose commit reads a returned value as its own next state, can call it too.
+ */
 async function ensureWatch(
-    api: Pick<ToolExecutionApi, "commit" | "conversationId">,
+    api: { readonly conversationId: ConversationId; commit(change: (tx: Tx) => Promise<undefined>, context: Context): Promise<unknown> },
     watch: WatchTask,
     home: string,
     context: Context,
 ): Promise<boolean> {
-    return api.commit(async (tx) => {
+    let started = false;
+    await api.commit(async (tx) => {
         const page = await tx.scanTasks({ conversationId: api.conversationId, kind: WATCH_KIND, order: "descending" }, 50);
-        if (page.items.some((task) => task.state.status !== "terminal" && !task.abortRequested)) return false;
+        if (page.items.some((task) => task.state.status !== "terminal" && !task.abortRequested)) return undefined;
         await tx.createTask(watch, { home, boot: BOOT }, {
             ownership: { kind: "conversation" },
             background: true,
             abandonOnRestart: false,
             conversationId: api.conversationId,
         });
+        started = true;
 
-        return true;
+        return undefined;
     }, context);
+
+    return started;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1306,6 +1317,36 @@ export default function createFirstmate(host: Partial<Host> = {}) {
         },
     });
 
+    /**
+     * The first request of a fresh main conversation in a Firstmate home, the one before any answer: run the session
+     * start as this conversation and give the model its whole digest, as Firstmate's Pi extension does at session
+     * open, instead of asking the model to run it through bash, whose output cap keeps only the digest's tail. The
+     * digest is placed as an entry right after the opening input, so every later request sees it where this one
+     * did, and the session start that bound the lock here also starts the watcher. A recovered request, whose view
+     * predates the placed entry, finds that entry in the commit and places nothing twice.
+     */
+    const firstStart = async (messages: readonly { role: string }[], api: HookApi, context: Context) => {
+        if (messages.some((message) => message.role === "assistant")) return undefined;
+        if (messages.some((message) => userText(message as never).startsWith(`${OPERATIONAL_PREFIX}session-start:`))) return undefined;
+        const home = await homeOf(await hookCwd(api, api.conversationId, context));
+        if (home === undefined || (await branchOf(home, api.conversationId)) !== undefined) return undefined;
+        const runtime = api as HookApi & Partial<Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "commit" | "now">>;
+        if (typeof runtime.commit !== "function") return undefined;
+        const key = "x.firstmate.first-start";
+        const digest = (await api.memo<string>(key, context)) ?? (await api.memo<string>(key, await sessionStart(home, api.conversationId, "startup"), context));
+        const message = { role: "user" as const, content: [{ type: "text" as const, text: digest }], timestamp: runtime.now?.() ?? Date.now() };
+        await runtime.commit(async (tx) => {
+            const recent = await tx.scanEntries({ conversationId: api.conversationId }, 50);
+            if (!recent.items.some((entry) => entry.kind === START_KIND)) {
+                await tx.appendEntry(api.conversationId, { kind: START_KIND, model: [message] });
+            }
+            return undefined;
+        }, context);
+        if ((await ownership(home, api.conversationId)) === "owned") await ensureWatch(runtime as never, watch, home, context);
+
+        return { messages: [...messages, message] as never };
+    };
+
     return defineExtension({
         name: "firstmate",
         tools: [repair, report, outcomesTool, processed],
@@ -1316,7 +1357,7 @@ export default function createFirstmate(host: Partial<Host> = {}) {
                 if (home === undefined) return undefined;
                 if ((await branchOf(home, input.conversationId)) !== undefined) return branchPrompt(home);
 
-                return `The Firstmate Pi Pocket drop-in is active in this session. It marks every bash call with this session's Pi Pocket identity, runs the Firstmate watcher as a durable background task once this session holds the home's session lock, delivers each watcher wake as a follow-up input, and runs the session start again after a server restart or a compaction. If this session has no Firstmate session-start digest yet, run \`bin/fm-session-start.sh\` once before anything else. Repair a missing or failed watcher only with the ${REPAIR_TOOL} tool. The linked session "${BRANCH_TITLE}" is this home's supervision branch: it handles the routine wakes it may take, and its captain outcomes reach this session as processing requests to acknowledge with ${PROCESSED_TOOL}.`;
+                return `The Firstmate Pi Pocket drop-in is active in this session. It marks every bash call with this session's Pi Pocket identity, runs the Firstmate watcher as a durable background task once this session holds the home's session lock, delivers each watcher wake as a follow-up input, and runs the session start itself, giving this session its digest, on the first request, after a server restart, and after a compaction. ${SHELL_MODEL} Repair a missing or failed watcher only with the ${REPAIR_TOOL} tool. The linked session "${BRANCH_TITLE}" is this home's supervision branch: it handles the routine wakes it may take, and its captain outcomes reach this session as processing requests to acknowledge with ${PROCESSED_TOOL}.`;
             }),
         ],
         wraps: [
@@ -1385,10 +1426,11 @@ export default function createFirstmate(host: Partial<Host> = {}) {
                 },
             }),
             hook(GenerationTask, {
-                // After a compaction the digest is gone from context: run the session start again, once, and send it.
+                // A fresh conversation's first request runs the session start, and after a compaction the digest is
+                // gone from context: either way the hook runs it once and gives the model the whole digest.
                 beforeRequest: async ({ messages }, api, context) => {
                     const summary = messages.findLastIndex((message) => userText(message as never).startsWith(COMPACTED));
-                    if (summary < 0) return undefined;
+                    if (summary < 0) return firstStart(messages, api, context);
                     const compaction = hash(userText(messages[summary] as never));
                     const after = messages.slice(summary + 1).some((message) => userText(message as never).startsWith(`${OPERATIONAL_PREFIX}session-start:`));
                     if (after) return undefined;

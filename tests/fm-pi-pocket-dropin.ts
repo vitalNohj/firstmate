@@ -49,6 +49,7 @@ echo "STUB SESSION START conversation=$FM_PI_POCKET_CONVERSATION"
 echo "$2" >> "$FM_HOME/stub/starts.log"
 "$(dirname "$0")/fm-lock.sh" >/dev/null 2>&1 || { echo "STUB DIGEST $2: lock refused"; exit 0; }
 echo "STUB DIGEST $2 conversation=$FM_PI_POCKET_CONVERSATION"
+[ ! -e "$FM_HOME/stub/digest-tail" ] || cat "$FM_HOME/stub/digest-tail"
 `,
     // One arm: report a started watcher, then end with the first wake reason a test drops into stub/fire.*.
     // It leaves when its server dies, as a real arm's watcher would be orphaned and reaped.
@@ -191,7 +192,10 @@ const route = (request: unknown) => {
         .filter((message) => message.role === "system")
         .flatMap((message) => Object.values(message.sections ?? {}));
     systemPrompts.push(sections.join("\n"));
-    const { role, text } = lastText(request);
+    // A fresh conversation's digest follows the captain's opening input; the route answers that input.
+    const all = (request as { messages: { role: string; content: unknown }[] }).messages;
+    const tail = all.findLastIndex((message) => !(message.role === "user" && lastText({ messages: [message] }).text.startsWith("\u2063FIRSTMATE_OP: v1 session-start: ")));
+    const { role, text } = lastText({ messages: all.slice(0, tail + 1) });
     // A branch turn that reports and then hangs past its deadline.
     const whole = (request as { messages: { role: string; content: unknown }[] }).messages;
     if (role === "toolResult" && text.startsWith("recorded seq") && whole.some((message) => JSON.stringify(message.content).includes("task-report-stall"))) {
@@ -347,6 +351,37 @@ test("a session start binds the lock to the session, starts the watcher, and del
     assert.equal(lines(join(fmHome, "stub", "arms.log")).length, 3);
 });
 
+test("a fresh conversation's first request runs the session start and gives the model the whole digest, once", async () => {
+    const { app, id, fmHome } = await started();
+    const elsewhere = await newSession(app, work);
+    // A digest well past Pi Pocket's 50 KiB bash output cap, which kept only a model-run digest's tail.
+    const big = "x".repeat(120 * 1024);
+    writeFileSync(join(fmHome, "stub", "digest-tail"), `${big}\nDIGEST END\n`);
+
+    await say(app, id, "hello");
+    await say(app, elsewhere, "hello");
+    assert.deepEqual(lines(join(fmHome, "stub", "starts.log")), ["startup"], "one session start, by the drop-in");
+    assert.equal(readFileSync(join(fmHome, "state", ".lock-session"), "utf8").split("\n")[0], `pi-pocket:${String(id)}`);
+    const texts = await userTexts(app, id);
+    assert.equal(texts[0], "hello", "the captain's input stays first");
+    const digest = texts.find((text) => text.includes("STUB DIGEST startup"));
+    assert.ok(digest !== undefined, texts.join("\n---\n"));
+    assert.match(digest, /^\u2063FIRSTMATE_OP: v1 session-start: /);
+    assert.ok(digest.includes(big) && digest.includes("DIGEST END"), "the whole digest, not its tail");
+    // The session start that bound the lock also started the watcher.
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
+
+    // Later requests and turns see the placed digest and run nothing again.
+    await say(app, id, "show the marker");
+    assert.equal(lines(join(fmHome, "stub", "starts.log")).length, 1);
+    assert.equal(count(await userTexts(app, id), "STUB DIGEST startup"), 1);
+    assert.equal(count(await userTexts(app, elsewhere), "STUB DIGEST"), 0, "no digest outside a Firstmate home");
+    // The prompt states the shell model and no longer asks the model to run the session start.
+    const prompt = systemPrompts.findLast((text) => text.includes("Firstmate Pi Pocket drop-in is active"))!;
+    assert.ok(prompt.includes("Every bash call starts a new shell in this conversation's working directory; a cd never carries over to the next call."));
+    assert.ok(!prompt.includes("run `bin/fm-session-start.sh` once"), prompt);
+});
+
 test("bash carries the Pi Pocket marker only in a Firstmate home", async () => {
     const { app, id } = await started();
     const elsewhere = await newSession(app, work);
@@ -456,15 +491,15 @@ test("experiment (b): a server killed while a wake waits redelivers the digest a
     });
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("close", resolve));
-    assert.equal(lines(join(fmHome, "stub", "starts.log")).length, 0);
+    assert.deepEqual(lines(join(fmHome, "stub", "starts.log")), ["startup"], "only the first request's session start");
 
     const app = await open(dataDir, false);
     apps.push(app);
-    await until(() => lines(join(fmHome, "stub", "starts.log")).length === 1, "the restart's session start", LONG);
+    await until(() => lines(join(fmHome, "stub", "starts.log")).length === 2, "the restart's session start", LONG);
     await app.spend.setSessionBudget(owner(app), id, null);
     await until(async () => count(await userTexts(app, id), `${WAKE}signal: crash wake`) === 1, "the redelivered wake", LONG);
     const texts = await userTexts(app, id);
-    assert.equal(count(texts, "STUB DIGEST startup"), 1, "one digest");
+    assert.equal(count(texts, "STUB DIGEST startup"), 2, "the first request's digest and one restart digest");
     assert.equal(count(texts, WAKE), 1, "one wake");
     assert.equal(readFileSync(join(fmHome, "state", ".lock"), "utf8").split("\n")[0], String(process.pid));
 
@@ -586,7 +621,7 @@ test("after a Pi Pocket restart the supervision session is reattached, never dup
 
     const app = await open(dataDir, false);
     apps.push(app);
-    await until(() => lines(join(fmHome, "stub", "starts.log")).length === 1, "the restart's session start", LONG);
+    await until(() => lines(join(fmHome, "stub", "starts.log")).length === 2, "the restart's session start", LONG);
     await until(() => lines(join(fmHome, "stub", "arms.log")).length === 2, "the re-arm", LONG);
     assert.deepEqual(branchRecord(fmHome), { main: id, branch, start: 0 });
     assert.equal(supervisionSessions(app).length, 1, JSON.stringify(app.sessions()));

@@ -92,7 +92,7 @@ test_dropin_in_pi_pocket() {
     printf '%s\n' "$out" >&2
     fail "the drop-in's Pi Pocket tests failed (exit $rc)"
   fi
-  pass "drop-in: lock binding, wake delivery, marker scope, seatbelts, held-back delivery, retry limit, turn-end guard, crash restart, and the supervision branch (one visible linked session, wake routing, outcomes on main, fallback to main incl. a past-deadline turn, restart without a duplicate) in a real Pi Pocket app"
+  pass "drop-in: first-request session start with the whole digest, lock binding, wake delivery, marker scope, seatbelts, held-back delivery, retry limit, turn-end guard, crash restart, and the supervision branch (one visible linked session, wake routing, outcomes on main, fallback to main incl. a past-deadline turn, restart without a duplicate) in a real Pi Pocket app"
 }
 
 test_install_copies_idempotently_and_skips_without_pi_pocket
