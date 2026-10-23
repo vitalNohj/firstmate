@@ -32,6 +32,8 @@ const { context, lastText, newSession, openApp, owner, recordCost, root, say, sc
 type App = Awaited<ReturnType<typeof openApp>>;
 
 const WAKE = "FIRSTMATE WATCHER WAKE: ";
+const BRANCH_WAKE = "FIRSTMATE SUPERVISION WAKE: ";
+const PROCESSING = "supervision processing request";
 const LONG = 30_000;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -89,6 +91,9 @@ async function home(): Promise<string> {
         git.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`git init exited ${String(code)}`))));
     });
     cpSync(bin, join(home, "bin"), { recursive: true });
+    // The branch's prompt and wake dispatch read these tracked files beside bin/, as in a real home.
+    cpSync(join(bin, "..", ".agents", "skills"), join(home, ".agents", "skills"), { recursive: true });
+    cpSync(join(bin, "..", ".pi", "extensions", "lib"), join(home, ".pi", "extensions", "lib"), { recursive: true });
     for (const [name, body] of Object.entries(STUBS)) {
         writeFileSync(join(home, "bin", name), body);
         chmodSync(join(home, "bin", name), 0o755);
@@ -125,6 +130,46 @@ async function userTexts(app: App, id: unknown): Promise<string[]> {
 
 const count = (texts: string[], needle: string) => texts.filter((text) => text.includes(needle)).length;
 
+/** A queued wake row for a task the branch may take: its metadata names a project, as a dispatched task's does. */
+function queueTaskWake(home: string, task: string): string {
+    const state = join(home, "state");
+    const seq = Number(existsSync(join(state, ".wake-queue.seq")) ? readFileSync(join(state, ".wake-queue.seq"), "utf8") : "0") + 1;
+    writeFileSync(join(state, `${task}.meta`), `project=fixture\nwindow=${task}-window\n`);
+    writeFileSync(join(state, `${task}.status`), "working: started\ndone: finished\n");
+    writeFileSync(join(state, ".wake-queue"), `${String(Math.floor(Date.now() / 1000))}\t${String(seq)}\tsignal\t${task}.status\tdone: finished\n`, { flag: "a" });
+    writeFileSync(join(state, ".wake-queue.seq"), `${String(seq)}\n`);
+
+    return `signal: ${task}.status`;
+}
+
+type BranchRecord = { main: number; branch: number; start: number; starting?: boolean };
+
+function branchRecord(home: string): BranchRecord | undefined {
+    const path = join(home, "state", ".pocket-branch");
+
+    return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as BranchRecord) : undefined;
+}
+
+/** The supervision sessions Pi Pocket lists, each linked under the session that started it. */
+function supervisionSessions(app: App): { id: number; title?: string; cwd?: string; linkedFrom?: { id: number } }[] {
+    return app.sessions().filter((session: { title?: string }) => session.title === "Firstmate supervision");
+}
+
+async function branchStarted(app: App, fmHome: string): Promise<number> {
+    await until(() => {
+        const record = branchRecord(fmHome);
+        return record !== undefined && record.starting !== true && record.branch > 0;
+    }, "the supervision session", LONG);
+    const branch = branchRecord(fmHome)!.branch;
+    await (await app.harness.conversation(branch, context))!.waitForIdle(context);
+
+    return branch;
+}
+
+function outcomeRows(home: string): { seq: number; task: string; verdict: string; summary: string }[] {
+    return lines(join(home, "state", "branch-outcomes.jsonl")).map((line) => JSON.parse(line));
+}
+
 /** Tool result texts the model saw, as echoed back by the route. */
 async function toolSaid(app: App, id: unknown): Promise<string[]> {
     const view = await (await app.harness.conversation(id, context))!.context(context);
@@ -138,8 +183,20 @@ async function toolSaid(app: App, id: unknown): Promise<string[]> {
 const call = (name: string, args: Record<string, unknown>) =>
     fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
 
+/** Every system prompt the model was sent, its sections joined: Pi Durable sends them as system messages. */
+const systemPrompts: string[] = [];
+
 const route = (request: unknown) => {
+    const sections = (request as { messages: { role: string; sections?: Record<string, string> }[] }).messages
+        .filter((message) => message.role === "system")
+        .flatMap((message) => Object.values(message.sections ?? {}));
+    systemPrompts.push(sections.join("\n"));
     const { role, text } = lastText(request);
+    // A branch turn that reports and then hangs past its deadline.
+    const whole = (request as { messages: { role: string; content: unknown }[] }).messages;
+    if (role === "toolResult" && text.startsWith("recorded seq") && whole.some((message) => JSON.stringify(message.content).includes("task-report-stall"))) {
+        return call("bash", { command: "sleep 60" });
+    }
     if (role === "toolResult") return fauxAssistantMessage([fauxText("noted the tool result")]);
     if (text.endsWith("start firstmate")) return call("bash", { command: "bin/fm-session-start.sh" });
     if (text.endsWith("go elsewhere")) return call("bash", { command: "cd /tmp && ls" });
@@ -149,6 +206,25 @@ const route = (request: unknown) => {
         return call("bash", { command: `printf 'marker=%s server=%s' "\${FM_PI_POCKET_CONVERSATION:-none}" "\${FM_PI_POCKET_SERVER_PID:-none}"` });
     }
     if (text.endsWith("repair the watcher")) return call("fm_watch_arm_pocket", {});
+    if (text.endsWith("show the actor")) {
+        return call("bash", {
+            command: `printf 'marker=%s actor=%s holder=%s primary=%s ' "$FM_PI_POCKET_CONVERSATION" "$FM_SUPERVISION_ACTOR" "$FM_LEASE_HOLDER_PID" "$FM_SUPERVISION_PRIMARY_HARNESS"; (FM_SUPERVISION_ACTOR=main) 2>/dev/null && echo reassign=allowed || echo reassign=refused`,
+        });
+    }
+    if (text.endsWith("what happened in the fleet")) return call("fm_branch_outcomes", {});
+    if (text.endsWith("report from main")) return call("fm_branch_report", { task: "task-a", verdict: "routine", summary: "main reporting" });
+    // The supervision session: a wake for a task it reports on, and one it leaves without an outcome.
+    const reported = /FIRSTMATE SUPERVISION WAKE: signal: (task-report[a-z0-9-]*)\.status/.exec(text);
+    if (reported) {
+        return call("fm_branch_report", { task: reported[1]!, verdict: "captain", summary: `${reported[1]!} needs the captain's merge call`, wake: `signal: ${reported[1]!}.status` });
+    }
+    if (text.includes("FIRSTMATE SUPERVISION WAKE: signal: task-off-scope.status")) {
+        return call("fm_branch_report", { task: "some-other-task", verdict: "routine", summary: "off scope" });
+    }
+    if (text.includes("supervision processing request")) {
+        const through = /through=([0-9]+)/.exec(text);
+        if (through) return call("fm_branch_processed", { through: Number(through[1]) });
+    }
 
     return fauxAssistantMessage([fauxText("noted")]);
 };
@@ -175,6 +251,38 @@ const clientKey = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 6
 
 // ---------------------------------------------------------------------------------------------------------------
 // Experiment (b)'s server: bind, hold one wake back, report, and wait to be killed.
+
+if (process.argv.includes("--branch-child")) {
+    // The restart experiment's first server: supervise, start the branch, and wait to be killed.
+    const [dataDir, fmHome] = process.argv.slice(process.argv.indexOf("--branch-child") + 1) as [string, string];
+    const app = await open(dataDir, true);
+    const id = await newSession(app, fmHome);
+    await say(app, id, "start firstmate");
+    const branch = await branchStarted(app, fmHome);
+    process.stdout.write(`branch ${String(id)} ${String(branch)}\n`);
+    await new Promise(() => {});
+}
+
+if (process.argv.includes("--stall-child")) {
+    // A server whose branch deadline is short (the parent sets it): a turn that reported, then ran past it.
+    const [dataDir, fmHome] = process.argv.slice(process.argv.indexOf("--stall-child") + 1) as [string, string];
+    const app = await open(dataDir, true);
+    const id = await newSession(app, fmHome);
+    await say(app, id, "start firstmate");
+    await branchStarted(app, fmHome);
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
+    const reason = queueTaskWake(fmHome, "task-report-stall");
+    fire(fmHome, reason);
+    await until(async () => count(await userTexts(app, id), `${WAKE}${reason}`) === 1, "the late wake back on main", LONG);
+    const wake = (await userTexts(app, id)).find((text) => text.includes(`${WAKE}${reason}`))!;
+    assert.match(wake, /did not handle this wake \(its turn ran past its deadline\)/);
+    assert.equal(outcomeRows(fmHome).length, 1, "the outcome recorded before the deadline stays in the store");
+    assert.equal(existsSync(join(fmHome, "state", ".pocket-branch-mirror")), false, "a late turn does not advance the mirror");
+    assert.equal(existsSync(join(fmHome, "state", ".branch-eligible-rows")), false, "the grant is released for main's drain");
+    process.stdout.write("stall ok\n");
+    await app.close();
+    process.exit(0);
+}
 
 if (process.argv.includes("--child")) {
     const [dataDir, fmHome] = process.argv.slice(process.argv.indexOf("--child") + 1) as [string, string];
@@ -372,4 +480,135 @@ test("experiment (b): a server killed while a wake waits redelivers the digest a
     await conversation.waitForIdle(context);
     assert.equal(count(await userTexts(app, id), "duplicate"), 0);
     assert.equal(count(await userTexts(app, id), WAKE), 1);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// The supervision branch
+
+test("the supervision session starts once as a visible linked session, takes a task wake, and its captain outcome reaches main through the store", async () => {
+    const { app, id, fmHome } = await started();
+
+    await say(app, id, "start firstmate");
+    const branch = await branchStarted(app, fmHome);
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
+    // One linked session, in the home, titled for the captain, listed under main.
+    const listed = supervisionSessions(app);
+    assert.equal(listed.length, 1, JSON.stringify(app.sessions()));
+    assert.equal(listed[0]!.id, branch);
+    assert.equal(listed[0]!.cwd, fmHome);
+    assert.equal(listed[0]!.linkedFrom?.id, Number(id));
+
+    // The supervision session's prompt is the branch prompt, not main's supervisor contract.
+    assert.ok(systemPrompts.some((prompt) => prompt.includes("You are the SUPERVISION BRANCH of firstmate") && !prompt.includes("# Firstmate fixture")));
+    assert.ok(systemPrompts.some((prompt) => prompt.includes("# Firstmate fixture") && !prompt.includes("SUPERVISION BRANCH")));
+
+    fire(fmHome, queueTaskWake(fmHome, "task-report"));
+    await until(() => outcomeRows(fmHome).length === 1, "the branch's outcome", LONG);
+    const [row] = outcomeRows(fmHome);
+    assert.equal(row!.task, "task-report");
+    assert.equal(row!.verdict, "captain");
+    // The wake ran in the supervision session, never in main, with main's dialog mirrored at its head.
+    const branchTexts = await userTexts(app, branch);
+    assert.equal(count(branchTexts, `${BRANCH_WAKE}signal: task-report.status`), 1, branchTexts.join("\n---\n"));
+    const branchWake = branchTexts.find((text) => text.includes(BRANCH_WAKE))!;
+    assert.match(branchWake, /^MAIN DIALOG MIRROR \(read-only context/);
+    assert.ok(branchWake.includes("[captain] start firstmate"), branchWake);
+    assert.ok(!branchWake.includes("STUB DIGEST") && !branchWake.includes("FIRSTMATE_OP"), "Firstmate's own inputs are not dialog");
+    assert.ok(branchWake.includes("finish with fm_branch_report"));
+    // Main gets the processing request, processes it once, and the store records it processed.
+    await until(async () => count(await userTexts(app, id), PROCESSING) === 1, "the processing request", LONG);
+    await until(() => existsSync(join(fmHome, "state", ".branch-outcomes-processed")) && readFileSync(join(fmHome, "state", ".branch-outcomes-processed"), "utf8").trim() === String(row!.seq), "the acknowledgement", LONG);
+    const mainTexts = await userTexts(app, id);
+    assert.equal(count(mainTexts, `${WAKE}signal: task-report.status`), 0, "the handled wake never reached main");
+    assert.ok(mainTexts.find((text) => text.includes(PROCESSING))!.includes(`task-report: task-report needs the captain's merge call`));
+    await until(async () => (await toolSaid(app, id)).some((text) => text.startsWith(`processed through seq ${String(row!.seq)}`)), "the acknowledgement's result", LONG);
+    // Main reads the store through fm_branch_outcomes, and the branch's grant and turn are gone.
+    await say(app, id, "what happened in the fleet");
+    assert.ok((await toolSaid(app, id)).some((text) => text.includes("task-report needs the captain's merge call")));
+    assert.equal(existsSync(join(fmHome, "state", ".pocket-branch-turn")), false);
+    assert.equal(existsSync(join(fmHome, "state", ".branch-eligible-rows")), false);
+
+    // A wake the branch may not take (no task row queued) still goes to main, and no second session starts.
+    fire(fmHome, "check: a merged PR");
+    await until(async () => count(await userTexts(app, id), `${WAKE}check: a merged PR`) === 1, "the main-owned wake", LONG);
+    assert.equal(supervisionSessions(app).length, 1);
+    // Main may not report, and the branch may not use main's tools.
+    await say(app, id, "report from main");
+    assert.ok((await toolSaid(app, id)).some((text) => text.includes("[supervision-branch] only the Firstmate supervision session records outcomes")));
+    await say(app, branch, "repair the watcher");
+    assert.ok((await toolSaid(app, branch)).some((text) => text.includes("[supervision-branch] the Firstmate supervision session uses only read, bash, and fm_branch_report")));
+    // The branch's bash runs as the branch actor under main's Pi Pocket identity, with the actor read-only.
+    await say(app, branch, "show the actor");
+    assert.ok(
+        (await toolSaid(app, branch)).some((text) => text.includes(`marker=${String(id)} actor=branch holder=${String(process.pid)} primary=pi-pocket reassign=refused`)),
+        (await toolSaid(app, branch)).join("\n"),
+    );
+    // A branch never gets a second one, and main's next cycles keep the same one.
+    assert.equal(supervisionSessions(app).length, 1);
+    assert.equal(branchRecord(fmHome)!.branch, branch);
+});
+
+test("a branch turn that records nothing, or reports outside its wake, hands the wake to main", async () => {
+    const { app, id, fmHome } = await started();
+
+    await say(app, id, "start firstmate");
+    await branchStarted(app, fmHome);
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
+
+    const reason = queueTaskWake(fmHome, "task-off-scope");
+    fire(fmHome, reason);
+    await until(async () => count(await userTexts(app, id), `${WAKE}${reason}`) === 1, "the wake back on main", LONG);
+    const branch = branchRecord(fmHome)!.branch;
+    assert.ok((await toolSaid(app, branch)).some((text) => text.includes("report refused: the wake being handled") && text.includes("not some-other-task")));
+    assert.match((await userTexts(app, id)).find((text) => text.includes(`${WAKE}${reason}`))!, /did not handle this wake \(its turn ended without recording an outcome\)/);
+    assert.equal(outcomeRows(fmHome).length, 0);
+    assert.equal(existsSync(join(fmHome, "state", ".branch-eligible-rows")), false, "the grant is released for main's drain");
+});
+
+test("after a Pi Pocket restart the supervision session is reattached, never duplicated, and still takes wakes", async () => {
+    const fmHome = await home();
+    const dataDir = mkdtempSync(join(root, "branch-restart-"));
+    const child = spawn(process.execPath, [process.argv[1]!, "--branch-child", dataDir, fmHome], {
+        env: { ...process.env, TMPDIR: mkdtempSync(join(tmpdir(), "fm-child-")) },
+        stdio: ["ignore", "pipe", "inherit"],
+    });
+    const [id, branch] = await new Promise<[number, number]>((resolve, reject) => {
+        let out = "";
+        child.stdout!.on("data", (chunk: Buffer) => {
+            out += chunk.toString();
+            const started = /^branch (\S+) (\S+)$/m.exec(out);
+            if (started) resolve([Number(started[1]), Number(started[2])]);
+        });
+        child.on("close", (code) => reject(new Error(`the child server ended first (${String(code)}): ${out}`)));
+    });
+    child.kill("SIGKILL");
+    await new Promise((resolve) => child.once("close", resolve));
+
+    const app = await open(dataDir, false);
+    apps.push(app);
+    await until(() => lines(join(fmHome, "stub", "starts.log")).length === 1, "the restart's session start", LONG);
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 2, "the re-arm", LONG);
+    assert.deepEqual(branchRecord(fmHome), { main: id, branch, start: 0 });
+    assert.equal(supervisionSessions(app).length, 1, JSON.stringify(app.sessions()));
+
+    fire(fmHome, queueTaskWake(fmHome, "task-report-after"));
+    await until(() => outcomeRows(fmHome).length === 1, "the outcome after the restart", LONG);
+    assert.equal(count(await userTexts(app, branch), `${BRANCH_WAKE}signal: task-report-after.status`), 1);
+    assert.equal(count(await userTexts(app, id), `${WAKE}signal: task-report-after.status`), 0);
+    assert.equal(supervisionSessions(app).length, 1);
+});
+
+test("a branch turn that runs past its deadline hands its wake to main even after it recorded an outcome", async () => {
+    const fmHome = await home();
+    const dataDir = mkdtempSync(join(root, "branch-stall-"));
+    const child = spawn(process.execPath, [process.argv[1]!, "--stall-child", dataDir, fmHome], {
+        env: { ...process.env, TMPDIR: mkdtempSync(join(tmpdir(), "fm-child-")), FM_POCKET_BRANCH_TURN_TIMEOUT_MS: "3000" },
+        stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout!.on("data", (chunk: Buffer) => (out += chunk.toString()));
+    child.stderr!.on("data", (chunk: Buffer) => (out += chunk.toString()));
+    const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
+    assert.equal(code, 0, out);
+    assert.match(out, /^stall ok$/m);
 });

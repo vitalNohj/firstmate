@@ -924,6 +924,7 @@ Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Cursor's stop hoo
 
 To run a primary in Pi Pocket, run [`bin/fm-pi-pocket-install.sh`](../bin/fm-pi-pocket-install.sh), which copies [`pi-pocket/firstmate.ts`](../pi-pocket/firstmate.ts) into Pi Pocket's extensions folder, turn Firstmate on in Pi Pocket's Menu -> Extensions, and open a Pi Pocket session whose folder is the Firstmate home.
 The drop-in acts only in a session whose folder is a Firstmate home, so every other Pi Pocket session and every herdr or Pi primary is unaffected.
+Once that session holds the lock, the drop-in also starts the supervision branch as a linked session titled "Firstmate supervision", listed under it ([`docs/pi-supervision-branch.md`](pi-supervision-branch.md#pi-pocket)).
 Run the installer again after updating Firstmate; it skips when no Pi Pocket checkout is present and leaves an up-to-date copy alone.
 
 ### Choose the worker harness

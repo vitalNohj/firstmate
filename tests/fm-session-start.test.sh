@@ -2964,8 +2964,12 @@ EOF
   cmd=$(printf 'env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT FM_HOME=%q FM_ROOT_OVERRIDE=%q PATH=%q %q 2>&1' \
     "$home" "$root" "$fakebin:$BASE_PATH" "$SESSION_START")
 
+  # A routine outcome the supervision session stored before this start is replayed into the digest, as on Pi.
+  FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$ROOT/bin/fm-branch-outcome.sh" append --task task-a --verdict routine \
+    --summary "pocket branch replayed outcome" >/dev/null
   call "$fix" conv-a self "$cmd"
   expect_code 0 "$CALL_RC" "Pi Pocket session start failed: $CALL_OUT"
+  assert_contains "$CALL_OUT" "pocket branch replayed outcome" "a Pi Pocket session start did not replay the supervision session's stored outcome"
   assert_contains "$CALL_OUT" "lock acquired: harness pid $(server_pid "$fix")" "the Pi Pocket conversation did not take the lock on its server"
   assert_contains "$CALL_OUT" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: pi-pocket" "pi-pocket supervision block missing"
   assert_contains "$CALL_OUT" "Mode: Pi Pocket drop-in background wake." "pi-pocket snippet missing from session start"
