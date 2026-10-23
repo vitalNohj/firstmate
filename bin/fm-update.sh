@@ -26,6 +26,7 @@
 # tmux actions the skill performs. The script's job is the safe git mechanics
 # plus a parseable summary telling the caller what to do next:
 #   - one status line per target (updated/already current/skipped)
+#   - one pi-pocket: line for the Firstmate Pi Pocket plugin refresh
 #   - reread-firstmate: yes|no    (did the running firstmate's instructions change)
 #   - restart-secondmates: fm-<id>...|none (every live secondmate this pass left
 #     on origin's tip - advanced OR already there - whose recorded runtime can
@@ -102,6 +103,16 @@ if [ "$FF_STATUS" = "updated" ]; then
   # always where this very script file happens to live (FM_ROOT_OVERRIDE, as
   # this test suite uses to point fm-update.sh at a fixture checkout).
   FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" "$SCRIPT_DIR/fm-procevent-when.sh" rebind-all || true
+fi
+
+# --- Firstmate Pi Pocket plugin -------------------------------------------
+# Pi Pocket loads a COPY of pi-pocket/firstmate.ts from its own data directory,
+# so an update would otherwise leave that copy behind. Refresh it from the code
+# just checked out, whatever this pass did to the repo, but only where it is
+# already installed (bin/fm-pi-pocket-install.sh --if-installed); every other
+# machine is untouched. A refresh failure is reported and never fails the update.
+if [ -x "$FM_ROOT/bin/fm-pi-pocket-install.sh" ]; then
+  "$FM_ROOT/bin/fm-pi-pocket-install.sh" --if-installed 2>&1 || echo "pi-pocket: refresh failed; run bin/fm-pi-pocket-install.sh by hand" >&2
 fi
 
 # --- secondmates -----------------------------------------------------------

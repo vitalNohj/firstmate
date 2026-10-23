@@ -11,7 +11,10 @@
 # off until the owner turns it on; a changed one reloads on its own, and a
 # server restart is only needed if the reload reports a problem.
 #
-# Usage: fm-pi-pocket-install.sh
+# Usage: fm-pi-pocket-install.sh [--if-installed]
+#   --if-installed  refresh an existing install only; with no installed copy it
+#                   skips and changes nothing. bin/fm-update.sh runs this after
+#                   every update, so an installed drop-in follows the code.
 #
 # Environment:
 #   PI_POCKET_DIR          Pi Pocket's data directory (default ~/.pi-pocket),
@@ -24,9 +27,10 @@ set -u
 
 case "${1:-}" in
   -h|--help)
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
+  --if-installed) IF_INSTALLED=1 ;;
   '') ;;
   *)
     echo "error: unknown argument: $1 (see --help)" >&2
@@ -34,6 +38,10 @@ case "${1:-}" in
     ;;
 esac
 
+[ $# -le 1 ] || {
+  echo "error: unexpected argument: $2 (see --help)" >&2
+  exit 1
+}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE="$SCRIPT_DIR/../pi-pocket/firstmate.ts"
 CHECKOUT=${FM_PI_POCKET_CHECKOUT:-$HOME/pi-pocket}
@@ -41,6 +49,10 @@ DATA_DIR=${PI_POCKET_DIR:-$HOME/.pi-pocket}
 TARGET_DIR="$DATA_DIR/extensions"
 TARGET="$TARGET_DIR/firstmate.ts"
 
+if [ "${IF_INSTALLED:-0}" = 1 ] && [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
+  echo "pi-pocket: skipped - no installed drop-in at $TARGET"
+  exit 0
+fi
 if [ ! -d "$CHECKOUT" ]; then
   echo "pi-pocket: skipped - no Pi Pocket checkout at $CHECKOUT"
   exit 0
