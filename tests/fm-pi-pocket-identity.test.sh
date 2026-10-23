@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # tests/fm-pi-pocket-identity.test.sh - Pi Pocket conversation identity:
-# harness detection (bin/fm-harness.sh) and the conversation-bound session lock
-# (bin/fm-session-lock-lib.sh, bin/fm-lock.sh), over the real Pi Pocket-shaped
-# server process tests/pi-pocket-server-fixture.sh builds.
+# harness detection (bin/fm-harness.sh), the conversation-bound session lock
+# (bin/fm-session-lock-lib.sh, bin/fm-lock.sh), and a Pi Pocket primary's worker
+# defaults (crew harness pi, herdr backend, the herdr adapter's refusal to start
+# a server, and bootstrap's PI_POCKET diagnostics), over the real Pi
+# Pocket-shaped server process tests/pi-pocket-server-fixture.sh builds. herdr
+# is a fake on PATH: no real herdr server is read, started, or stopped.
 # shellcheck disable=SC2016 # single quotes are deliberate: the fixture child expands them
 set -u
 
@@ -150,6 +153,110 @@ test_lock_survives_a_server_restart() {
   pass "session lock: a restarted server's conversation reclaims the home; a stale marker and a sibling do not"
 }
 
+# --- worker defaults for a Pi Pocket primary ---------------------------------
+
+# A fake herdr whose server reports running when $FAKE_HERDR_RUNNING exists, and
+# that records any attempt to start a server instead of starting one.
+make_fake_herdr() {  # <dir>
+  mkdir -p "$1"
+  cat > "$1/herdr" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  status) if [ -e "$FAKE_HERDR_RUNNING" ]; then echo '{"server":{"running":true}}'; else echo '{"server":{"running":false}}'; fi ;;
+  server) echo started >> "$FAKE_HERDR_STARTS" ;;
+esac
+exit 0
+SH
+  chmod +x "$1/herdr"
+}
+
+test_pi_pocket_primary_workers_default_to_pi_in_herdr() {
+  local fix home fake
+  fix="$TMP_ROOT/workers"
+  home="$TMP_ROOT/workers-home"
+  fake="$TMP_ROOT/workers-fake"
+  mkdir -p "$home/config" "$home/state"
+  make_fake_herdr "$fake"
+  start_server "$fix"
+  # Runtime markers are cleared so only the Pi Pocket identity can select herdr.
+  env_cmd() { printf 'env -u TMUX -u HERDR_ENV -u HERDR_PANE_ID -u CMUX_WORKSPACE_ID PATH=%q FAKE_HERDR_RUNNING=%q FAKE_HERDR_STARTS=%q FM_HOME=%q FM_CONFIG_OVERRIDE=%q %s' \
+    "$fake:$PATH" "$fake/running" "$fake/starts" "$home" "$home/config" "$1"; }
+
+  call "$fix" conv-a self "$(env_cmd "$(printf '%q crew' "$HARNESS")")"
+  [ "$CALL_OUT" = pi ] || fail "a Pi Pocket primary's default crew harness must be pi, got '$CALL_OUT'"
+  call "$fix" conv-a self "$(env_cmd "$(printf '%q secondmate' "$HARNESS")")"
+  [ "$CALL_OUT" = pi ] || fail "a Pi Pocket primary's default secondmate harness must be pi, got '$CALL_OUT'"
+  printf 'default\n' > "$home/config/crew-harness"
+  call "$fix" conv-a self "$(env_cmd "$(printf '%q crew' "$HARNESS")")"
+  [ "$CALL_OUT" = pi ] || fail "crew-harness 'default' must also resolve to pi, got '$CALL_OUT'"
+  printf 'codex\n' > "$home/config/crew-harness"
+  call "$fix" conv-a self "$(env_cmd "$(printf '%q crew' "$HARNESS")")"
+  [ "$CALL_OUT" = codex ] || fail "an explicit crew harness must still win, got '$CALL_OUT'"
+  rm -f "$home/config/crew-harness"
+
+  backend_cmd() { env_cmd "$(printf 'bash -c %q' ". $(printf '%q' "$ROOT/bin/fm-backend.sh"); fm_backend_name")"; }
+  call "$fix" conv-a self "$(backend_cmd)"
+  [ "$CALL_OUT" = herdr ] || fail "a Pi Pocket primary's default backend must be herdr, got '$CALL_OUT'"
+  printf 'tmux\n' > "$home/config/backend"
+  call "$fix" conv-a self "$(backend_cmd)"
+  [ "$CALL_OUT" = tmux ] || fail "config/backend must still win over the Pi Pocket default, got '$CALL_OUT'"
+  rm -f "$home/config/backend"
+  # Without the marker the ordinary resolution stands.
+  call "$fix" '' self "$(backend_cmd)"
+  [ "$CALL_OUT" = tmux ] || fail "without a Pi Pocket identity the default backend must stay tmux, got '$CALL_OUT'"
+
+  ensure_cmd() { env_cmd "$(printf 'bash -c %q' ". $(printf '%q' "$ROOT/bin/fm-backend.sh"); fm_backend_source herdr; fm_backend_herdr_server_ensure default")"; }
+  call "$fix" conv-a self "$(ensure_cmd)"
+  expect_code 1 "$CALL_RC" "a stopped herdr must refuse a Pi Pocket primary's spawn"
+  assert_contains "$CALL_OUT" "a Pi Pocket primary opens workers only in an already-running herdr server"
+  [ ! -e "$fake/starts" ] || fail "a Pi Pocket primary must never start a herdr server"
+  : > "$fake/running"
+  call "$fix" conv-a self "$(ensure_cmd)"
+  expect_code 0 "$CALL_RC" "a running herdr must accept a Pi Pocket primary's spawn: $CALL_OUT"
+  rm -f "$fake/running"
+  call "$fix" '' self "$(ensure_cmd)"
+  [ -e "$fake/starts" ] || fail "without a Pi Pocket identity the adapter must keep starting a stopped herdr"
+  pass "Pi Pocket primary: workers default to pi in herdr, explicit config wins, and a stopped herdr is refused, never started"
+}
+
+test_bootstrap_reports_a_pi_pocket_primary() {
+  local fix home fake data
+  fix="$TMP_ROOT/bootstrap"
+  home="$TMP_ROOT/bootstrap-home"
+  fake="$TMP_ROOT/bootstrap-fake"
+  data="$TMP_ROOT/bootstrap-pocket"
+  mkdir -p "$home/config" "$home/state"
+  make_fake_herdr "$fake"
+  start_server "$fix"
+  # Runs bootstrap's own pi_pocket_primary_check, extracted from bin/fm-bootstrap.sh, with the
+  # globals bootstrap gives it: the full bootstrap also sweeps tools, network, and the fleet.
+  check_cmd() {
+    printf 'env -u TMUX -u HERDR_ENV -u HERDR_PANE_ID -u CMUX_WORKSPACE_ID PATH=%q FAKE_HERDR_RUNNING=%q FAKE_HERDR_STARTS=%q PI_POCKET_DIR=%q FM_HOME=%q FM_CONFIG_OVERRIDE=%q SCRIPT_DIR=%q FM_ROOT=%q bash -c %q' \
+      "$fake:$PATH" "$fake/running" "$fake/starts" "$data" "$home" "$home/config" "$ROOT/bin" "$ROOT" \
+      ". $(printf '%q' "$ROOT/bin/fm-backend.sh"); BACKEND=\$(fm_backend_name); $(sed -n '/^pi_pocket_primary_check() {/,/^}/p' "$ROOT/bin/fm-bootstrap.sh"); pi_pocket_primary_check"
+  }
+
+  call "$fix" conv-a self "$(check_cmd)"
+  assert_contains "$CALL_OUT" "BOOTSTRAP_INFO: Pi Pocket primary: workers launch on pi in the herdr backend"
+  assert_contains "$CALL_OUT" "PI_POCKET: no Firstmate Pi Pocket plugin"
+  assert_contains "$CALL_OUT" "PI_POCKET: herdr session 'default' is not running"
+  mkdir -p "$data/extensions"
+  printf 'stale\n' > "$data/extensions/firstmate.ts"
+  : > "$fake/running"
+  call "$fix" conv-a self "$(check_cmd)"
+  assert_contains "$CALL_OUT" "differs from this checkout"
+  case "$CALL_OUT" in *"is not running"*) fail "a running herdr must not be reported stopped: $CALL_OUT" ;; esac
+  cp "$ROOT/pi-pocket/firstmate.ts" "$data/extensions/firstmate.ts"
+  call "$fix" conv-a self "$(check_cmd)"
+  case "$CALL_OUT" in *PI_POCKET:*) fail "a current plugin and a running herdr must raise nothing: $CALL_OUT" ;; esac
+  call "$fix" '' self "$(check_cmd)"
+  [ -z "$CALL_OUT" ] || fail "bootstrap must stay silent for a primary that is not Pi Pocket, got: $CALL_OUT"
+  [ ! -e "$fake/starts" ] || fail "bootstrap must never start herdr"
+  pass "bootstrap: a Pi Pocket primary's worker launch, plugin currency, and stopped herdr are reported; other primaries stay silent"
+}
+
 test_detection_trusts_only_a_live_ancestor_server
 test_lock_is_bound_to_one_conversation
 test_lock_survives_a_server_restart
+test_pi_pocket_primary_workers_default_to_pi_in_herdr
+test_bootstrap_reports_a_pi_pocket_primary

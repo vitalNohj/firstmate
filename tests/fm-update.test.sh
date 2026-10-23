@@ -137,6 +137,7 @@ run_update() {
   local w=$1
   PATH="$w/fakebin:$PATH" FM_FAKE_DIR="$w/fake" \
     FM_SSH_BIN="${FM_TEST_SSH_BIN:-ssh}" \
+    PI_POCKET_DIR="$w/pi-pocket-data" FM_PI_POCKET_CHECKOUT="$w/pi-pocket-checkout" \
     FM_ROOT_OVERRIDE="$w/main" FM_HOME="$w/home" "$UPDATE" 2>/dev/null
 }
 
@@ -556,6 +557,42 @@ test_primary_update_rebinds_local_watch() {
   pass "T12 a self-update rebinds a locally armed watch on the primary"
 }
 
+
+# --- Firstmate Pi Pocket plugin refresh --------------------------------------
+# The update re-runs bin/fm-pi-pocket-install.sh --if-installed from the code it
+# just checked out: an installed drop-in copy follows the update, and a machine
+# without one gets nothing created.
+test_update_refreshes_an_installed_pi_pocket_plugin_only() {
+  local w out
+  w=$(new_world pi-pocket)
+  mkdir -p "$w/seed/pi-pocket"
+  git -C "$w/seed" pull -q origin main >/dev/null 2>&1 || true
+  cp "$ROOT/bin/fm-pi-pocket-install.sh" "$w/seed/bin/"
+  printf 'drop-in v1\n' > "$w/seed/pi-pocket/firstmate.ts"
+  git -C "$w/seed" add -A
+  git -C "$w/seed" commit -qm plugin
+  git -C "$w/seed" push -q origin main
+  mkdir -p "$w/pi-pocket-checkout"
+
+  out=$(run_update "$w")
+  assert_contains "$out" "pi-pocket: skipped - no installed drop-in"
+  [ ! -e "$w/pi-pocket-data" ] || fail "an update must not install the plugin where none was installed"
+
+  mkdir -p "$w/pi-pocket-data/extensions"
+  printf 'drop-in v0\n' > "$w/pi-pocket-data/extensions/firstmate.ts"
+  printf 'drop-in v2\n' > "$w/seed/pi-pocket/firstmate.ts"
+  git -C "$w/seed" commit -qam plugin-v2
+  git -C "$w/seed" push -q origin main
+  out=$(run_update "$w")
+  assert_contains "$out" "pi-pocket: updated"
+  [ "$(cat "$w/pi-pocket-data/extensions/firstmate.ts")" = "drop-in v2" ] \
+    || fail "an update must refresh the installed plugin from the updated code"
+
+  out=$(run_update "$w")
+  assert_contains "$out" "pi-pocket: up to date"
+  pass "update refreshes an installed Firstmate Pi Pocket plugin and installs nothing elsewhere"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_bin_only_advance_restarts
@@ -572,5 +609,6 @@ test_firstmate_wrong_branch_skipped
 test_firstmate_detached_head_skipped
 test_unsafe_secondmate_home_skipped_before_git_update
 test_primary_update_rebinds_local_watch
+test_update_refreshes_an_installed_pi_pocket_plugin_only
 
 echo "# all fm-update tests passed"

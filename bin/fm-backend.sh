@@ -240,10 +240,31 @@ fm_backend_detect_cmux_app_is_ancestor() {
   return 1
 }
 
+# fm_backend_pi_pocket_primary: true when this process runs under a trusted
+# Pi Pocket conversation identity ("Pi Pocket conversation identity" in
+# bin/fm-session-lock-lib.sh), i.e. it is a Pi Pocket primary's bash call or a
+# script one started. Every such process lives inside the Pi Pocket server's
+# service cgroup, so anything it starts there itself dies with that service.
+# The env check keeps every other caller free of the lock library.
+fm_backend_pi_pocket_primary() {
+  [ -n "${FM_PI_POCKET_SERVER_PID:-}" ] || return 1
+  if ! command -v fm_pi_pocket_trusted_server_pid >/dev/null 2>&1; then
+    # shellcheck source=bin/fm-session-lock-lib.sh
+    . "$FM_BACKEND_LIB_DIR/fm-session-lock-lib.sh" || return 1
+  fi
+  fm_pi_pocket_trusted_server_pid >/dev/null 2>&1
+}
+
 # fm_backend_name: resolve the ACTIVE backend for a NEW spawn, absent an
 # explicit per-task override. Precedence: FM_BACKEND env, then config/backend
 # (a single word on its first non-empty line, mirroring config/crew-harness),
-# then runtime auto-detection (fm_backend_detect), then default tmux. A
+# then herdr for a Pi Pocket primary (fm_backend_pi_pocket_primary), then
+# runtime auto-detection (fm_backend_detect), then default tmux. The Pi Pocket
+# default exists because a tmux server started from a Pi Pocket bash call lives
+# in the Pi Pocket service and dies on its restart, while workers in the
+# already-running herdr server stay visible to the captain and outlive it; the
+# herdr adapter refuses rather than start a herdr server there
+# (fm_backend_herdr_server_ensure). A
 # per-task `--backend` flag is parsed by the caller (fm-spawn.sh) and takes
 # precedence over this resolution entirely; it is not read here. Auto-detect
 # fires only when nothing was explicitly configured, so an explicit setting
@@ -267,6 +288,10 @@ fm_backend_name() {
         return 0
       fi
     done < "$FM_BACKEND_CONFIG_DIR/backend"
+  fi
+  if fm_backend_pi_pocket_primary; then
+    printf 'herdr'
+    return 0
   fi
   # Called directly (not in a command substitution) so the detect signal
   # globals survive into the notice below.

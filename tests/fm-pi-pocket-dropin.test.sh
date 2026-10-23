@@ -76,6 +76,27 @@ test_install_copies_idempotently_and_skips_without_pi_pocket() {
   pass "install: copies the drop-in, is idempotent, refreshes a stale copy, and skips without a Pi Pocket checkout"
 }
 
+test_install_if_installed_refreshes_only_an_existing_copy() {
+  local dir="$TMP_ROOT/if-installed" out
+  mkdir -p "$dir/checkout"
+  out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" --if-installed 2>&1) \
+    || fail "--if-installed without a copy must exit 0, got: $out"
+  case "$out" in *"skipped - no installed drop-in"*) ;; *) fail "--if-installed without a copy must say it skipped, got: $out" ;; esac
+  [ ! -e "$dir/data" ] || fail "--if-installed must not create a first install"
+
+  mkdir -p "$dir/data/extensions"
+  printf 'stale\n' > "$dir/data/extensions/firstmate.ts"
+  out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" --if-installed 2>&1) \
+    || fail "--if-installed with a stale copy must succeed, got: $out"
+  cmp -s "$DROPIN" "$dir/data/extensions/firstmate.ts" || fail "--if-installed must refresh a stale copy"
+  out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" --if-installed 2>&1) \
+    || fail "a repeated --if-installed must succeed, got: $out"
+  case "$out" in *"up to date"*) ;; *) fail "a repeated --if-installed must report it up to date, got: $out" ;; esac
+  out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" --if-installed extra 2>&1) \
+    && fail "an extra argument must be refused, got: $out"
+  pass "install --if-installed: refreshes an existing copy, is idempotent, and never creates a first install"
+}
+
 # --- the drop-in in a Pi Pocket app ------------------------------------------
 
 test_dropin_in_pi_pocket() {
@@ -92,8 +113,9 @@ test_dropin_in_pi_pocket() {
     printf '%s\n' "$out" >&2
     fail "the drop-in's Pi Pocket tests failed (exit $rc)"
   fi
-  pass "drop-in: lock binding, wake delivery, marker scope, seatbelts, held-back delivery, retry limit, turn-end guard, crash restart, and the supervision branch (one visible linked session, wake routing, outcomes on main, fallback to main incl. a past-deadline turn, restart without a duplicate) in a real Pi Pocket app"
+  pass "drop-in: first-request session start with the whole digest, lock binding, wake delivery, marker scope, seatbelts, held-back delivery, retry limit, turn-end guard, crash restart, and the supervision branch (one visible linked session, wake routing, outcomes on main, fallback to main incl. a past-deadline turn, restart without a duplicate) in a real Pi Pocket app"
 }
 
 test_install_copies_idempotently_and_skips_without_pi_pocket
+test_install_if_installed_refreshes_only_an_existing_copy
 test_dropin_in_pi_pocket
