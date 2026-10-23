@@ -2,7 +2,8 @@
 # Detect the agent harness this process tree runs on.
 # Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|pi-pocket|agy|devin|commandcode|polytoken|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
-#                                        (config/crew-harness; "default" resolves to own)
+#                                        (config/crew-harness; "default" resolves to own,
+#                                        except that a primary-only pi-pocket resolves to pi)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
 #                                        SECONDMATE agents: config/secondmate-harness ->
 #                                        config/crew-harness -> own. "default" or absent
@@ -496,11 +497,18 @@ detect_own() {
 }
 
 # Resolve the effective crewmate harness: config/crew-harness (a bare adapter
-# name) wins; absent or "default" mirrors firstmate's own harness.
+# name) wins; absent or "default" mirrors firstmate's own harness. The one
+# exception is pi-pocket, a primary-only harness with no worker launch
+# template: mirroring it resolves to its engine family pi, the verified worker
+# adapter with the same models and providers. bin/fm-bootstrap.sh reports that
+# substitution for a Pi Pocket primary.
 resolve_crew() {
   local crew=
   [ -f "$CONFIG/crew-harness" ] && crew=$(tr -d '[:space:]' < "$CONFIG/crew-harness" || true)
-  if [ -z "$crew" ] || [ "$crew" = "default" ]; then detect_own; else echo "$crew"; fi
+  if [ -n "$crew" ] && [ "$crew" != "default" ]; then echo "$crew"; return; fi
+  crew=$(detect_own) || exit
+  [ "$crew" != pi-pocket ] || crew=pi
+  echo "$crew"
 }
 
 # Print the first non-empty, non-comment line of config/secondmate-harness
