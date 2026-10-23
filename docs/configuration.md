@@ -435,8 +435,13 @@ New spawns choose the backend in this order:
    A later task cannot inherit that authority by analogy.
 2. `FM_BACKEND`.
 3. The first non-empty line of local, gitignored `config/backend`.
-4. Runtime auto-detection from `$TMUX`, `HERDR_ENV=1`, or cmux runtime signals.
-5. Default `tmux`.
+4. `herdr` for a Pi Pocket primary.
+5. Runtime auto-detection from `$TMUX`, `HERDR_ENV=1`, or cmux runtime signals.
+6. Default `tmux`.
+
+A Pi Pocket primary's bash calls run inside the Pi Pocket server's service, so a tmux server they started would be hidden from the captain and killed with that service.
+Its workers therefore open in the herdr server the captain already runs, reached through herdr's socket, where the captain sees them and they outlive a Pi Pocket restart.
+The herdr adapter never starts a herdr server for a Pi Pocket primary: with none running, the spawn refuses and names the fix, and bootstrap reports a `PI_POCKET` line.
 
 If more than one runtime marker is present, detection resolves innermost-first: `$TMUX` is checked before `HERDR_ENV=1`, which is checked before cmux's primary `CMUX_WORKSPACE_ID` marker and its documented fallback signals - tmux or herdr started from inside a cmux terminal is the innermost, currently-executing layer, while cmux itself (a terminal application, not a nestable multiplexer) is always checked last.
 See [`docs/cmux-backend.md`](cmux-backend.md#runtime-detection) for why cmux can be selected when `CMUX_WORKSPACE_ID` is absent.
@@ -925,7 +930,8 @@ Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Cursor's stop hoo
 To run a primary in Pi Pocket, run [`bin/fm-pi-pocket-install.sh`](../bin/fm-pi-pocket-install.sh), which copies [`pi-pocket/firstmate.ts`](../pi-pocket/firstmate.ts) into Pi Pocket's extensions folder, turn Firstmate on in Pi Pocket's Menu -> Extensions, and open a Pi Pocket session whose folder is the Firstmate home.
 The drop-in acts only in a session whose folder is a Firstmate home, so every other Pi Pocket session and every herdr or Pi primary is unaffected.
 Once that session holds the lock, the drop-in also starts the supervision branch as a linked session titled "Firstmate supervision", listed under it ([`docs/pi-supervision-branch.md`](pi-supervision-branch.md#pi-pocket)).
-Run the installer again after updating Firstmate; it skips when no Pi Pocket checkout is present and leaves an up-to-date copy alone.
+[`bin/fm-update.sh`](../bin/fm-update.sh) re-runs the installer with `--if-installed` after every update, so an installed copy follows the code and a machine without one gets nothing; it skips when no Pi Pocket checkout is present and leaves an up-to-date copy alone.
+On a fresh home conversation's first request the drop-in runs the session start itself and gives the model the whole digest, as Firstmate's Pi extension does at session open.
 
 ### Choose the worker harness
 
@@ -933,7 +939,7 @@ Run the installer again after updating Firstmate; it skips when no Pi Pocket che
 When pi-signed is selected, Firstmate preserves `FM_PI_HARNESS=pi-signed` and refuses the launch if the selected executable is unavailable rather than falling back to pi; [`fm-spawn.sh --help`](../bin/fm-spawn.sh) owns executable resolution and launch mechanics.
 
 Plain Pi launches set `FM_PI_HARNESS=pi`, so a signed primary's environment cannot relabel a plain Pi worker.
-When it is absent or contains `default`, crewmates mirror the firstmate's own harness.
+When it is absent or contains `default`, crewmates mirror the firstmate's own harness, except that a Pi Pocket primary's crewmates use `pi`: Pi Pocket is a primary-only harness with no worker launch, and `pi` is its engine with the same models and providers.
 
 ### Choose the secondmate harness
 
@@ -1521,7 +1527,7 @@ Lavish is a presentation-only dependency for visual decisions and reports; nonvi
 
 **Backend requirements**
 
-The per-backend delta is required only for the backend resolved from `FM_BACKEND`, then `config/backend`, then runtime auto-detection, then default `tmux`, so a home is never told to install a tool an inactive backend or feature would need.
+The per-backend delta is required only for the backend resolved by the [backend selection order](#backend-selection-order), so a home is never told to install a tool an inactive backend or feature would need.
 `fm_backend_required_tools` in `bin/fm-backend.sh` owns the backend additions:
 
 | Resolved backend | Additional tools |

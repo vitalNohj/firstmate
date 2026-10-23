@@ -9,6 +9,7 @@
 #                 "PRESENTATION_UNAVAILABLE: lavish-axi (requires >=<floor>; install: <command>) - nonvisual work may proceed with plain-text decisions and reports; install or upgrade before using Lavish",
 #                 "MISSING_MANUAL: <tool> (instructions: <url>)", "NEEDS_GH_AUTH",
 #                 "BACKEND_INVALID: <name> (known: <names>)",
+#                 "PI_POCKET: <plugin missing or stale | herdr not running> - <fix>",
 #                 "STARTUP_MEMORY_BUDGET: invalid config/startup-memory-budget - <reason>",
 #                 "CREW_DISPATCH: invalid config/crew-dispatch.json - <reason>",
 #                 "FLEET_SYNC: <repo>: skipped|recovered|STUCK: <detail>",
@@ -1493,6 +1494,32 @@ detect_local_tools() {
   fi
 }
 
+# A Pi Pocket primary (fm_backend_pi_pocket_primary): report where its workers
+# launch, since both defaults differ from mirroring the primary (bin/fm-harness.sh
+# resolve_crew maps the primary-only pi-pocket to pi; bin/fm-backend.sh
+# fm_backend_name defaults it to herdr), then flag what would stop it working:
+# a Firstmate Pi Pocket plugin copy that is missing or behind this checkout, and
+# a herdr backend whose server is not running, which the herdr adapter refuses
+# to start from inside the Pi Pocket service. Silent for every other primary.
+pi_pocket_primary_check() {
+  local crew installed source="$FM_ROOT/pi-pocket/firstmate.ts" state
+  fm_backend_pi_pocket_primary || return 0
+  crew=$("$SCRIPT_DIR/fm-harness.sh" crew 2>/dev/null) || crew=unknown
+  echo "BOOTSTRAP_INFO: Pi Pocket primary: workers launch on $crew in the $BACKEND backend"
+  installed="${PI_POCKET_DIR:-$HOME/.pi-pocket}/extensions/firstmate.ts"
+  if [ ! -f "$installed" ]; then
+    echo "PI_POCKET: no Firstmate Pi Pocket plugin at $installed - run bin/fm-pi-pocket-install.sh"
+  elif [ -f "$source" ] && ! cmp -s "$source" "$installed"; then
+    echo "PI_POCKET: the Firstmate Pi Pocket plugin at $installed differs from this checkout - run bin/fm-pi-pocket-install.sh"
+  fi
+  if [ "$BACKEND" = herdr ] && fm_backend_source herdr 2>/dev/null; then
+    state=$(fm_backend_herdr_server_running_state "$(fm_backend_herdr_session)")
+    if [ "$state" = stopped ]; then
+      echo "PI_POCKET: herdr session '$(fm_backend_herdr_session)' is not running - workers cannot open until the captain starts herdr (or config/backend names another backend)"
+    fi
+  fi
+}
+
 detect_local_config() {
   # Worktree-tangle check: the firstmate primary checkout (FM_ROOT) must sit on its
   # default branch, not a feature branch (see fm-tangle-lib.sh). Scoped to the
@@ -1520,6 +1547,7 @@ detect_local_config() {
     echo "MISSING_MANUAL: cursor-agent (instructions: $(manual_install_url cursor-agent))"
   fi
   crew_dispatch_validate
+  pi_pocket_primary_check
   if [ "${FM_BOOTSTRAP_VERBOSE_FACTS:-0}" = 1 ] \
     && ! fm_backlog_backend_manual "$CONFIG" && fm_tasks_axi_compatible; then
     echo "BOOTSTRAP_INFO: tasks-axi available"
