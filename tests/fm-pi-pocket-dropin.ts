@@ -192,6 +192,11 @@ const route = (request: unknown) => {
         .flatMap((message) => Object.values(message.sections ?? {}));
     systemPrompts.push(sections.join("\n"));
     const { role, text } = lastText(request);
+    // A branch turn that reports and then hangs past its deadline.
+    const whole = (request as { messages: { role: string; content: unknown }[] }).messages;
+    if (role === "toolResult" && text.startsWith("recorded seq") && whole.some((message) => JSON.stringify(message.content).includes("task-report-stall"))) {
+        return call("bash", { command: "sleep 60" });
+    }
     if (role === "toolResult") return fauxAssistantMessage([fauxText("noted the tool result")]);
     if (text.endsWith("start firstmate")) return call("bash", { command: "bin/fm-session-start.sh" });
     if (text.endsWith("go elsewhere")) return call("bash", { command: "cd /tmp && ls" });
@@ -256,6 +261,27 @@ if (process.argv.includes("--branch-child")) {
     const branch = await branchStarted(app, fmHome);
     process.stdout.write(`branch ${String(id)} ${String(branch)}\n`);
     await new Promise(() => {});
+}
+
+if (process.argv.includes("--stall-child")) {
+    // A server whose branch deadline is short (the parent sets it): a turn that reported, then ran past it.
+    const [dataDir, fmHome] = process.argv.slice(process.argv.indexOf("--stall-child") + 1) as [string, string];
+    const app = await open(dataDir, true);
+    const id = await newSession(app, fmHome);
+    await say(app, id, "start firstmate");
+    await branchStarted(app, fmHome);
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
+    const reason = queueTaskWake(fmHome, "task-report-stall");
+    fire(fmHome, reason);
+    await until(async () => count(await userTexts(app, id), `${WAKE}${reason}`) === 1, "the late wake back on main", LONG);
+    const wake = (await userTexts(app, id)).find((text) => text.includes(`${WAKE}${reason}`))!;
+    assert.match(wake, /did not handle this wake \(its turn ran past its deadline\)/);
+    assert.equal(outcomeRows(fmHome).length, 1, "the outcome recorded before the deadline stays in the store");
+    assert.equal(existsSync(join(fmHome, "state", ".pocket-branch-mirror")), false, "a late turn does not advance the mirror");
+    assert.equal(existsSync(join(fmHome, "state", ".branch-eligible-rows")), false, "the grant is released for main's drain");
+    process.stdout.write("stall ok\n");
+    await app.close();
+    process.exit(0);
 }
 
 if (process.argv.includes("--child")) {
@@ -570,4 +596,19 @@ test("after a Pi Pocket restart the supervision session is reattached, never dup
     assert.equal(count(await userTexts(app, branch), `${BRANCH_WAKE}signal: task-report-after.status`), 1);
     assert.equal(count(await userTexts(app, id), `${WAKE}signal: task-report-after.status`), 0);
     assert.equal(supervisionSessions(app).length, 1);
+});
+
+test("a branch turn that runs past its deadline hands its wake to main even after it recorded an outcome", async () => {
+    const fmHome = await home();
+    const dataDir = mkdtempSync(join(root, "branch-stall-"));
+    const child = spawn(process.execPath, [process.argv[1]!, "--stall-child", dataDir, fmHome], {
+        env: { ...process.env, TMPDIR: mkdtempSync(join(tmpdir(), "fm-child-")), FM_POCKET_BRANCH_TURN_TIMEOUT_MS: "3000" },
+        stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout!.on("data", (chunk: Buffer) => (out += chunk.toString()));
+    child.stderr!.on("data", (chunk: Buffer) => (out += chunk.toString()));
+    const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
+    assert.equal(code, 0, out);
+    assert.match(out, /^stall ok$/m);
 });

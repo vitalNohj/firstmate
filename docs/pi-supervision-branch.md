@@ -671,7 +671,7 @@ For an eligible wake it activates the wake grant for the server, publishes the c
 The turn is recorded in `state/.pocket-branch-turn`, so a server restart resumes the same turn under the same input instead of starting another.
 
 `fm_branch_report` refuses a task the wake does not name, as on Pi, and appends to the outcome store.
-A turn that settles with no report, runs past its deadline, or cannot start hands the wake to main with the reason, and two consecutive failures latch the branch off with the Pi branch's cooling-off schedule.
+A turn that settles with no report, runs past its deadline (even after recording an outcome, which stays in the store), or cannot start hands the wake to main with the reason, and two consecutive failures latch the branch off with the Pi branch's cooling-off schedule.
 A wake whose handling handoff failed, and every watcher failure, stay on main.
 Whatever happens to the turn, its grant is released and its leases dropped, so main's next drain sees every row the branch did not consume.
 
@@ -718,7 +718,7 @@ Routine outcomes stay in the store and in the branch's own visible transcript; n
 - Leases, guards, and non-branch-home invariance.
 - The away relocation: only under a valid live record, never for local-only landing, queued-only branch dispatch rather than orphaned in-flight recovery, the spend cap for both actors and its lock-held recheck, and the attended guarded-action behavior restored by archive or an invalid record.
 
-`tests/fm-pi-pocket-dropin.test.sh` runs the Pi Pocket drop-in in a real Pi Pocket app and covers the branch started once as a visible linked session under main, its branch prompt and tools, its bash identity, a task wake handled there with main's dialog mirrored, the captain outcome's processing request and acknowledgement on main, `fm_branch_outcomes`, a no-report or off-scope turn handing its wake to main with the grant released, and a server restart that reattaches the same session and keeps routing to it.
+`tests/fm-pi-pocket-dropin.test.sh` runs the Pi Pocket drop-in in a real Pi Pocket app and covers the branch started once as a visible linked session under main, its branch prompt and tools, its bash identity, a task wake handled there with main's dialog mirrored, the captain outcome's processing request and acknowledgement on main, `fm_branch_outcomes`, a no-report, off-scope, or past-deadline turn handing its wake to main with the grant released, and a server restart that reattaches the same session and keeps routing to it.
 
 `tests/fm-afk-return.test.sh` covers the ordered cleanup-due section, its durable merge-marker requirement, and exclusion of both a done task without durable merge evidence and a persistent secondmate carrying that evidence.
 

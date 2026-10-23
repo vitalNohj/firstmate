@@ -665,9 +665,10 @@ function createSupervision(host: Partial<Host>) {
         }
         const reports = (await readJson<BranchTurn>(turnPath))?.reports ?? [];
         await finish(home);
-        if (reports.length === 0) {
-            return failed(home, pending, outcome === "late" ? "its turn ran past its deadline" : "its turn ended without recording an outcome");
-        }
+        // A late turn may have stopped partway through its rows: what it recorded stays in the store, and main
+        // takes the wake, with no success counted and the mirror left where it was.
+        if (outcome === "late") return failed(home, pending, "its turn ran past its deadline");
+        if (reports.length === 0) return failed(home, pending, "its turn ended without recording an outcome");
         latches.delete(home);
         await writeJson(join(state, MIRROR_CURSOR), current.mirror);
         const follow = await present(home, main);
@@ -692,10 +693,12 @@ function createSupervision(host: Partial<Host>) {
             }
             initialized.add(home);
         }
-        const unread = await outcomes(home, ["unread"]);
-        const read = unread.code === 0 ? jsonLines(unread.stdout) : undefined;
-        const newest = Math.max(0, ...(read ?? []).map((row) => Number(row.seq)).filter(Number.isSafeInteger));
-        if (newest > 0) await outcomes(home, ["mark-read", "--through", String(newest)]);
+        // Every stored row is read once presented here: captain rows through the processing request below, routine
+        // rows in the supervision session's own transcript. Only the newest row is read, so a large backlog never
+        // has to fit one read; mark-read never moves the cursor backwards.
+        const last = await outcomes(home, ["list", "--recent", "1"]);
+        const newest = Number((last.code === 0 ? jsonLines(last.stdout) : undefined)?.[0]?.seq);
+        if (Number.isSafeInteger(newest) && newest > 0) await outcomes(home, ["mark-read", "--through", String(newest)]);
         const listed = await outcomes(home, ["unprocessed"]);
         const rows = listed.code === 0 ? jsonLines(listed.stdout) : undefined;
         const valid = rows?.every(
