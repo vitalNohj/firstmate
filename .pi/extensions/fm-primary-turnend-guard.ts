@@ -501,6 +501,22 @@ function runGuard(): Promise<{ code: number; stderr: string }> {
 // pi.on("tool_call", ...) can block (verified 2026-07-09 against pi 0.80.5:
 // returning {block: true} prevents the bash command from running). Each owner
 // script owns its own decision and is inert outside the real primary checkout.
+// The shell model, stated in the system prompt because models trained on a
+// persistent shell otherwise prefix a defensive `cd <home> &&` that the cd
+// guard then blocks. Pi runs every bash call in a new shell, so this corrects
+// a false belief rather than forbidding a command. The Pi Pocket drop-in states
+// the same sentence (pi-pocket/firstmate.ts SHELL_MODEL).
+const shellModel =
+  "Every bash call starts a new shell in this conversation's working directory; a cd never carries over to the next call.";
+
+function appendShellModel(event: unknown): void {
+  const options = (event as { systemPromptOptions?: { appendSystemPrompt?: unknown } }).systemPromptOptions;
+  if (!options) return;
+  const current = typeof options.appendSystemPrompt === "string" ? options.appendSystemPrompt : "";
+  if (current.includes(shellModel)) return;
+  options.appendSystemPrompt = current === "" ? shellModel : `${current}\n\n${shellModel}`;
+}
+
 function runChecker(script: string, command: string): Promise<{ code: number; stderr: string }> {
   return new Promise((resolveResult) => {
     const invocation = firstmateShellInvocation(
@@ -579,7 +595,8 @@ export default function (pi: ExtensionAPI) {
     );
   });
 
-  pi.on?.("before_agent_start", async (_event, ctx) => {
+  pi.on?.("before_agent_start", async (event, ctx) => {
+    appendShellModel(event);
     const generation = sessionstartGeneration;
     if (!generation) return;
     const message = await claimSessionstartMessage(generation, ctx);

@@ -910,6 +910,36 @@ JS
   pass "Pi reload shutdown releases its exit listener and stale startup generation"
 }
 
+test_pi_system_prompt_states_the_shell_model() {
+  local out status=0
+  command -v node >/dev/null 2>&1 || {
+    echo "skip: node not found for Pi shell-model prompt test"
+    return 0
+  }
+  out=$(EXT="$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" \
+    FM_HOME="$TMP_ROOT/pi-shell-model" FM_ROOT_OVERRIDE="$TMP_ROOT/pi-shell-model" \
+    node --input-type=module 2>&1 <<'JS'
+import { pathToFileURL } from "node:url";
+const handlers = new Map();
+const pi = { on(event, handler) { handlers.set(event, handler); }, sendMessage() {} };
+const extension = await import(`${pathToFileURL(process.env.EXT).href}?shell=${Date.now()}`);
+extension.default(pi);
+const sentence = "Every bash call starts a new shell in this conversation's working directory; a cd never carries over to the next call.";
+const ctx = { sessionManager: { getEntries: () => [], getSessionId: () => "shell-model" } };
+const empty = { prompt: "one", systemPromptOptions: { appendSystemPrompt: "" } };
+await handlers.get("before_agent_start")(empty, ctx);
+if (empty.systemPromptOptions.appendSystemPrompt !== sentence) throw new Error(`empty append: ${empty.systemPromptOptions.appendSystemPrompt}`);
+const kept = { prompt: "two", systemPromptOptions: { appendSystemPrompt: "CAPTAIN APPEND" } };
+await handlers.get("before_agent_start")(kept, ctx);
+await handlers.get("before_agent_start")(kept, ctx);
+if (kept.systemPromptOptions.appendSystemPrompt !== `CAPTAIN APPEND\n\n${sentence}`) throw new Error(`kept append: ${kept.systemPromptOptions.appendSystemPrompt}`);
+JS
+  ) || status=$?
+  expect_code 0 "$status" "Pi shell-model prompt"
+  [ -z "$out" ] || fail "Pi shell-model prompt printed output: $out"
+  pass "Pi states the per-call shell model once in the system prompt append, after any configured append"
+}
+
 test_pi_large_sessionstart_digest_is_delivered_loudly() {
   local fixture out status=0
   command -v node >/dev/null 2>&1 || {
@@ -1144,3 +1174,4 @@ test_pi_startup_classifies_cli_continuations
 test_pi_sessionstart_generation_prerequisite
 test_pi_reload_releases_sessionstart_exit_listener
 test_pi_large_sessionstart_digest_is_delivered_loudly
+test_pi_system_prompt_states_the_shell_model
