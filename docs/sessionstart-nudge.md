@@ -371,7 +371,7 @@ A later in-process `clear` re-emits only when this lock owner completed a full s
 
 ### Pi Pocket
 
-The transport is the Firstmate Pi Pocket drop-in, `pi-pocket/firstmate.ts`, copied into Pi Pocket's extensions folder by `bin/fm-pi-pocket-install.sh`.
+The transport is the Firstmate Pi Pocket drop-in, `pi-pocket/firstmate.ts`, copied with its browser module `pi-pocket/firstmate.js` into Pi Pocket's extensions folder by `bin/fm-pi-pocket-install.sh`.
 Pi Pocket has no session-open event, so the first open is a nudge: in a session whose folder is a Firstmate home the drop-in adds a prompt section that asks for `bin/fm-session-start.sh` when the session has no digest yet.
 That first run takes the session lock for the session through the bash marker, and the drop-in then starts its watcher task.
 After a Pi Pocket server restart the watcher task runs `bin/fm-sessionstart-run.sh --source startup` itself before it arms again, so the restarted server takes the lock back for the same session.

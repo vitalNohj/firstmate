@@ -1569,9 +1569,9 @@ families_for_changed_path() {
       # a real Pi TUI can answer, so the live guards are selected too.
       printf '%s\n' live-harness-optin
       ;;
-    pi-pocket/*|tests/fm-pi-pocket-dropin.ts|bin/fm-pi-pocket-install.sh)
-      # The Pi Pocket drop-in, its app tests, and its installer are proven only
-      # by the suite that loads the drop-in into a real Pi Pocket app.
+    pi-pocket/*|tests/fm-pi-pocket-dropin.ts|tests/fm-pi-pocket-browser.mjs|bin/fm-pi-pocket-install.sh)
+      # The Pi Pocket drop-in, its app tests, its browser-module ordering test,
+      # and its installer are proven by the suite that loads this drop-in.
       printf '%s\n' __script__:fm-pi-pocket-dropin.test.sh
       ;;
     .pi/extensions/lib/fm-operational-input.ts)

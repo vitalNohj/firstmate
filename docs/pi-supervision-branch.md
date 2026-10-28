@@ -694,6 +694,15 @@ Main acknowledges it with `fm_branch_processed`, which accepts only a sequence t
 Main reads the store on request with `fm_branch_outcomes`.
 Routine outcomes stay in the store and in the branch's own visible transcript; no note is posted into main, because the branch is a session the captain can open.
 
+### Calm
+
+Where Pi Pocket can present an extension's own inputs, the drop-in registers the main session's operational inputs and `/firstmate-calm` toggles the shared preference in `config/calm`.
+Calm on folds those inputs.
+Calm off shows them as ordinary messages.
+[`calm.md`](calm.md#pi-pocket) owns what stays in the model context.
+The supervision session's intro and wake prompts are not operational inputs and stay ordinary messages.
+A Pi Pocket without that presentation leaves wakes as ordinary messages, and `/firstmate-calm` still saves the preference.
+
 ## Verification
 
 ### Portable regressions
