@@ -2,13 +2,16 @@
 # tests/fm-pi-pocket-dropin.test.sh - the Firstmate Pi Pocket drop-in
 # (pi-pocket/firstmate.ts) inside a real Pi Pocket app on temporary data
 # directories, through tests/fm-pi-pocket-dropin.ts, plus the install script
-# bin/fm-pi-pocket-install.sh.
+# bin/fm-pi-pocket-install.sh and the browser module's ordering test
+# tests/fm-pi-pocket-browser.mjs.
 #
-# The app tests need a Pi Pocket checkout with its dependencies installed
+# The browser-module test always runs and needs Node on PATH. The app tests
+# need a Pi Pocket checkout with its dependencies installed
 # (FM_PI_POCKET_CHECKOUT, default ~/pi-pocket) and a Node.js that strips
 # TypeScript types (FM_PI_POCKET_NODE, else the first of the checkout's
-# service Node, ~/.local/opt/node/bin/node, and node on PATH that does). Without
-# them this script skips. It never touches a live Pi Pocket data directory.
+# service Node, ~/.local/opt/node/bin/node, and node on PATH that does).
+# Without that checkout or that Node, the app tests skip. It never touches
+# a live Pi Pocket data directory.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -24,6 +27,7 @@ CHECKOUT=${FM_PI_POCKET_CHECKOUT:-$HOME/pi-pocket}
 INSTALL="$ROOT/bin/fm-pi-pocket-install.sh"
 DROPIN="$ROOT/pi-pocket/firstmate.ts"
 CLIENT="$ROOT/pi-pocket/firstmate.js"
+BROWSER="$ROOT/tests/fm-pi-pocket-browser.mjs"
 
 typescript_node() {
   local candidate
@@ -36,6 +40,35 @@ typescript_node() {
   done
   return 1
 }
+
+# --- browser module ----------------------------------------------------------
+
+test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last() {
+  command -v node >/dev/null 2>&1 || fail "node is required to prove a stale Calm read cannot override the active conversation"
+  local out
+  out=$(node --test --test-concurrency=1 --test-reporter=tap "$BROWSER" 2>&1) || {
+    printf '%s\n' "$out" >&2
+    fail "the browser module applied a stale Calm read"
+  }
+  local needle
+  for needle in \
+    "ok 1 - an older calm read that resolves last does not change the active conversation" \
+    "ok 2 - an older calm read that resolves before the active one does not present it" \
+    "ok 3 - a calm toggle is kept when the earlier settings response resolves last" \
+    "# fail 0"
+  do
+    case "$out" in
+      *"$needle"*) ;;
+      *)
+        printf '%s\n' "$out" >&2
+        fail "the browser module test did not keep the active Calm state, missing: $needle"
+        ;;
+    esac
+  done
+  pass "browser module: a slower Calm read cannot override the active conversation or a newer toggle"
+}
+
+test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last
 
 if [ ! -f "$CHECKOUT/test/helpers.ts" ] || [ ! -d "$CHECKOUT/node_modules/@earendil-works/pi-durable" ]; then
   echo "skip: no Pi Pocket checkout with installed dependencies at $CHECKOUT"
