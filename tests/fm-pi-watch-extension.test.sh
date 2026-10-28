@@ -5371,6 +5371,128 @@ EOF
   pass "OpenCode turn-end guard survives an encoder that never reads stdin"
 }
 
+# A nested Pi whose ancestor is the Pi Pocket server that holds the lock must
+# not arm, and must not run the turn-end guard. The same ancestor with an
+# ordinary lock record still arms, so the stand-down is the Pi Pocket record.
+test_pi_extension_does_not_arm_under_a_pi_pocket_ancestor() {
+  local repo home plugin guard log guard_log child out status
+  repo="$TMP_ROOT/pi-pocket-ancestor-root"
+  home="$TMP_ROOT/pi-pocket-ancestor-home"
+  log="$TMP_ROOT/pi-pocket-ancestor-arm.log"
+  guard_log="$TMP_ROOT/pi-pocket-ancestor-guard.log"
+  child="$TMP_ROOT/pi-pocket-ancestor-child.mjs"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  cp "$ROOT/bin/fm-session-lock-lib.sh" "$ROOT/bin/fm-cursor-lib.sh" "$repo/bin/"
+  cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$repo/.pi/extensions/fm-primary-turnend-guard.ts"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  guard="$repo/.pi/extensions/fm-primary-turnend-guard.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+SH
+  cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'ran\n' >> "${FM_GUARD_LOG:?}"
+exit 2
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh" "$repo/bin/fm-turnend-guard.sh"
+  cat > "$child" <<'EOF'
+import { existsSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const armLog = process.env.FM_ARM_LOG;
+const guardLog = process.env.FM_GUARD_LOG;
+const pocket = process.env.POCKET_CASE === "pocket";
+const handlers = new Map();
+const pi = {
+  on(event, handler) { handlers.set(event, handler); },
+  registerCommand() {},
+  registerTool() {},
+  sendUserMessage: async () => {},
+  sendMessage() {},
+};
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
+if (!pocket) {
+  const started = Date.now();
+  while (!existsSync(armLog)) {
+    if (Date.now() - started > 8000) {
+      console.error("ordinary ancestor lock did not arm");
+      process.exit(1);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  process.exit(0);
+}
+const guardHandlers = new Map();
+let prompts = 0;
+const guardPi = {
+  on(event, handler) { guardHandlers.set(event, handler); },
+  sendUserMessage: async () => { prompts += 1; },
+  sendMessage() { prompts += 1; },
+};
+const guardMod = await import(pathToFileURL(process.env.GUARD_PLUGIN).href);
+guardMod.default(guardPi);
+await guardHandlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
+await guardHandlers.get("agent_settled")?.();
+const started = Date.now();
+while (Date.now() - started < 4000) {
+  if (existsSync(armLog) || existsSync(guardLog) || prompts > 0) {
+    console.error(`Pi Pocket ancestor was not passive: arm=${existsSync(armLog)} guard=${existsSync(guardLog)} prompts=${prompts}`);
+    process.exit(1);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+}
+EOF
+  out=$(PLUGIN="$plugin" GUARD_PLUGIN="$guard" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" \
+    FM_ARM_LOG="$log" FM_GUARD_LOG="$guard_log" FM_CHILD_SCRIPT="$child" \
+    node --input-type=module 2>&1 <<'EOF'
+import { spawn } from "node:child_process";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+
+const home = process.env.FM_HOME;
+const session = `${home}/state/.lock-session`;
+const armLog = process.env.FM_ARM_LOG;
+const guardLog = process.env.FM_GUARD_LOG;
+writeFileSync(`${home}/state/.lock`, `${process.pid}\n`);
+
+function run(caseName) {
+  return new Promise((resolve, reject) => {
+    rmSync(armLog, { force: true });
+    rmSync(guardLog, { force: true });
+    rmSync(`${home}/state/.pi-watch-extension-loaded`, { force: true });
+    rmSync(`${home}/state/.pi-turnend-extension-loaded`, { force: true });
+    const child = spawn(process.execPath, [process.env.FM_CHILD_SCRIPT], {
+      env: { ...process.env, POCKET_CASE: caseName },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${caseName} exited ${code}: ${output}`));
+    });
+  });
+}
+
+writeFileSync(session, "pi-pocket:conv-a\n");
+await run("pocket");
+if (existsSync(armLog)) throw new Error("a Pi Pocket ancestor armed the watcher");
+if (existsSync(guardLog)) throw new Error("a Pi Pocket ancestor ran the turn-end guard");
+writeFileSync(session, "ordinary-session\n");
+await run("ordinary");
+if (!existsSync(armLog)) throw new Error("an ordinary ancestor lock did not arm");
+EOF
+)
+  status=$?
+  [ "$status" -eq 0 ] || fail "Pi primary under a Pi Pocket ancestor must not arm: $out"
+  [ -z "$out" ] || fail "Pi Pocket ancestor stand-down printed output: $out"
+  pass "Pi primary under a Pi Pocket ancestor does not arm or run the turn-end guard"
+}
+
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop
@@ -5433,3 +5555,4 @@ test_opencode_actionable_close_rechecks_session_lock
 test_opencode_watch_arm_coordinates_with_turnend_guard
 test_opencode_healthy_arm_output_does_not_suppress_guard
 test_opencode_turnend_guard_survives_an_encoder_that_never_reads_stdin
+test_pi_extension_does_not_arm_under_a_pi_pocket_ancestor

@@ -54,7 +54,7 @@ import {
   calmTranscriptClassIsVisible,
   FIRSTMATE_CALM_PRESENTATION_EVENT,
 } from "./lib/fm-calm-visibility.ts";
-import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.ts";
+import { encodeFirstmateOperationalInput, piPocketHoldsLockSync } from "./lib/fm-operational-input.ts";
 
 type ArmResult = {
   ok: boolean;
@@ -266,6 +266,9 @@ function lockOwnership(): LockOwnership {
     return "missing";
   }
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "other";
+  // The Pi Pocket server pid is an ancestor of every process the session starts, including a nested Pi that
+  // auto-loaded this extension. That lock belongs to the Pi Pocket conversation, not to this process.
+  if (piPocketHoldsLockSync(state)) return "other";
   let pid = String(process.pid);
   for (let i = 0; i < 8; i += 1) {
     if (pid === lockPid) return "owned";

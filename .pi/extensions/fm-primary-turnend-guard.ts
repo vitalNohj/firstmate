@@ -8,6 +8,7 @@ import {
   classifyFirstmateCurrentOperationalText,
   encodeFirstmateOperationalInput,
   firstmateShellInvocation,
+  piPocketHoldsLockSync,
 } from "./lib/fm-operational-input.ts";
 
 let guardFollowupActive = false;
@@ -45,6 +46,8 @@ function lockOwnership(): LockOwnership {
     return "missing";
   }
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "other";
+  // Same stand-down as the watcher extension: a live Pi Pocket conversation's lock is not this process's.
+  if (piPocketHoldsLockSync(state)) return "other";
   let pid = String(process.pid);
   for (let i = 0; i < 8; i += 1) {
     if (pid === lockPid) return "owned";
@@ -582,6 +585,7 @@ export default function (pi: ExtensionAPI) {
   registerSessionstartExitListener();
 
   pi.on?.("session_start", (event, ctx) => {
+    if (piPocketHoldsLockSync(state)) return;
     const reason = String((event as { reason?: unknown }).reason ?? "");
     const source = reason === "startup"
       ? startupRebuildSource(ctx) ?? "startup"
@@ -643,6 +647,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", async () => {
+    if (piPocketHoldsLockSync(state)) return;
     if (guardFollowupActive) {
       guardFollowupActive = false;
       return;

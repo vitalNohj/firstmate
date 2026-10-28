@@ -90,6 +90,13 @@ const MIRROR_FRESH_ITEMS = 12;
 const LATCH_THRESHOLD = 2;
 const LATCH_BASE_MS = 5 * 60 * 1000;
 const LATCH_MAX_MS = 60 * 60 * 1000;
+/** Pi thinking levels, used when the host does not list them. The branch extension owns the same vocabulary. */
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+/**
+ * No listed model can be used. The notice names the fix: Pi Pocket's list for subagents and linked sessions.
+ */
+const MODEL_LIST_NOTICE =
+    "Firstmate could not start its supervision session, so wakes go to this session until it can: add a model to Pi Pocket's list for subagents and linked sessions.";
 // The Pi branch's processing request, word for word (.pi/extensions/fm-branch-supervision.ts), so main processes
 // a Pi Pocket branch's outcomes under the same contract.
 const PROCESSING_INSTRUCTION =
@@ -490,6 +497,93 @@ function createSupervision(host: Partial<Host>) {
         host.notice?.("warning", message, conversationId);
     };
 
+    /** One more failed start or turn. At the threshold the branch stays off until its cooling-off period ends. */
+    function bumpLatch(home: string): void {
+        const latch = latches.get(home) ?? { failures: 0, until: 0, cooldown: LATCH_BASE_MS };
+        latch.failures += 1;
+        if (latch.failures >= LATCH_THRESHOLD) {
+            latch.until = Date.now() + latch.cooldown;
+            latch.cooldown = Math.min(LATCH_MAX_MS, latch.cooldown * 2);
+        }
+        latches.set(home, latch);
+    }
+
+    function cooledOff(home: string): boolean {
+        const latch = latches.get(home);
+
+        return latch !== undefined && latch.failures >= LATCH_THRESHOLD && Date.now() < latch.until;
+    }
+
+    /** The home's config directory: FM_CONFIG_OVERRIDE for a test, otherwise the home's own config/. */
+    function configDir(home: string): string {
+        return process.env.FM_CONFIG_OVERRIDE || join(home, "config");
+    }
+
+    /** The first line of a pin file, or undefined when it is absent, empty, or unreadable. */
+    async function pinLine(home: string, name: string): Promise<string | undefined> {
+        const text = await readFile(join(configDir(home), name), "utf8").catch(() => "");
+        const line = (text.split("\n")[0] ?? "").trim();
+
+        return line === "" ? undefined : line;
+    }
+
+    /**
+     * The model and thinking level to pass to linkedSessions.start.
+     * `ok: false` means the owner's list has models and none of them can be used, so the start must not be attempted.
+     * An empty list, or a host that does not list models, is `ok` with no model: Pi Pocket then uses the main
+     * session's model, which is today's behavior when the owner has not restricted the list.
+     */
+    async function supervisionStart(home: string): Promise<{ ok: true; model?: string; thinking?: string } | { ok: false }> {
+        const allowed = typeof host.subagentModels === "function" ? host.subagentModels() : [];
+        const levels = host.thinkingLevels ?? THINKING_LEVELS;
+        const effort = await pinLine(home, "supervision-branch-effort");
+        const effortLevel = effort !== undefined && (levels as readonly string[]).includes(effort) ? effort : undefined;
+        // Omit an effort the chosen model does not support. Passing it makes Pi Pocket refuse the start, which
+        // latches the branch off over a level rather than over the model.
+        const thinkingFor = (model?: string): string | undefined => {
+            // No model means an empty allow-list: leave thinking unset too, so Pi Pocket keeps the main session's own
+            // level instead of refusing the start over an effort that session's model does not support.
+            if (effortLevel === undefined || model === undefined) return undefined;
+            if (typeof host.modelInfo !== "function") return effortLevel;
+            try {
+                const info = host.modelInfo(model);
+                if (info === undefined) return undefined;
+
+                return info.thinkingLevels.some((level) => level === effortLevel) ? effortLevel : undefined;
+            } catch {
+                return undefined;
+            }
+        };
+        const chosen = (model?: string) => {
+            const thinking = thinkingFor(model);
+
+            return { ok: true as const, ...(model === undefined ? {} : { model }), ...(thinking === undefined ? {} : { thinking }) };
+        };
+        if (allowed.length === 0) return chosen();
+        const stored = await pinLine(home, "supervision-branch-model");
+        const slash = stored?.indexOf("/") ?? -1;
+        const pin = stored !== undefined && slash > 0 && slash < stored.length - 1 ? stored : undefined;
+        const usable = async (spec: string): Promise<boolean> => {
+            if (typeof host.resolveModel !== "function") return false;
+            try {
+                const ref = host.resolveModel(spec);
+                if (typeof host.modelProblem !== "function") return true;
+
+                return (await host.modelProblem(ref)) === undefined;
+            } catch {
+                return false;
+            }
+        };
+        // The pin wins only when the owner listed it and Pi Pocket can use it. A pin that is absent, unlisted, or
+        // unusable falls through to the first listed model that resolves and has no model problem.
+        if (pin !== undefined && allowed.includes(pin) && (await usable(pin))) return chosen(pin);
+        for (const candidate of allowed) {
+            if (await usable(candidate)) return chosen(candidate);
+        }
+
+        return { ok: false };
+    }
+
     /** This home's branch for the main session, started once and reattached after a restart; undefined without one. */
     async function ensure(runtime: WatchRuntime, context: Context, home: string): Promise<ConversationId | undefined> {
         const main = runtime.conversationId;
@@ -497,9 +591,17 @@ function createSupervision(host: Partial<Host>) {
         if (record?.main === Number(main) && (await runtime.conversation(record.branch as unknown as ConversationId, context)) !== undefined) {
             return record.branch as unknown as ConversationId;
         }
+        // A refused start uses the same cooling-off as a turn that does not finish, so the next wake does not retry it.
+        if (cooledOff(home)) return undefined;
         const linked = host.linkedSessions;
         if (typeof linked?.start !== "function") {
             tell(main, "Firstmate's supervision session needs Pi Pocket's linked sessions, which this Pi Pocket does not offer, so every wake goes to this session.");
+            return undefined;
+        }
+        const choice = await supervisionStart(home);
+        if (!choice.ok) {
+            tell(main, MODEL_LIST_NOTICE);
+            bumpLatch(home);
             return undefined;
         }
         // A start that was under way when the server stopped is retried under the same key, so it is the same session.
@@ -507,13 +609,25 @@ function createSupervision(host: Partial<Host>) {
         const path = join(stateOf(home), BRANCH_RECORD);
         await writeJson(path, { main: Number(main), branch: 0, start, starting: true } satisfies BranchRecord);
         try {
-            const { session } = await linked.start(main, { title: BRANCH_TITLE, message: BRANCH_INTRO, cwd: home }, `firstmate-supervision-${hash(home)}-${String(start)}`);
+            const { session } = await linked.start(
+                main,
+                {
+                    title: BRANCH_TITLE,
+                    message: BRANCH_INTRO,
+                    cwd: home,
+                    ...(choice.model === undefined ? {} : { model: choice.model }),
+                    ...(choice.thinking === undefined ? {} : { thinking: choice.thinking }),
+                },
+                `firstmate-supervision-${hash(home)}-${String(start)}`,
+            );
             await writeJson(path, { main: Number(main), branch: Number(session), start } satisfies BranchRecord);
+            latches.delete(home);
 
             return session;
         } catch (error) {
             await rm(path, { force: true });
             tell(main, `Firstmate could not start its supervision session, so wakes go to this session until it can: ${(error as Error).message}`);
+            bumpLatch(home);
             return undefined;
         }
     }
@@ -555,13 +669,7 @@ function createSupervision(host: Partial<Host>) {
     }
 
     function failed(home: string, pending: Pending, why: string): Routed {
-        const latch = latches.get(home) ?? { failures: 0, until: 0, cooldown: LATCH_BASE_MS };
-        latch.failures += 1;
-        if (latch.failures >= LATCH_THRESHOLD) {
-            latch.until = Date.now() + latch.cooldown;
-            latch.cooldown = Math.min(LATCH_MAX_MS, latch.cooldown * 2);
-        }
-        latches.set(home, latch);
+        bumpLatch(home);
 
         return { handled: false, text: `${pending.text}\n\nThe supervision session did not handle this wake (${why}), so it is yours to handle.` };
     }
@@ -619,8 +727,7 @@ function createSupervision(host: Partial<Host>) {
             current = undefined;
         }
         if (current === undefined) {
-            const latch = latches.get(home);
-            if (latch !== undefined && latch.failures >= LATCH_THRESHOLD && Date.now() < latch.until) return toMain;
+            if (cooledOff(home)) return toMain;
             const branch = await ensure(runtime, context, home);
             if (branch === undefined || heldBack(main) !== undefined) return toMain;
             if (!(await activate(home))) return failed(home, pending, "its wake grant could not be activated");
@@ -1119,8 +1226,9 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision) {
             await fail(task, runtime, context, `${message}\nwatcher: FAILED - Pi Pocket drop-in could not restore watcher continuity after ${String(checkpoint.failures)} retries`);
             return;
         }
-        await runtime.sleep(runtime.now() + retryDelay(failures), context);
-        await runtime.commit(() => ({ status: "running", checkpoint: { ...checkpoint, failures, predecessor } }), context);
+        // The durable wait is sleepUntil: it stores this checkpoint and resumes the arm phase when the delay is up.
+        // A running commit here would replace that sleep and retry with no backoff.
+        await runtime.sleepUntil(runtime.now() + retryDelay(failures), { ...checkpoint, failures, predecessor }, context);
     }
 }
 
