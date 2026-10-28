@@ -1511,6 +1511,8 @@ pi_pocket_primary_check() {
     echo "PI_POCKET: no Firstmate Pi Pocket plugin at $installed - run bin/fm-pi-pocket-install.sh"
   elif [ -f "$source" ] && ! cmp -s "$source" "$installed"; then
     echo "PI_POCKET: the Firstmate Pi Pocket plugin at $installed differs from this checkout - run bin/fm-pi-pocket-install.sh"
+  elif [ -f "$FM_ROOT/pi-pocket/firstmate.js" ] && ! cmp -s "$FM_ROOT/pi-pocket/firstmate.js" "${PI_POCKET_DIR:-$HOME/.pi-pocket}/extensions/firstmate.js"; then
+    echo "PI_POCKET: the Firstmate Pi Pocket plugin at ${PI_POCKET_DIR:-$HOME/.pi-pocket}/extensions/firstmate.js differs from this checkout - run bin/fm-pi-pocket-install.sh"
   fi
   if [ "$BACKEND" = herdr ] && fm_backend_source herdr 2>/dev/null; then
     state=$(fm_backend_herdr_server_running_state "$(fm_backend_herdr_session)")

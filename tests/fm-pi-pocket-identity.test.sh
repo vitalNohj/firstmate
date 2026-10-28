@@ -248,6 +248,9 @@ test_bootstrap_reports_a_pi_pocket_primary() {
   case "$CALL_OUT" in *"is not running"*) fail "a running herdr must not be reported stopped: $CALL_OUT" ;; esac
   cp "$ROOT/pi-pocket/firstmate.ts" "$data/extensions/firstmate.ts"
   call "$fix" conv-a self "$(check_cmd)"
+  assert_contains "$CALL_OUT" "differs from this checkout" "a drop-in without its browser module is not current"
+  cp "$ROOT/pi-pocket/firstmate.js" "$data/extensions/firstmate.js"
+  call "$fix" conv-a self "$(check_cmd)"
   case "$CALL_OUT" in *PI_POCKET:*) fail "a current plugin and a running herdr must raise nothing: $CALL_OUT" ;; esac
   call "$fix" '' self "$(check_cmd)"
   [ -z "$CALL_OUT" ] || fail "bootstrap must stay silent for a primary that is not Pi Pocket, got: $CALL_OUT"

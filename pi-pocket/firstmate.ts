@@ -7,10 +7,13 @@
  * that takes the routine wakes it may handle and records their outcomes in the durable store, which reach the main
  * session as processing requests (docs/pi-supervision-branch.md "Pi Pocket"). Every other session is untouched.
  * Install it with Firstmate's bin/fm-pi-pocket-install.sh, then turn it on in Menu → Extensions.
+ * Where Pi Pocket can present an extension's own inputs, /calm folds this session's operational inputs; the model still
+ * reads each one in full, and the supervision session's own prompts stay ordinary messages.
  */
 import { spawn } from "node:child_process";
-import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
     AgentDoc,
@@ -47,6 +50,9 @@ const DIGEST_TRUNCATED =
 const MANUAL_START = "Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.";
 /** The entry a fresh conversation's session-start digest is placed as, ahead of the model's first answer. */
 const START_KIND = "x.firstmate.session-start";
+/** Main-conversation submits, when Pi Pocket can present an extension's own inputs. Stored kinds are forever. */
+const OPERATIONAL_KIND = "x.firstmate.operational";
+const PRESENTATION_LABEL = "Firstmate";
 /** The shell model, stated because models trained on a persistent shell otherwise prefix a defensive cd. */
 const SHELL_MODEL = "Every bash call starts a new shell in this conversation's working directory; a cd never carries over to the next call.";
 const GUARD_HEADER =
@@ -267,6 +273,59 @@ async function sessionStart(home: string, conversationId: ConversationId, source
     if (digest.length > DIGEST_LIMIT) digest = `${digest.slice(0, DIGEST_LIMIT)}${DIGEST_TRUNCATED}`;
 
     return digest.startsWith(OPERATIONAL_PREFIX) ? digest : encode(home, "session-start", digest);
+}
+
+/**
+ * The submit entry for a main-conversation operational input. Absent when this Pi Pocket cannot present one: passing
+ * `entry` there stores a kind the transcript drops, which would hide the wake.
+ */
+function mainEntry(presented: boolean, summary: string): { entry?: { kind: string; data: { summary: string } } } {
+    if (!presented) return {};
+
+    return { entry: { kind: OPERATIONAL_KIND, data: { summary } } };
+}
+
+function pendingSummary(pending: Pending): string {
+    if (pending.kind === "digest") return "session-start";
+    if (pending.kind === "outcomes") return "branch-outcome";
+
+    return "watcher";
+}
+
+/** The chip's summary for a watcher failure: the failure line's first words, not the envelope. */
+function failureSummary(failure: string): string {
+    const line = failure.split("\n")[0]?.replace(/\s+/g, " ").trim() ?? "";
+
+    return line === "" ? "watcher" : line;
+}
+
+/** `config/calm`, or `FM_CONFIG_OVERRIDE` when a test points the config directory elsewhere. */
+function calmPath(home: string): string {
+    return join(process.env.FM_CONFIG_OVERRIDE || join(home, "config"), "calm");
+}
+
+/** `on` and the legacy `max` are on. Anything else, including a missing file, is off. */
+async function calmOn(home: string): Promise<boolean> {
+    try {
+        const stored = (await readFile(calmPath(home), "utf8")).trim();
+
+        return stored === "on" || stored === "max";
+    } catch {
+        return false;
+    }
+}
+
+/** The same temp-file rename and mode the Pi Calm extension uses, so a failed write leaves the file as it was. */
+async function writeCalm(home: string, active: boolean): Promise<void> {
+    const path = calmPath(home);
+    await mkdir(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+        await writeFile(temporary, active ? "on\n" : "off\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+        await rename(temporary, path);
+    } finally {
+        await rm(temporary, { force: true });
+    }
 }
 
 /** A PreToolUse seatbelt's deny reason: the Claude-shaped JSON's systemMessage, else its stderr. */
@@ -998,7 +1057,7 @@ function hash(text: string): string {
     return value.toString(16).padStart(8, "0");
 }
 
-function createWatchTask(host: Partial<Host>, supervision: Supervision) {
+function createWatchTask(host: Partial<Host>, supervision: Supervision, presented: boolean) {
     const heldBack = (id: ConversationId) =>
         typeof host.heldBack === "function" ? host.heldBack(id) : undefined;
     const whenLimitsChange = (listener: () => void) =>
@@ -1009,7 +1068,7 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision) {
      * Deliver `content` as one follow-up keyed on `requestId`: a re-driven delivery finds the submission it already
      * made. While the session is past a spend limit it waits rather than start a turn nobody may pay for.
      */
-    const deliver = async (runtime: WatchRuntime, context: Context, content: string, requestId: string, stop?: AbortSignal) => {
+    const deliver = async (runtime: WatchRuntime, context: Context, content: string, requestId: string, summary: string, stop?: AbortSignal) => {
         const signal = signalsOf(runtime.signal, context.abortSignal, stop);
         let told = false;
         for (;;) {
@@ -1032,7 +1091,7 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision) {
         signal.throwIfAborted();
         const conversation = await runtime.conversation(runtime.conversationId, context);
         if (conversation === undefined) throw new Error("the Firstmate session is gone");
-        await conversation.submit({ type: "input", content, whenBusy: "followUp", requestId }, context);
+        await conversation.submit({ type: "input", content, whenBusy: "followUp", requestId, ...mainEntry(presented, summary) }, context);
     };
 
     const contentOf = async (home: string, pending: Pending) =>
@@ -1045,10 +1104,10 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision) {
         // Every wake goes to main from here on: no branch turn may keep rows from main's drain.
         await supervision.reconcile(home, []).catch(() => {});
         for (const pending of checkpoint.pending ?? []) {
-            await deliver(runtime, context, await contentOf(home, pending), pending.requestId);
+            await deliver(runtime, context, await contentOf(home, pending), pending.requestId, pendingSummary(pending));
         }
         const requestId = requestFor(runtime.conversationId, `fm-watch-failed-${String(runtime.taskId)}-${checkpoint.seq}`);
-        await deliver(runtime, context, await encode(home, "watcher", wakeText(failure)), requestId);
+        await deliver(runtime, context, await encode(home, "watcher", wakeText(failure)), requestId, failureSummary(failure));
         await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
     };
 
@@ -1142,7 +1201,7 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision) {
                             if (routed.handled) return { delivered: first.requestId, ...(routed.follow === undefined ? {} : { then: routed.follow }) };
                             return { delivered: first.requestId, then: { ...first, text: routed.text, main: true } };
                         }
-                        await deliver(runtime, context, await contentOf(home, first), first.requestId, halt.signal);
+                        await deliver(runtime, context, await contentOf(home, first), first.requestId, pendingSummary(first), halt.signal);
 
                         return { delivered: first.requestId };
                     };
@@ -1286,9 +1345,119 @@ async function branchOf(home: string | undefined, conversationId: ConversationId
     return branch ? (record.main as unknown as ConversationId) : undefined;
 }
 
-export default function createFirstmate(host: Partial<Host> = {}) {
+/** The slice of Pi Pocket's `web` this drop-in uses. Older apps omit `presentEntry`. */
+type PocketSurface = {
+    presentEntry?: (spec: { kind: string; label: string; userPrefix?: string }) => void;
+    client?: (entry: string, options?: { access?: string }) => void;
+    command?: (
+        name: string,
+        command: {
+            description: string;
+            scope: "conversation";
+            handler: (
+                args: string,
+                context: { cwd: string; conversationId: ConversationId },
+            ) => Promise<{ type: "toast"; level: "info" | "warning"; message: string }>;
+        },
+    ) => void;
+    route?: (
+        method: "GET",
+        path: string,
+        handle: (request: { query: URLSearchParams; sessions?: () => readonly { id: number; cwd: string }[] }) => unknown,
+        options?: { access?: string },
+    ) => void;
+    send?: (event: string, data?: unknown) => void;
+};
+
+/**
+ * Register the two stored kinds and the operational prefix. False when this Pi Pocket has no presentation API, or the
+ * operational kind could not be registered: submits then stay ordinary messages so a wake is never hidden.
+ */
+function registerPresentations(web: PocketSurface | undefined): boolean {
+    if (typeof web?.presentEntry !== "function") return false;
+    try {
+        web.presentEntry({ kind: START_KIND, label: PRESENTATION_LABEL });
+    } catch {
+        // The fresh digest keeps today's custom kind. Operational submits still try below.
+    }
+    try {
+        web.presentEntry({ kind: OPERATIONAL_KIND, label: PRESENTATION_LABEL, userPrefix: OPERATIONAL_PREFIX });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** `/calm` and the reload route. A failure here leaves the command unregistered and does not stop wake delivery. */
+function registerCalm(web: PocketSurface | undefined): void {
+    if (typeof web?.command !== "function") return;
+    const send = web.send?.bind(web);
+    try {
+        // Pi Pocket refuses a command name with no hyphen, so this cannot be /calm. It toggles the same file.
+        web.command("firstmate-calm", {
+            description: "Toggle Firstmate's shared Calm preference for this home.",
+            scope: "conversation",
+            handler: async (_args, context) => {
+                const home = await homeOf(context.cwd);
+                if (home === undefined) {
+                    return { type: "toast", level: "info", message: "Calm is unchanged: this session is not a Firstmate home" };
+                }
+                const next = !(await calmOn(home));
+                try {
+                    await writeCalm(home, next);
+                } catch {
+                    return { type: "toast", level: "warning", message: "Calm is unchanged: the preference could not be saved" };
+                }
+                send?.("calm", { calm: next, conversation: String(context.conversationId) });
+
+                return { type: "toast", level: "info", message: next ? "Calm on" : "Calm off" };
+            },
+        });
+    } catch {
+        return;
+    }
+    const read = async (request: { query: URLSearchParams; sessions?: () => readonly { id: number; cwd: string }[] }) => {
+        const asked = request.query.get("conversation");
+        if (asked === null || typeof request.sessions !== "function") return { calm: false };
+        const cwd = request.sessions().find((session) => String(session.id) === asked)?.cwd;
+        if (cwd === undefined) return { calm: false };
+        const home = await homeOf(cwd);
+        if (home === undefined) return { calm: false };
+
+        return { calm: await calmOn(home) };
+    };
+    if (typeof web.route !== "function") return;
+    try {
+        web.route("GET", "calm", read, { access: "view" });
+    } catch {
+        try {
+            web.route("GET", "calm", read);
+        } catch {
+            // The command still toggles the file. A reloaded tab keeps the app's own presentation default.
+        }
+    }
+}
+
+/** The browser module applies the home preference. A missing file must not keep the drop-in from loading. */
+function registerClient(web: PocketSurface | undefined): void {
+    if (typeof web?.client !== "function") return;
+    try {
+        web.client("firstmate.js", { access: "view" });
+    } catch {
+        try {
+            web.client("firstmate.js");
+        } catch {
+            // Wakes still deliver. Presentation stays the app's default until the file is installed beside the drop-in.
+        }
+    }
+}
+
+export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSurface) {
+    const presented = registerPresentations(web);
+    registerCalm(web);
+    registerClient(web);
     const supervision = createSupervision(host);
-    const watch = createWatchTask(host, supervision);
+    const watch = createWatchTask(host, supervision, presented);
 
     const marked = createBashTool({
         prepare: (execution, api) => {
@@ -1395,7 +1564,10 @@ export default function createFirstmate(host: Partial<Host> = {}) {
             const next = await supervision.present(home, api.conversationId);
             if (next !== undefined) {
                 const conversation = await api.conversation(api.conversationId, context);
-                await conversation?.submit({ type: "input", content: next.text, whenBusy: "followUp", requestId: next.requestId }, context);
+                await conversation?.submit(
+                    { type: "input", content: next.text, whenBusy: "followUp", requestId: next.requestId, ...mainEntry(presented, "branch-outcome") },
+                    context,
+                );
             }
 
             return say(`processed through seq ${String(through)}; ${next === undefined ? "no captain outcome remains unprocessed" : "newer captain outcomes remain unprocessed and follow as the next processing request"}`);
@@ -1446,7 +1618,7 @@ export default function createFirstmate(host: Partial<Host> = {}) {
         await runtime.commit(async (tx) => {
             const recent = await tx.scanEntries({ conversationId: api.conversationId }, 50);
             if (!recent.items.some((entry) => entry.kind === START_KIND)) {
-                await tx.appendEntry(api.conversationId, { kind: START_KIND, model: [message] });
+                await tx.appendEntry(api.conversationId, { kind: START_KIND, model: [message], data: { summary: "session-start" } });
             }
             return undefined;
         }, context);
@@ -1551,7 +1723,13 @@ export default function createFirstmate(host: Partial<Host> = {}) {
                     const digest = (await api.memo<string>(key, context)) ?? (await api.memo<string>(key, await sessionStart(home, api.conversationId, "compact"), context));
                     const conversation = await runtime.conversation(api.conversationId, context);
                     await conversation?.submit(
-                        { type: "input", content: digest, whenBusy: "steer", requestId: `fm-reemit-${compaction}` },
+                        {
+                            type: "input",
+                            content: digest,
+                            whenBusy: "steer",
+                            requestId: `fm-reemit-${compaction}`,
+                            ...mainEntry(presented, "session-start"),
+                        },
                         context,
                     );
 

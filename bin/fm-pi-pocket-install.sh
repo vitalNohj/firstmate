@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install the Firstmate Pi Pocket drop-in (pi-pocket/firstmate.ts) into a Pi
-# Pocket data directory's extensions folder.
+# Install the Firstmate Pi Pocket drop-in (pi-pocket/firstmate.ts and
+# pi-pocket/firstmate.js) into a Pi Pocket data directory's extensions folder.
 #
 # The drop-in is COPIED, never symlinked: Node resolves a module's imports from
 # its real path, and only the extensions folder links Pi Pocket's own packages.
@@ -44,10 +44,12 @@ esac
 }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE="$SCRIPT_DIR/../pi-pocket/firstmate.ts"
+CLIENT="$SCRIPT_DIR/../pi-pocket/firstmate.js"
 CHECKOUT=${FM_PI_POCKET_CHECKOUT:-$HOME/pi-pocket}
 DATA_DIR=${PI_POCKET_DIR:-$HOME/.pi-pocket}
 TARGET_DIR="$DATA_DIR/extensions"
 TARGET="$TARGET_DIR/firstmate.ts"
+CLIENT_TARGET="$TARGET_DIR/firstmate.js"
 
 if [ "${IF_INSTALLED:-0}" = 1 ] && [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
   echo "pi-pocket: skipped - no installed drop-in at $TARGET"
@@ -62,7 +64,17 @@ if [ ! -f "$SOURCE" ]; then
   exit 1
 fi
 
-if [ -f "$TARGET" ] && [ ! -L "$TARGET" ] && cmp -s "$SOURCE" "$TARGET"; then
+# Same bytes, and not a symlink. A missing browser module counts as current only
+# when this checkout has none to install.
+same_file() {
+  [ -f "$2" ] && [ ! -L "$2" ] && cmp -s "$1" "$2"
+}
+
+client_current=0
+if [ ! -f "$CLIENT" ] || same_file "$CLIENT" "$CLIENT_TARGET"; then
+  client_current=1
+fi
+if same_file "$SOURCE" "$TARGET" && [ "$client_current" -eq 1 ]; then
   echo "pi-pocket: up to date - $TARGET"
   exit 0
 fi
@@ -73,14 +85,25 @@ mkdir -p "$TARGET_DIR" || {
   echo "error: cannot create $TARGET_DIR" >&2
   exit 1
 }
-tmp=$(mktemp "$TARGET_DIR/.firstmate.ts.XXXXXX") || {
-  echo "error: cannot write in $TARGET_DIR" >&2
-  exit 1
+
+install_file() {
+  local source="$1" target="$2" tmp
+  tmp=$(mktemp "$TARGET_DIR/.firstmate.XXXXXX") || {
+    echo "error: cannot write in $TARGET_DIR" >&2
+    exit 1
+  }
+  if ! cp "$source" "$tmp" || ! chmod 0644 "$tmp" || ! mv -f "$tmp" "$target"; then
+    rm -f "$tmp"
+    echo "error: cannot install $target" >&2
+    exit 1
+  fi
 }
-if ! cp "$SOURCE" "$tmp" || ! chmod 0644 "$tmp" || ! mv -f "$tmp" "$TARGET"; then
-  rm -f "$tmp"
-  echo "error: cannot install $TARGET" >&2
-  exit 1
+
+if ! same_file "$SOURCE" "$TARGET"; then
+  install_file "$SOURCE" "$TARGET"
+fi
+if [ -f "$CLIENT" ] && ! same_file "$CLIENT" "$CLIENT_TARGET"; then
+  install_file "$CLIENT" "$CLIENT_TARGET"
 fi
 
 if [ "$existed" -eq 1 ]; then

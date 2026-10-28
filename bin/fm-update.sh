@@ -106,7 +106,7 @@ if [ "$FF_STATUS" = "updated" ]; then
 fi
 
 # --- Firstmate Pi Pocket plugin -------------------------------------------
-# Pi Pocket loads a COPY of pi-pocket/firstmate.ts from its own data directory,
+# Pi Pocket loads a COPY of pi-pocket/firstmate.ts and pi-pocket/firstmate.js from its own data directory,
 # so an update would otherwise leave that copy behind. Refresh it from the code
 # just checked out, whatever this pass did to the repo, but only where it is
 # already installed (bin/fm-pi-pocket-install.sh --if-installed); every other

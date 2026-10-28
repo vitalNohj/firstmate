@@ -23,6 +23,7 @@ export NODE_NO_WARNINGS=1
 CHECKOUT=${FM_PI_POCKET_CHECKOUT:-$HOME/pi-pocket}
 INSTALL="$ROOT/bin/fm-pi-pocket-install.sh"
 DROPIN="$ROOT/pi-pocket/firstmate.ts"
+CLIENT="$ROOT/pi-pocket/firstmate.js"
 
 typescript_node() {
   local candidate
@@ -61,7 +62,10 @@ test_install_copies_idempotently_and_skips_without_pi_pocket() {
     || fail "install must succeed, got: $out"
   [ -f "$dir/data/extensions/firstmate.ts" ] && [ ! -L "$dir/data/extensions/firstmate.ts" ] \
     || fail "install must copy the drop-in as a regular file"
+  [ -f "$dir/data/extensions/firstmate.js" ] && [ ! -L "$dir/data/extensions/firstmate.js" ] \
+    || fail "install must copy the browser module as a regular file"
   cmp -s "$DROPIN" "$dir/data/extensions/firstmate.ts" || fail "the installed copy must equal the drop-in"
+  cmp -s "$CLIENT" "$dir/data/extensions/firstmate.js" || fail "the installed browser module must equal the drop-in"
   case "$out" in *"installed"*) ;; *) fail "a first install must say it installed, got: $out" ;; esac
 
   out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" 2>&1) \
@@ -72,6 +76,10 @@ test_install_copies_idempotently_and_skips_without_pi_pocket() {
   out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" 2>&1) \
     || fail "an update install must succeed, got: $out"
   cmp -s "$DROPIN" "$dir/data/extensions/firstmate.ts" || fail "an update install must refresh a stale copy"
+  printf 'stale\n' > "$dir/data/extensions/firstmate.js"
+  out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" 2>&1) \
+    || fail "an update of a stale browser module must succeed, got: $out"
+  cmp -s "$CLIENT" "$dir/data/extensions/firstmate.js" || fail "an update install must refresh a stale browser module"
   case "$out" in *"restart Pi Pocket"*) ;; *) fail "an update install must say a running server needs a restart, got: $out" ;; esac
   pass "install: copies the drop-in, is idempotent, refreshes a stale copy, and skips without a Pi Pocket checkout"
 }
@@ -89,6 +97,7 @@ test_install_if_installed_refreshes_only_an_existing_copy() {
   out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" --if-installed 2>&1) \
     || fail "--if-installed with a stale copy must succeed, got: $out"
   cmp -s "$DROPIN" "$dir/data/extensions/firstmate.ts" || fail "--if-installed must refresh a stale copy"
+  cmp -s "$CLIENT" "$dir/data/extensions/firstmate.js" || fail "--if-installed must install the browser module beside an existing drop-in"
   out=$(PI_POCKET_DIR="$dir/data" FM_PI_POCKET_CHECKOUT="$dir/checkout" "$INSTALL" --if-installed 2>&1) \
     || fail "a repeated --if-installed must succeed, got: $out"
   case "$out" in *"up to date"*) ;; *) fail "a repeated --if-installed must report it up to date, got: $out" ;; esac

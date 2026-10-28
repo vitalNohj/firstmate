@@ -114,6 +114,18 @@ These rows remain visible:
 
 These are supported-API boundaries rather than hidden-content failures.
 
+## Pi Pocket
+
+The Firstmate Pi Pocket drop-in toggles this same preference with `/firstmate-calm`.
+Pi Pocket requires a hyphen in an extension command name, so that command is not `/calm`.
+[`configuration.md`](configuration.md#calm-preference-configcalm) owns the file.
+Where that Pi Pocket can present an extension's own inputs, Calm on shows each Firstmate operational input in the main session as one folded line, and Calm off shows it as an ordinary message.
+The card's own Show, Fold, and Hide control stays available.
+The model still receives the full operational text.
+The supervision session's own prompts stay ordinary messages.
+On a Pi Pocket that cannot present those inputs, `/firstmate-calm` still saves the preference and wakes stay ordinary messages.
+A reloaded tab reads the same file, so it agrees with the terminal and with this drop-in.
+
 ## Pi compatibility
 
 ### Pi versions and missing API seams

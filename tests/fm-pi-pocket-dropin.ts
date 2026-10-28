@@ -7,6 +7,7 @@
 // Run with `--child <dataDir> <home>`, the file is instead the server that experiment (b) kills mid-delivery.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import {
     chmodSync,
     copyFileSync,
@@ -16,16 +17,19 @@ import {
     mkdtempSync,
     readFileSync,
     renameSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, mock, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 
 const checkout = process.env.FM_PI_POCKET_CHECKOUT!;
 const bin = process.env.FM_PI_POCKET_BIN!;
 const dropIn = process.env.FM_PI_POCKET_DROPIN!;
+/** This checkout can present an extension's own inputs. The running app the captain uses cannot, yet. */
+const presents = existsSync(join(checkout, "src/server/entry-presentation.ts"));
 const helpers = await import(join(checkout, "test", "helpers.ts"));
 const { context, fakeTab, lastText, newSession, openApp, owner, recordCost, root, say, scriptedModel, until, work } = helpers;
 
@@ -130,6 +134,46 @@ async function userTexts(app: App, id: unknown): Promise<string[]> {
 }
 
 const count = (texts: string[], needle: string) => texts.filter((text) => text.includes(needle)).length;
+
+type StoredEntry = { kind: string; summary?: string; text: string };
+
+function entryText(model: { role: string; content: unknown }[] | undefined): string {
+    const message = model?.find((item) => item.role === "user");
+
+    return message === undefined ? "" : lastText({ messages: [message] }).text;
+}
+
+function entrySummary(data: unknown): string | undefined {
+    if (typeof data !== "object" || data === null || !("summary" in data)) return undefined;
+    const summary = (data as { summary?: unknown }).summary;
+
+    return typeof summary === "string" ? summary : undefined;
+}
+
+/** Stored transcript entries, not only the text the model sees. */
+async function storedEntries(app: App, id: unknown): Promise<StoredEntry[]> {
+    const page = await app.harness.commit(
+        async (tx: {
+            scanEntries: (query: object, limit: number) => Promise<{ items: { kind: string; data?: unknown; model?: { role: string; content: unknown }[] }[] }>;
+        }) => tx.scanEntries({ conversationId: id }, 200),
+        context,
+    );
+
+    return page.items.map((entry) => ({ kind: entry.kind, summary: entrySummary(entry.data), text: entryText(entry.model) }));
+}
+
+const entryFor = (entries: StoredEntry[], needle: string) => entries.find((entry) => entry.text.includes(needle));
+
+/** A main-conversation submit is a presented operational entry only when this Pi Pocket can show one. */
+function assertOperational(entry: StoredEntry | undefined, summary: string, what: string): void {
+    assert.ok(entry !== undefined, what);
+    if (presents) {
+        assert.equal(entry.kind, "x.firstmate.operational", what);
+        assert.equal(entry.summary, summary, what);
+    } else {
+        assert.equal(entry.kind, "pi.user", `${what} stays an ordinary message without the presentation API`);
+    }
+}
 
 /** A queued wake row for a task the branch may take: its metadata names a project, as a dispatched task's does. */
 function queueTaskWake(home: string, task: string): string {
@@ -236,6 +280,7 @@ const route = (request: unknown) => {
 async function open(dataDir: string, enable: boolean): Promise<App> {
     mkdirSync(join(dataDir, "extensions"), { recursive: true });
     copyFileSync(dropIn, join(dataDir, "extensions", "firstmate.ts"));
+    copyFileSync(join(dirname(dropIn), "firstmate.js"), join(dataDir, "extensions", "firstmate.js"));
     const app = await openApp(scriptedModel(route), dataDir);
     if (enable) await app.setExtensionEnabled(owner(app), "firstmate.ts", true);
 
@@ -340,6 +385,7 @@ test("a session start binds the lock to the session, starts the watcher, and del
     const wake = (await userTexts(app, id)).find((text) => text.includes(WAKE))!;
     assert.match(wake, /^\u2063FIRSTMATE_OP: v1 watcher: /);
     assert.match(wake, /Run bin\/fm-wake-drain\.sh first/);
+    assertOperational(entryFor(await storedEntries(app, id), `${WAKE}signal: first wake`), "watcher", "the watcher wake");
 
     fire(fmHome, "check: second wake");
     await until(async () => count(await userTexts(app, id), `${WAKE}check: second wake`) === 1, "the second wake", LONG);
@@ -368,6 +414,10 @@ test("a fresh conversation's first request runs the session start and gives the 
     assert.ok(digest !== undefined, texts.join("\n---\n"));
     assert.match(digest, /^\u2063FIRSTMATE_OP: v1 session-start: /);
     assert.ok(digest.includes(big) && digest.includes("DIGEST END"), "the whole digest, not its tail");
+    const digestEntry = entryFor(await storedEntries(app, id), "STUB DIGEST startup");
+    assert.equal(digestEntry?.kind, "x.firstmate.session-start");
+    assert.equal(digestEntry?.summary, "session-start");
+    assert.equal(entryFor(await storedEntries(app, id), "hello")?.kind, "pi.user", "a person's own message stays theirs");
     // The session start that bound the lock also started the watcher.
     await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
 
@@ -457,6 +507,13 @@ test("an arm that keeps reporting ready and then failing still exhausts the retr
     const texts = await userTexts(app, id);
     assert.equal(count(texts, `${WAKE}signal: last good wake`), 1);
     assert.equal(count(texts, "could not restore watcher continuity after 5 retries"), 1, texts.join("\n---\n"));
+    const failure = entryFor(await storedEntries(app, id), "could not restore watcher continuity");
+    if (presents) {
+        assert.equal(failure?.kind, "x.firstmate.operational");
+        assert.equal(failure?.summary, "watcher: FAILED - stub arm broke after reporting ready");
+    } else {
+        assert.equal(failure?.kind, "pi.user");
+    }
     // The arm that read the good wake, then the first failing one and its five retries.
     assert.equal(lines(join(fmHome, "stub", "arms.log")).length, 7);
 });
@@ -471,6 +528,7 @@ test("the turn-end guard continues a turn that would end blind exactly once", as
     const texts = await userTexts(app, id);
     assert.equal(count(texts, "TURN WOULD END BLIND"), 1, texts.join("\n---\n"));
     assert.match(texts.find((text) => text.includes("STUB GUARD"))!, /^\u2063FIRSTMATE_OP: v1 turn-end-guard: /);
+    assert.equal(entryFor(await storedEntries(app, id), "STUB GUARD")?.kind, "pi.user", "the turn-end guard is presented by its prefix, not a new stored kind");
 });
 
 test("experiment (b): a server killed while a wake waits redelivers the digest and the wake exactly once after restart", async () => {
@@ -501,6 +559,13 @@ test("experiment (b): a server killed while a wake waits redelivers the digest a
     const texts = await userTexts(app, id);
     assert.equal(count(texts, "STUB DIGEST startup"), 2, "the first request's digest and one restart digest");
     assert.equal(count(texts, WAKE), 1, "one wake");
+    const digests = (await storedEntries(app, id)).filter((entry) => entry.text.includes("STUB DIGEST startup"));
+    assert.ok(digests.some((entry) => entry.kind === "x.firstmate.session-start" && entry.summary === "session-start"));
+    assertOperational(
+        digests.find((entry) => entry.kind !== "x.firstmate.session-start"),
+        "session-start",
+        "the restart digest",
+    );
     assert.equal(readFileSync(join(fmHome, "state", ".lock"), "utf8").split("\n")[0], String(process.pid));
 
     // A duplicate submission of the wake's request id, through the durable handle, is the same submission.
@@ -556,6 +621,8 @@ test("the supervision session starts once as a visible linked session, takes a t
     const mainTexts = await userTexts(app, id);
     assert.equal(count(mainTexts, `${WAKE}signal: task-report.status`), 0, "the handled wake never reached main");
     assert.ok(mainTexts.find((text) => text.includes(PROCESSING))!.includes(`task-report: task-report needs the captain's merge call`));
+    assertOperational(entryFor(await storedEntries(app, id), PROCESSING), "branch-outcome", "the processing request");
+    assert.equal(entryFor(await storedEntries(app, branch), BRANCH_WAKE)?.kind, "pi.user", "the supervision session's wake stays an ordinary message");
     await until(async () => (await toolSaid(app, id)).some((text) => text.startsWith(`processed through seq ${String(row!.seq)}`)), "the acknowledgement's result", LONG);
     // Main reads the store through fm_branch_outcomes, and the branch's grant and turn are gone.
     await say(app, id, "what happened in the fleet");
@@ -749,4 +816,77 @@ test("a refused supervision start cools off instead of being retried on every wa
     fire(fmHome, "signal: cooled off");
     await until(async () => count(await userTexts(app, id), `${WAKE}signal: cooled off`) === 1, "the cooled-off wake on main", LONG);
     assert.equal(starts, 2);
+});
+
+test("a compaction re-emits the session start for the model", { timeout: 60_000 }, async () => {
+    const { app, id, fmHome } = await started();
+    app.settings.getCompactionSettings = () => ({ enabled: true, reserveTokens: 16384, keepRecentTokens: 0 }) as never;
+    await say(app, id, "hello");
+    const conversation = (await app.harness.conversation(id, context))!;
+    assert.equal(typeof conversation.compact, "function");
+    const task = await conversation.compact(undefined, context);
+    await app.harness.waitForTask(task, context);
+    await say(app, id, "after the compaction");
+    await until(() => lines(join(fmHome, "stub", "starts.log")).includes("compact"), "the compact re-emit", LONG);
+    const digest = entryFor(await storedEntries(app, id), "STUB DIGEST compact");
+    assertOperational(digest, "session-start", "the compaction digest");
+    assert.match(digest!.text, /^\u2063FIRSTMATE_OP: v1 session-start: /);
+});
+
+test("/calm toggles the shared preference file and a reloaded tab can read it", { timeout: 60_000 }, async () => {
+    const { app, id, fmHome } = await started();
+    const elsewhere = await newSession(app, work);
+    const path = join(fmHome, "config", "calm");
+    const commandId = app.webs.commands().find((command: { name?: string }) => command.name === "firstmate-calm")?.id;
+    assert.equal(typeof commandId, "string");
+    const toggle = async (session: unknown, args = "") =>
+        app.extensionCommands.run(session, owner(app), { commandId, args, requestId: crypto.randomUUID() }) as Promise<{
+            type?: string;
+            level?: string;
+            message?: string;
+            status?: string;
+        }>;
+
+    const textsBefore = (await userTexts(app, id)).length;
+    const turnedOn = await toggle(id);
+    assert.equal(turnedOn.status, "done");
+    assert.equal(turnedOn.type, "toast");
+    assert.equal(turnedOn.message, "Calm on");
+    assert.equal(readFileSync(path, "utf8"), "on\n");
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+    assert.equal((await userTexts(app, id)).length, textsBefore, "/calm does not add a transcript row");
+
+    const turnedOff = await toggle(id, "please");
+    assert.equal(turnedOff.message, "Calm off");
+    assert.equal(readFileSync(path, "utf8"), "off\n");
+
+    writeFileSync(path, "max\n", { mode: 0o600 });
+    assert.equal((await toggle(id)).message, "Calm off", "the legacy max value is on, so /calm turns it off");
+    assert.equal(readFileSync(path, "utf8"), "off\n");
+
+    const unchanged = await toggle(elsewhere);
+    assert.equal(unchanged.message, "Calm is unchanged: this session is not a Firstmate home");
+    assert.equal(readFileSync(path, "utf8"), "off\n");
+
+    assert.equal((await toggle(id)).message, "Calm on");
+
+    const { createHandler } = await import(join(checkout, "src/server/http.ts"));
+    const server: Server = createServer(createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }));
+    try {
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+        const readCalm = async () => {
+            const response = await fetch(`${base}/api/x/firstmate/calm?conversation=${String(id)}`, {
+                headers: { authorization: `Bearer ${app.config.ownerToken}`, "x-pocket": "1" },
+            });
+            assert.equal(response.status, 200);
+            return response.json() as Promise<{ calm?: boolean }>;
+        };
+        assert.deepEqual(await readCalm(), { calm: true });
+        assert.equal((await toggle(id)).message, "Calm off");
+        assert.deepEqual(await readCalm(), { calm: false });
+    } finally {
+        server.closeAllConnections();
+        server.close();
+    }
 });
