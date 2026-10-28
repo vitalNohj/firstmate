@@ -107,3 +107,31 @@ test("a calm toggle is kept when the earlier settings response resolves last", a
     assert.equal(ui.presented.length, applied);
     assert.deepEqual(modes(ui.presented), FOLDED);
 });
+
+test("a calm event for another conversation rereads the shown conversation", async () => {
+    const ui = harness();
+    ui.show("conv-b");
+    assert.equal(ui.reads[0].path, "calm?conversation=conv-b");
+
+    ui.calm({ calm: true, conversation: "conv-a" });
+    assert.equal(ui.reads.length, 2);
+    assert.equal(ui.reads[1].path, "calm?conversation=conv-b");
+    assert.deepEqual(modes(ui.presented), {});
+
+    ui.reads[1].resolve({ calm: true });
+    await ui.reads[1].promise;
+    assert.deepEqual(modes(ui.presented), FOLDED);
+
+    const applied = ui.presented.length;
+    ui.reads[0].resolve({ calm: false });
+    await ui.reads[0].promise;
+    assert.equal(ui.presented.length, applied);
+    assert.deepEqual(modes(ui.presented), FOLDED);
+
+    const otherHome = harness();
+    otherHome.show("conv-b");
+    otherHome.calm({ calm: true, conversation: "conv-a" });
+    otherHome.reads[1].resolve({ calm: false });
+    await otherHome.reads[1].promise;
+    assert.deepEqual(modes(otherHome.presented), OPEN);
+});

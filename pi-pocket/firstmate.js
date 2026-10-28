@@ -19,7 +19,7 @@ export default function setup(pocket) {
 
     let conversation = null;
     // A preference read applies only while this generation and conversation are still the ones it captured.
-    // Switching conversations, and a Calm toggle for the shown conversation, advance it so a late read cannot win.
+    // Switching conversations, a toggle for the shown conversation, and a toggle elsewhere advance it.
     let generation = 0;
 
     const apply = (calm) => {
@@ -48,7 +48,12 @@ export default function setup(pocket) {
 
     pocket.on("calm", (data) => {
         if (data == null || typeof data.calm !== "boolean") return;
-        if (conversation != null && data.conversation != null && String(data.conversation) !== String(conversation)) return;
+        // Another conversation may share this home's config/calm. Re-read the shown home
+        // instead of copying that event, and instead of leaving this tab on the old mode.
+        if (conversation != null && data.conversation != null && !sameConversation(data.conversation, conversation)) {
+            refresh();
+            return;
+        }
         generation += 1;
         apply(data.calm);
     });

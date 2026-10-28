@@ -55,6 +55,7 @@ test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last() {
     "ok 1 - an older calm read that resolves last does not change the active conversation" \
     "ok 2 - an older calm read that resolves before the active one does not present it" \
     "ok 3 - a calm toggle is kept when the earlier settings response resolves last" \
+    "ok 4 - a calm event for another conversation rereads the shown conversation" \
     "# fail 0"
   do
     case "$out" in
@@ -65,7 +66,7 @@ test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last() {
         ;;
     esac
   done
-  pass "browser module: a slower Calm read cannot override the active conversation or a newer toggle"
+  pass "browser module: a slower Calm read cannot override the active conversation or a newer toggle, and another conversation's toggle rereads the shown home"
 }
 
 test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last
