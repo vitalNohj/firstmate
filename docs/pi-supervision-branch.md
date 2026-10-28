@@ -649,6 +649,11 @@ Only the attended posture applies there, because away and quiet modes do not run
 Once the main session holds the lock, its durable watcher task starts the branch through Pi Pocket's linked sessions: one session per home, titled "Firstmate supervision", in the home's folder.
 Pi Pocket lists it under the main session, so the captain can open it and watch each wake arrive and be handled.
 Pi Pocket bills it to the main session's budget, as it does every linked session.
+When the owner keeps a list for subagents and linked sessions, that start names a model from the list: the `config/supervision-branch-model` pin when Pi Pocket can use it, otherwise the first usable listed model, and `config/supervision-branch-effort` only when the chosen model supports that level.
+An empty list leaves the model unset, so Pi Pocket keeps the main session's model.
+A list with no usable model leaves wakes on main, with a notice to add a model to that list, and the branch's cooling-off applies so a refused start is not retried on every wake.
+A Pi process started under the server does not arm a watcher or deliver wakes while a live Pi Pocket conversation holds the lock.
+`fm_session_lock_recorded_pi_pocket` in [`bin/fm-session-lock-lib.sh`](../bin/fm-session-lock-lib.sh) is the predicate those Pi primary extensions call.
 
 The pairing is recorded in `state/.pocket-branch`.
 Each watcher cycle reuses the recorded session while it exists and belongs to the same main session.
@@ -719,6 +724,8 @@ Routine outcomes stay in the store and in the branch's own visible transcript; n
 - The away relocation: only under a valid live record, never for local-only landing, queued-only branch dispatch rather than orphaned in-flight recovery, the spend cap for both actors and its lock-held recheck, and the attended guarded-action behavior restored by archive or an invalid record.
 
 `tests/fm-pi-pocket-dropin.test.sh` runs the Pi Pocket drop-in in a real Pi Pocket app and covers the branch started once as a visible linked session under main, its branch prompt and tools, its bash identity, a task wake handled there with main's dialog mirrored, the captain outcome's processing request and acknowledgement on main, `fm_branch_outcomes`, a no-report, off-scope, or past-deadline turn handing its wake to main with the grant released, and a server restart that reattaches the same session and keeps routing to it.
+It also covers a supervision start refused unless it names an allowed model, the drop-in naming one from the owner's list (a pin when it is listed, otherwise the first usable model, with effort only when that model supports it), and the cooling-off that stops a refused start from being retried on every wake.
+`tests/fm-pi-watch-extension.test.sh` covers a Pi primary whose ancestor is the lock-holding Pi Pocket server staying passive: it does not arm, and the turn-end guard does not run.
 
 `tests/fm-afk-return.test.sh` covers the ordered cleanup-due section, its durable merge-marker requirement, and exclusion of both a done task without durable merge evidence and a persistent secondmate carrying that evidence.
 

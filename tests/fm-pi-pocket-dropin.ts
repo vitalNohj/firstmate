@@ -20,14 +20,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { after, mock, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 
 const checkout = process.env.FM_PI_POCKET_CHECKOUT!;
 const bin = process.env.FM_PI_POCKET_BIN!;
 const dropIn = process.env.FM_PI_POCKET_DROPIN!;
 const helpers = await import(join(checkout, "test", "helpers.ts"));
-const { context, lastText, newSession, openApp, owner, recordCost, root, say, scriptedModel, until, work } = helpers;
+const { context, fakeTab, lastText, newSession, openApp, owner, recordCost, root, say, scriptedModel, until, work } = helpers;
 
 type App = Awaited<ReturnType<typeof openApp>>;
 
@@ -646,4 +646,107 @@ test("a branch turn that runs past its deadline hands its wake to main even afte
     const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
     assert.equal(code, 0, out);
     assert.match(out, /^stall ok$/m);
+});
+
+function pin(fmHome: string, name: string, value: string): void {
+    mkdirSync(join(fmHome, "config"), { recursive: true });
+    writeFileSync(join(fmHome, "config", name), `${value}\n`);
+}
+
+async function sessionModel(app: App, session: unknown): Promise<string | undefined> {
+    return (await app.agentState(session))?.model?.modelId;
+}
+
+test("a supervision start without an allowed model is refused, and the drop-in names one from the owner's list", async () => {
+    const { app, id, fmHome } = await started();
+    await app.setSubagentModels(owner(app), ["faux/faux-2"]);
+    // The pin is not on the list, so the first usable listed model is the one that must be named.
+    pin(fmHome, "supervision-branch-model", "faux/faux-1");
+    pin(fmHome, "supervision-branch-effort", "off");
+    const linked = app.linkedSessions;
+    const real = linked.start.bind(linked);
+    const calls: { model?: string; thinking?: string }[] = [];
+    linked.start = async (source: unknown, request: { model?: string; thinking?: string }, key: string) => {
+        calls.push({ model: request.model, thinking: request.thinking });
+        if (request.model !== "faux/faux-2") {
+            throw new Error("A model is required: this session's model is not on the owner's list for subagents and linked sessions. Choose one that suits the work: faux/faux-2.");
+        }
+        return real(source, request, key);
+    };
+    // The stand-in refuses the same way Pi Pocket does when the owner's list is set and no allowed model is named.
+    await assert.rejects(linked.start(id, { message: "probe", title: "probe" }, "probe-without-model"), /A model is required[^]*faux\/faux-2/);
+    await say(app, id, "start firstmate");
+    const branch = await branchStarted(app, fmHome);
+    assert.deepEqual(calls[1], { model: "faux/faux-2", thinking: "off" }, JSON.stringify(calls));
+    assert.equal(await sessionModel(app, branch), "faux-2");
+    assert.equal(supervisionSessions(app).length, 1);
+});
+
+test("the supervision model pin wins when it is listed, and an effort the model does not support is left out", async () => {
+    const { app, id, fmHome } = await started();
+    await app.setSubagentModels(owner(app), ["faux/faux-2", "faux/faux-1"]);
+    pin(fmHome, "supervision-branch-model", "faux/faux-1");
+    pin(fmHome, "supervision-branch-effort", "xhigh");
+    const linked = app.linkedSessions;
+    const real = linked.start.bind(linked);
+    const calls: { model?: string; thinking?: string }[] = [];
+    linked.start = async (source: unknown, request: { model?: string; thinking?: string }, key: string) => {
+        calls.push({ model: request.model, thinking: request.thinking });
+        return real(source, request, key);
+    };
+    await say(app, id, "start firstmate");
+    const branch = await branchStarted(app, fmHome);
+    assert.equal(calls[0]?.model, "faux/faux-1", JSON.stringify(calls));
+    assert.equal(calls[0]?.thinking, undefined, JSON.stringify(calls));
+    assert.equal(await sessionModel(app, branch), "faux-1");
+});
+
+test("when no listed model can be used, wakes stay on main and the start is not attempted again", async () => {
+    const { app, id, fmHome } = await started();
+    await app.setSubagentModels(owner(app), ["faux/faux-2"]);
+    mock.method(app.providers, "problem", async (ref: { provider: string; modelId: string }) =>
+        `${ref.provider}/${ref.modelId}` === "faux/faux-2" ? "its sign-in expired" : undefined);
+    const linked = app.linkedSessions;
+    const real = linked.start.bind(linked);
+    let starts = 0;
+    linked.start = async (source: unknown, request: unknown, key: string) => {
+        starts += 1;
+        return real(source, request, key);
+    };
+    const tab = fakeTab(id, owner(app));
+    app.attach(tab.client);
+    await say(app, id, "start firstmate");
+    await until(
+        () => tab.events.some((event) => event.event === "notice" && String(event.data.message).includes("add a model to Pi Pocket's list for subagents and linked sessions")),
+        "the model-list notice",
+        LONG,
+    );
+    assert.equal(starts, 0);
+    assert.equal(supervisionSessions(app).length, 0);
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
+    fire(fmHome, "signal: listed models unusable");
+    await until(async () => count(await userTexts(app, id), `${WAKE}signal: listed models unusable`) === 1, "the wake on main", LONG);
+    assert.equal(starts, 0);
+});
+
+test("a refused supervision start cools off instead of being retried on every wake", async () => {
+    const { app, id, fmHome } = await started();
+    await app.setSubagentModels(owner(app), ["faux/faux-2"]);
+    const linked = app.linkedSessions;
+    let starts = 0;
+    linked.start = async (_source: unknown, request: { model?: string }) => {
+        starts += 1;
+        if (request.model !== "faux/faux-2") {
+            throw new Error("A model is required: this session's model is not on the owner's list for subagents and linked sessions. Choose one that suits the work: faux/faux-2.");
+        }
+        throw new Error("linked session refused");
+    };
+    await say(app, id, "start firstmate");
+    await until(() => starts === 1, "the first refused start", LONG);
+    await until(() => lines(join(fmHome, "stub", "arms.log")).length >= 1, "the first arm", LONG);
+    fire(fmHome, "signal: first refused");
+    await until(async () => starts === 2 && count(await userTexts(app, id), `${WAKE}signal: first refused`) === 1, "the second refusal and its wake on main", LONG);
+    fire(fmHome, "signal: cooled off");
+    await until(async () => count(await userTexts(app, id), `${WAKE}signal: cooled off`) === 1, "the cooled-off wake on main", LONG);
+    assert.equal(starts, 2);
 });

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -136,4 +136,44 @@ export function isFirstmateOperationalPresentationText(text: string): boolean {
     classifyFirstmateCurrentOperationalText(text) !== undefined ||
     text.startsWith(LEGACY_CALM_OPERATIONAL_PREFIX)
   );
+}
+
+// Whether a live Pi Pocket conversation holds the lock in `stateDir`.
+// bin/fm-session-lock-lib.sh owns the predicate (fm_session_lock_recorded_pi_pocket
+// plus the holder still being alive). A Pi primary extension asks this before
+// it treats an ancestor of its own pid as its lock: the Pi Pocket server is
+// that ancestor for every process started from the session, and it is not
+// this Pi process's session.
+const sessionLockLib = resolve(dirname(fileURLToPath(import.meta.url)), "../../../bin/fm-session-lock-lib.sh");
+const pocketHoldSnippet = `
+. "$1" || exit 2
+fm_session_lock_recorded_pi_pocket "$2" || exit 1
+pid=$(head -n 1 "$2/.lock" 2>/dev/null || true)
+fm_session_lock_holder_alive "$2" "$pid"
+`;
+
+function pocketHoldArgs(stateDir: string): string[] {
+  return ["-c", pocketHoldSnippet, "fm-pocket-lock", sessionLockLib, stateDir];
+}
+
+export function piPocketHoldsLockSync(stateDir: string): boolean {
+  try {
+    return spawnSync("bash", pocketHoldArgs(stateDir), { encoding: "utf8" }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+export function piPocketHoldsLock(stateDir: string): Promise<boolean> {
+  return new Promise((resolveHold) => {
+    let child: ChildProcess;
+    try {
+      child = spawn("bash", pocketHoldArgs(stateDir), { stdio: "ignore" });
+    } catch {
+      resolveHold(false);
+      return;
+    }
+    child.on("error", () => resolveHold(false));
+    child.on("close", (code) => resolveHold(code === 0));
+  });
 }

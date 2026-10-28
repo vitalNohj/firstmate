@@ -133,6 +133,8 @@ import {
 import {
   classifyFirstmateOperationalText,
   encodeFirstmateOperationalInputWith,
+  piPocketHoldsLock,
+  piPocketHoldsLockSync,
 } from "./lib/fm-operational-input.ts";
 
 const extensionFile = fileURLToPath(import.meta.url);
@@ -407,6 +409,9 @@ function ownershipVerdict(lockPid: string, ancestryMatched: boolean): LockOwners
 async function lockOwnership(): Promise<LockOwnership> {
   const { lockPid, verdict } = readLockPid();
   if (verdict) return verdict;
+  // A live Pi Pocket conversation holds this lock. The server pid is an ancestor of a nested Pi, and that
+  // process must not deliver wakes or restart supervision. The awaited form keeps this off the render thread.
+  if (await piPocketHoldsLock(state)) return "other";
   let pid = String(process.pid);
   for (let i = 0; i < LOCK_ANCESTRY_DEPTH; i += 1) {
     if (pid === lockPid) {
@@ -428,6 +433,7 @@ async function lockOwnership(): Promise<LockOwnership> {
 function lockOwnershipSync(): LockOwnership {
   const { lockPid, verdict } = readLockPid();
   if (verdict) return verdict;
+  if (piPocketHoldsLockSync(state)) return "other";
   let pid = String(process.pid);
   for (let i = 0; i < LOCK_ANCESTRY_DEPTH; i += 1) {
     if (pid === lockPid) return ownershipVerdict(lockPid, true);
