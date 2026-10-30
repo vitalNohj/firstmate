@@ -40,6 +40,8 @@
 #      the decision; a retry while that decision is still open appends nothing
 #  19. A remote observe check-in runs only when the pass opts in, and a second
 #      check-in inside the reply quiet window is refused
+#  20. A request summary keeps accented letters, drops control characters, and
+#      caps at 120 characters without splitting one under any caller locale
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -2215,6 +2217,26 @@ test_same_kind_escalation_reopens_after_operator_close() {
   pass "a same-kind escalation after an operator close opens the decision again"
 }
 
+test_summary_keeps_accents_and_caps_by_character() {
+  local out long cap_chars loc
+  out=$(fm_pending_reply_summarize "não faça a correção")
+  [ "$out" = "não faça a correção" ] || fail "accented summary must survive unchanged, got '$out'"
+  out=$(fm_pending_reply_summarize "$(printf 'a\001b\033c\177d\tnão\r\nfaça')")
+  [ "$out" = "abcd não  faça" ] || fail "control characters must be removed and whitespace flattened, got '$out'"
+  long=$(printf 'ç%.0s' $(seq 1 130))
+  for loc in C "" en_US.UTF-8; do
+    out=$(LC_ALL=${loc:-C} fm_pending_reply_summarize "$long")
+    cap_chars=$(printf '%s' "$out" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' ')
+    [ "$cap_chars" = 120 ] || fail "capped accented text must hold 120 characters under locale '${loc:-C}', got $cap_chars"
+    printf '%s' "$out" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+      || fail "capped accented text must stay valid UTF-8 under locale '${loc:-C}'"
+    [ "$out" = "$(printf 'ç%.0s' $(seq 1 117))..." ] || fail "capped text must be 117 characters plus an ellipsis under locale '${loc:-C}'"
+  done
+  out=$(fm_pending_reply_summarize "$(printf 'x%.0s' $(seq 1 120))")
+  [ "${#out}" = 120 ] || fail "a 120-character summary must not be capped, got ${#out}"
+  pass "the summary keeps accented letters, drops control characters, and caps by character"
+}
+
 # --- run --------------------------------------------------------------------
 
 test_normal_correlated_reply_resolves_once
@@ -2267,5 +2289,6 @@ test_escalated_undelivered_correlation_stays_retryable
 test_remote_observe_check_in_waits_out_the_quiet_window
 test_remote_observe_opt_in_follows_the_liveness_pass
 test_same_kind_escalation_reopens_after_operator_close
+test_summary_keeps_accents_and_caps_by_character
 
 printf 'ok - all pending-reply tests passed\n'
