@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { lstatSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -144,27 +145,92 @@ export function isFirstmateOperationalPresentationText(text: string): boolean {
 // it treats an ancestor of its own pid as its lock: the Pi Pocket server is
 // that ancestor for every process started from the session, and it is not
 // this Pi process's session.
-const sessionLockLib = resolve(dirname(fileURLToPath(import.meta.url)), "../../../bin/fm-session-lock-lib.sh");
+// A copied extension fixture does not carry bin/ with it. FM_ROOT_OVERRIDE
+// is the real repo root those drivers already pass; otherwise the script
+// sits next to this file, three directories up.
+const sessionLockLib = resolve(
+  process.env.FM_ROOT_OVERRIDE || resolve(dirname(fileURLToPath(import.meta.url)), "../../.."),
+  "bin/fm-session-lock-lib.sh",
+);
 const pocketHoldSnippet = `
 . "$1" || exit 2
-fm_session_lock_recorded_pi_pocket "$2" || exit 1
+if ! fm_session_lock_recorded_pi_pocket "$2"; then
+  exit 1
+fi
 pid=$(head -n 1 "$2/.lock" 2>/dev/null || true)
-fm_session_lock_holder_alive "$2" "$pid"
+fm_session_lock_holder_alive "$2" "$pid" || exit 3
 `;
 
 function pocketHoldArgs(stateDir: string): string[] {
   return ["-c", pocketHoldSnippet, "fm-pocket-lock", sessionLockLib, stateDir];
 }
 
+// Exit 1 means the lock is not a Pi Pocket record. That answer is reused
+// only while `.lock` and `.lock-session` are byte-for-byte unchanged.
+// Exit 0 and exit 3 are never reused: a recorded Pocket server can die, or
+// a dead check can have raced a live one, without those files changing, and
+// fm_session_lock_holder_alive is what notices. Ancestry is not part of
+// this and is still walked on every ownership check. The reuse matters
+// because flushMirror re-checks ownership after the branch can already see
+// the delivered line, and a fresh bash in that gap publishes the mirror
+// cursor too late for the observer that just saw the line.
+let pocketMissCache: { key: string } | null = null;
+
+function pocketLockSnapshot(stateDir: string): string | null {
+  const parts: string[] = [];
+  for (const name of [".lock", ".lock-session"]) {
+    const path = `${stateDir}/${name}`;
+    let info;
+    try {
+      info = lstatSync(path);
+    } catch {
+      parts.push(`${name}:absent`);
+      continue;
+    }
+    if (info.isSymbolicLink()) return null;
+    try {
+      parts.push(`${name}:${readFileSync(path).toString("utf8")}`);
+    } catch {
+      return null;
+    }
+  }
+  return parts.join("\0");
+}
+
+function pocketMissKey(stateDir: string, snapshot: string): string {
+  return `${stateDir}\0${snapshot}`;
+}
+
+function rememberPocketMiss(stateDir: string, snapshot: string | null): void {
+  if (snapshot === null) return;
+  if (pocketLockSnapshot(stateDir) !== snapshot) return;
+  pocketMissCache = { key: pocketMissKey(stateDir, snapshot) };
+}
+
+function pocketMissCached(stateDir: string): boolean {
+  const snapshot = pocketLockSnapshot(stateDir);
+  return snapshot !== null && pocketMissCache?.key === pocketMissKey(stateDir, snapshot);
+}
+
 export function piPocketHoldsLockSync(stateDir: string): boolean {
+  if (pocketMissCached(stateDir)) return false;
+  const snapshot = pocketLockSnapshot(stateDir);
   try {
-    return spawnSync("bash", pocketHoldArgs(stateDir), { encoding: "utf8" }).status === 0;
+    const status = spawnSync("bash", pocketHoldArgs(stateDir), { encoding: "utf8" }).status;
+    if (status === 0) {
+      pocketMissCache = null;
+      return true;
+    }
+    if (status === 1) rememberPocketMiss(stateDir, snapshot);
+    return false;
   } catch {
     return false;
   }
 }
 
 export function piPocketHoldsLock(stateDir: string): Promise<boolean> {
+  if (pocketMissCached(stateDir)) return Promise.resolve(false);
+  const snapshot = pocketLockSnapshot(stateDir);
   return new Promise((resolveHold) => {
     let child: ChildProcess;
     try {
@@ -174,6 +240,14 @@ export function piPocketHoldsLock(stateDir: string): Promise<boolean> {
       return;
     }
     child.on("error", () => resolveHold(false));
-    child.on("close", (code) => resolveHold(code === 0));
+    child.on("close", (code) => {
+      if (code === 0) {
+        pocketMissCache = null;
+        resolveHold(true);
+        return;
+      }
+      if (code === 1) rememberPocketMiss(stateDir, snapshot);
+      resolveHold(false);
+    });
   });
 }
