@@ -1329,10 +1329,16 @@ async function ensureWatch(
 // ---------------------------------------------------------------------------------------------------------------
 // The extension
 
-/** The working folder of a hook's session: its execution environment, else its agent's folder. */
+/**
+ * The working folder of a hook's session: its execution environment, else its agent's folder. A hook from the
+ * Harness gets the task runtime, whose `env` is a function; a hook that Pi Pocket's codemode runs for a call from
+ * a script gets the tool's execution API, whose `env` is the environment itself.
+ */
 async function hookCwd(api: unknown, conversationId: ConversationId, context: Context): Promise<string | undefined> {
-    const runtime = api as Partial<Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "env" | "snapshot">>;
-    const env = await runtime.env?.(context).catch(() => undefined);
+    const runtime = api as Partial<Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "snapshot">> & {
+        env?: TaskRuntime<unknown, { phase: string }, unknown, object>["env"] | ToolExecutionApi["env"];
+    };
+    const env = typeof runtime.env === "function" ? await runtime.env(context).catch(() => undefined) : runtime.env;
     if (env?.cwd) return env.cwd;
     const agent = await runtime.snapshot?.(AgentDoc, conversationId, context);
 

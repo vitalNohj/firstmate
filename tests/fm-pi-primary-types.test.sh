@@ -3,6 +3,7 @@
 # plus the read guard's real SDK event/abort regression on Linux.
 # Owns temporary npm dependencies and TypeScript 5.9.3; never uses global tsc
 # or FM_PI_PACKAGE_DIR. Compiler-owning lint/CI phases run this check.
+# --typecheck-only omits runtime regressions for the lint phase.
 # FM_PI_TYPES_ARTIFACT_DIR optionally retains the verified temporary lockfiles.
 set -eu
 
@@ -109,6 +110,9 @@ if "$TMP_ROOT/node_modules/.bin/tsc" -p "$TMP_ROOT/tsconfig.json"; then
 else
   printf 'not ok - tracked Pi extensions fail strict no-emit typecheck against Pi %s\n' "$version" >&2
   result=1
+fi
+if [ "${1:-}" = --typecheck-only ]; then
+  continue
 fi
 if [ "$(uname -s)" = Linux ]; then
   if node "$ROOT/tests/fixtures/fm-read-repetition-sdk.mjs" \
