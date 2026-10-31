@@ -1,0 +1,12 @@
+Running as unit: run-p648851-i4853801.scope; invocation ID: ef63042ee0594037ad9bd989b26fe9e0
+✔ seatbelts block a persistent cd, a backgrounded watcher, and Pi Pocket's delegation tools only in a Firstmate home (1614.322331ms)
+✔ a codemode script's tool calls pass the same seatbelts: allowed ones run, delegation stays blocked (978.541664ms)
+✔ the supervision session starts once as a visible linked session, takes a task wake, and its captain outcome reaches main through the store (4018.657706ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8888.854881

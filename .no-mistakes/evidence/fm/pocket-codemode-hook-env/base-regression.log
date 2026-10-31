@@ -1,0 +1,35 @@
+Running as unit: run-p651577-i4836387.scope; invocation ID: c0cc71c52f86465581b2b70f088fb8f0
+PRODUCT TOOL TRANSCRIPT {"conversation":3,"results":["Script completed\nWall time 0.1 seconds\nOutput:\nfailed: Tool call blocked: runtime.env is not a function","Script completed\nWall time 0.1 seconds\nOutput:\nfailed: Tool call blocked: runtime.env is not a function"]}
+✖ a codemode script's tool calls pass the same seatbelts: allowed ones run, delegation stays blocked (1322.293316ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3374.024048
+
+✖ failing tests:
+
+test at .gate-pocket-test/dropin.test.ts:475:1
+✖ a codemode script's tool calls pass the same seatbelts: allowed ones run, delegation stays blocked (1322.293316ms)
+  AssertionError [ERR_ASSERTION]: Script completed
+  Wall time 0.1 seconds
+  Output:
+  failed: Tool call blocked: runtime.env is not a function
+  Script completed
+  Wall time 0.1 seconds
+  Output:
+  failed: Tool call blocked: runtime.env is not a function
+      at TestContext.<anonymous> (file:///home/nohj/.no-mistakes/worktrees/4812c8175835/01M68FJWKPKGGGMZT45WBGVNWZ/.gate-pocket-test/dropin.test.ts:481:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

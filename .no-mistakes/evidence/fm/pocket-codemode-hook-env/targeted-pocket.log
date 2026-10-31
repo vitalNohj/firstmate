@@ -1,0 +1,40 @@
+Running as unit: run-p644600-i4832679.scope; invocation ID: 46b3ce335959403c920830e311f348e2
+TAP version 13
+# node:internal/util:226
+#     throw new ERR_NO_TYPESCRIPT();
+#           ^
+# Error [ERR_NO_TYPESCRIPT]: Node.js is not compiled with TypeScript support
+#     at assertTypeScript (node:internal/util:226:11)
+#     at node:internal/modules/typescript:41:3
+#     at node:internal/util:785:15
+#     at parseTypeScript (node:internal/modules/typescript:53:17)
+#     at processTypeScriptCode (node:internal/modules/typescript:133:42)
+#     at stripTypeScriptModuleTypes (node:internal/modules/typescript:163:10)
+#     at ModuleLoader.<anonymous> (node:internal/modules/esm/translators:605:16)
+#     at \#translate (node:internal/modules/esm/loader:546:20)
+#     at afterLoad (node:internal/modules/esm/loader:596:29)
+#     at ModuleLoader.loadAndTranslate (node:internal/modules/esm/loader:601:12) {
+#   code: 'ERR_NO_TYPESCRIPT'
+# }
+# Node.js v22.22.1
+# Subtest: .gate-pocket-test/dropin.test.ts
+not ok 1 - .gate-pocket-test/dropin.test.ts
+  ---
+  duration_ms: 191.163223
+  type: 'test'
+  location: '/home/nohj/.no-mistakes/worktrees/4812c8175835/01M68FJWKPKGGGMZT45WBGVNWZ/.gate-pocket-test/dropin.test.ts:1:1'
+  failureType: 'testCodeFailure'
+  exitCode: 1
+  signal: ~
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 209.034548

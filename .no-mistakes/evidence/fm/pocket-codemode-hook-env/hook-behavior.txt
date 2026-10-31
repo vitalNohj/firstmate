@@ -1,0 +1,38 @@
+
+base-regression.log
+Script completed
+Wall time 0.1 seconds
+Output:
+failed: Tool call blocked: runtime.env is not a function
+
+product-transcripts.log
+<harness>
+[error] Tool call blocked: [persistent-cd] a persistent top-level directory change in the primary firstmate checkout is blocked; it would move the shell out of the home so a later firstmate-owned command runs inside a project clone. Reach the target without moving the shell - use git -C <dir> or an absolute path on the command itself - or scope the cd to a subshell like (cd <dir> && ...).
+</harness>
+<harness>
+[error] Tool call blocked: [watcher-background] a protected watcher command cannot run in an asynchronous shell list or through nohup/disown
+</harness>
+<harness>
+[error] Tool call blocked: [subagent-dispatch] the firstmate primary delegates fleet work only through bin/fm-spawn.sh; Pi Pocket's subagent tool starts work with no fleet record and no supervision.
+</harness>
+Script completed
+Wall time 0.1 seconds
+Output:
+read: script-ran
+
+Script completed
+Wall time 0.1 seconds
+Output:
+failed: Tool call blocked: [subagent-dispatch] the firstmate primary delegates fleet work only through bin/fm-spawn.sh; Pi Pocket's schedule tool starts work with no fleet record and no supervision.
+<harness>
+[error] Tool call blocked: [supervision-branch] only the Firstmate supervision session records outcomes with fm_branch_report.
+</harness>
+<harness>
+[error] Tool call blocked: [supervision-branch] the Firstmate supervision session uses only read, bash, fm_branch_report, and the context tools compress, decompress, search_context, acp_status, acp_cache; fm_watch_arm_pocket belongs to the main Firstmate session.
+</harness>
+<harness>
+[error] Tool call blocked: [supervision-branch] the Firstmate supervision session uses only read, bash, fm_branch_report, and the context tools compress, decompress, search_context, acp_status, acp_cache; subagent belongs to the main Firstmate session.
+</harness>
+<harness>
+[error] Tool call blocked: [supervision-branch] the Firstmate supervision session uses only read, bash, fm_branch_report, and the context tools compress, decompress, search_context, acp_status, acp_cache; codemode belongs to the main Firstmate session.
+</harness>
