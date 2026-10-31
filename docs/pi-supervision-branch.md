@@ -665,7 +665,9 @@ A new main session that takes over the lock gets its own linked branch, and a br
 The drop-in recognizes the branch by that record and gives it the Pi branch's contract:
 
 - Its system prompt is [`bin/fm-branch-prompt.sh`](../bin/fm-branch-prompt.sh)'s output in place of the home's `AGENTS.md` and skills list, which are main's.
-- Its tools are `read`, `bash`, and `fm_branch_report`; every other tool call is blocked there.
+- Its tools are `read`, `bash`, and `fm_branch_report`, plus the context tools `compress`, `decompress`, `search_context`, `acp_status`, and `acp_cache`.
+  Those context tools only manage that session's own context and never touch fleet state.
+  Every other tool call is blocked there.
 - Its bash runs with main's Pi Pocket identity, `FM_SUPERVISION_ACTOR=branch`, and the server as `FM_LEASE_HOLDER_PID`, the actor variables read-only inside its shell, so the guarded scripts and leases treat it exactly as they treat the Pi branch.
 - The turn-end guard and the compaction re-emit stay on main.
 

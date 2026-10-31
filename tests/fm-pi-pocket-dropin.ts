@@ -254,6 +254,9 @@ const route = (request: unknown) => {
         return call("bash", { command: `printf 'marker=%s server=%s' "\${FM_PI_POCKET_CONVERSATION:-none}" "\${FM_PI_POCKET_SERVER_PID:-none}"` });
     }
     if (text.endsWith("repair the watcher")) return call("fm_watch_arm_pocket", {});
+    if (text.endsWith("compress the context")) return call("compress", { content: "fold the consumed range" });
+    if (text.endsWith("start a subagent")) return call("subagent", { action: "spawn", name: "helper", message: "look around" });
+    if (text.endsWith("send to a session")) return call("watch_pr", { action: "status" });
     if (text.endsWith("show the actor")) {
         return call("bash", {
             command: `printf 'marker=%s actor=%s holder=%s primary=%s ' "$FM_PI_POCKET_CONVERSATION" "$FM_SUPERVISION_ACTOR" "$FM_LEASE_HOLDER_PID" "$FM_SUPERVISION_PRIMARY_HARNESS"; (FM_SUPERVISION_ACTOR=main) 2>/dev/null && echo reassign=allowed || echo reassign=refused`,
@@ -638,7 +641,16 @@ test("the supervision session starts once as a visible linked session, takes a t
     await say(app, id, "report from main");
     assert.ok((await toolSaid(app, id)).some((text) => text.includes("[supervision-branch] only the Firstmate supervision session records outcomes")));
     await say(app, branch, "repair the watcher");
-    assert.ok((await toolSaid(app, branch)).some((text) => text.includes("[supervision-branch] the Firstmate supervision session uses only read, bash, and fm_branch_report")));
+    assert.ok((await toolSaid(app, branch)).some((text) => text.includes("[supervision-branch] the Firstmate supervision session uses only read, bash, fm_branch_report, and the context tools compress, decompress, search_context, acp_status, acp_cache; fm_watch_arm_pocket belongs to the main Firstmate session.")));
+    // Context tools manage only this session's context, so the branch may use them; spawn and steer tools stay blocked.
+    await say(app, branch, "compress the context");
+    const branchSaid = await toolSaid(app, branch);
+    assert.ok(branchSaid.some((text) => text.includes("Tool compress is not available") && !text.includes("[supervision-branch]")), branchSaid.join("\n"));
+    await say(app, branch, "start a subagent");
+    await say(app, branch, "send to a session"); // the branch asks for watch_pr, a session tool it must not have
+    const blocked = await toolSaid(app, branch);
+    assert.ok(blocked.some((text) => text.includes("[supervision-branch]") && text.includes("subagent belongs to the main Firstmate session")), blocked.join("\n"));
+    assert.ok(blocked.some((text) => text.includes("[supervision-branch]") && text.includes("watch_pr belongs to the main Firstmate session")), blocked.join("\n"));
     // The branch's bash runs as the branch actor under main's Pi Pocket identity, with the actor read-only.
     await say(app, branch, "show the actor");
     assert.ok(

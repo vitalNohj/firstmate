@@ -78,10 +78,15 @@ const BRANCH_TITLE = "Firstmate supervision";
 const REPORT_TOOL = "fm_branch_report";
 const OUTCOMES_TOOL = "fm_branch_outcomes";
 const PROCESSED_TOOL = "fm_branch_processed";
-const BRANCH_TOOLS = new Set(["read", "bash", REPORT_TOOL]);
-/** The branch's first message, before any wake: it only has to wait. */
+/**
+ * Context tools from the billion-context Pi Pocket extension. They only manage this session's own context and never
+ * touch fleet state, so the branch may use them; every other tool stays blocked.
+ */
+const CONTEXT_TOOLS = ["compress", "decompress", "search_context", "acp_status", "acp_cache"] as const;
+const BRANCH_TOOLS = new Set(["read", "bash", REPORT_TOOL, ...CONTEXT_TOOLS]);
+/** The branch's first message, before any wake: it only has to wait, and it may manage its own context. */
 const BRANCH_INTRO =
-    "This is the Firstmate supervision session for this home. The Firstmate drop-in sends it each routine fleet wake the main Firstmate session hands over. Nothing to do until the first wake: reply only with \"ready\".";
+    "This is the Firstmate supervision session for this home. The Firstmate drop-in sends it each routine fleet wake the main Firstmate session hands over. Nothing to do until the first wake: reply only with \"ready\". You may use read, bash, fm_branch_report, and the context tools compress, decompress, search_context, acp_status, and acp_cache, which only manage this session's own context.";
 /** State files the drop-in owns, under the home's state directory (operational-home-layout). */
 const BRANCH_RECORD = ".pocket-branch";
 const BRANCH_TURN = ".pocket-branch-turn";
@@ -1678,7 +1683,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     if (home === undefined) return undefined;
                     const branch = (await branchOf(home, api.conversationId)) !== undefined;
                     if (branch && !BRANCH_TOOLS.has(call.name)) {
-                        return { block: `[supervision-branch] the Firstmate supervision session uses only read, bash, and ${REPORT_TOOL}; ${call.name} belongs to the main Firstmate session.` };
+                        return { block: `[supervision-branch] the Firstmate supervision session uses only read, bash, ${REPORT_TOOL}, and the context tools ${CONTEXT_TOOLS.join(", ")}; ${call.name} belongs to the main Firstmate session.` };
                     }
                     if (!branch && call.name === REPORT_TOOL) {
                         return { block: `[supervision-branch] only the Firstmate supervision session records outcomes with ${REPORT_TOOL}.` };
