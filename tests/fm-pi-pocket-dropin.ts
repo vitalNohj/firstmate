@@ -249,14 +249,21 @@ const route = (request: unknown) => {
     if (text.endsWith("start firstmate")) return call("bash", { command: "bin/fm-session-start.sh" });
     if (text.endsWith("go elsewhere")) return call("bash", { command: "cd /tmp && ls" });
     if (text.endsWith("background the watcher")) return call("bash", { command: "bin/fm-watch-arm.sh --restart &" });
-    if (text.endsWith("schedule something")) return call("schedule", { action: "list" });
+    // subagent is offered from the start; Pi Pocket offers schedule and watch_pr only after a tool search.
+    if (text.endsWith("ask a subagent")) return call("subagent", { action: "status" });
+    if (text.endsWith("read from a script")) {
+        return call("codemode", { code: `try { return "read: " + (await tools.bash({ command: "echo script-ran" })); } catch (error) { return "failed: " + error.message; }` });
+    }
+    if (text.endsWith("schedule from a script")) {
+        return call("codemode", { code: `try { return "ran: " + (await tools.schedule({ action: "list" })); } catch (error) { return "failed: " + error.message; }` });
+    }
     if (text.endsWith("show the marker")) {
         return call("bash", { command: `printf 'marker=%s server=%s' "\${FM_PI_POCKET_CONVERSATION:-none}" "\${FM_PI_POCKET_SERVER_PID:-none}"` });
     }
     if (text.endsWith("repair the watcher")) return call("fm_watch_arm_pocket", {});
     if (text.endsWith("compress the context")) return call("compress", { content: "fold the consumed range" });
     if (text.endsWith("start a subagent")) return call("subagent", { action: "spawn", name: "helper", message: "look around" });
-    if (text.endsWith("send to a session")) return call("watch_pr", { action: "status" });
+    if (text.endsWith("run a script")) return call("codemode", { code: `return await tools.read({ path: "AGENTS.md" });` });
     if (text.endsWith("show the actor")) {
         return call("bash", {
             command: `printf 'marker=%s actor=%s holder=%s primary=%s ' "$FM_PI_POCKET_CONVERSATION" "$FM_SUPERVISION_ACTOR" "$FM_LEASE_HOLDER_PID" "$FM_SUPERVISION_PRIMARY_HARNESS"; (FM_SUPERVISION_ACTOR=main) 2>/dev/null && echo reassign=allowed || echo reassign=refused`,
@@ -451,16 +458,27 @@ test("seatbelts block a persistent cd, a backgrounded watcher, and Pi Pocket's d
 
     await say(app, id, "go elsewhere");
     await say(app, id, "background the watcher");
-    await say(app, id, "schedule something");
+    await say(app, id, "ask a subagent");
     const said = await toolSaid(app, id);
     assert.ok(said.some((text) => text.includes("Tool call blocked: [persistent-cd]")), said.join("\n"));
     assert.ok(said.some((text) => text.includes("Tool call blocked: [watcher-background]")), said.join("\n"));
     assert.ok(said.some((text) => text.includes("Tool call blocked: [subagent-dispatch]") && text.includes("bin/fm-spawn.sh")), said.join("\n"));
 
     await say(app, elsewhere, "go elsewhere");
-    await say(app, elsewhere, "schedule something");
+    await say(app, elsewhere, "ask a subagent");
     const free = await toolSaid(app, elsewhere);
     assert.ok(free.every((text) => !text.includes("Tool call blocked")), free.join("\n"));
+});
+
+test("a codemode script's tool calls pass the same seatbelts: allowed ones run, delegation stays blocked", async () => {
+    const { app, id } = await started();
+
+    await say(app, id, "read from a script");
+    await say(app, id, "schedule from a script");
+    const said = await toolSaid(app, id);
+    assert.ok(said.some((text) => text.includes("script-ran")), said.join("\n"));
+    assert.ok(said.every((text) => !text.includes("is not a function")), said.join("\n"));
+    assert.ok(said.some((text) => text.includes("failed: Tool call blocked: [subagent-dispatch]")), said.join("\n"));
 });
 
 test("wakes wait while the session is held back by a spend limit, the watcher keeps cycling, and each wake arrives once", async () => {
@@ -647,10 +665,10 @@ test("the supervision session starts once as a visible linked session, takes a t
     const branchSaid = await toolSaid(app, branch);
     assert.ok(branchSaid.some((text) => text.includes("Tool compress is not available") && !text.includes("[supervision-branch]")), branchSaid.join("\n"));
     await say(app, branch, "start a subagent");
-    await say(app, branch, "send to a session"); // the branch asks for watch_pr, a session tool it must not have
+    await say(app, branch, "run a script"); // codemode would reach main's tools from a script, so the branch must not have it
     const blocked = await toolSaid(app, branch);
     assert.ok(blocked.some((text) => text.includes("[supervision-branch]") && text.includes("subagent belongs to the main Firstmate session")), blocked.join("\n"));
-    assert.ok(blocked.some((text) => text.includes("[supervision-branch]") && text.includes("watch_pr belongs to the main Firstmate session")), blocked.join("\n"));
+    assert.ok(blocked.some((text) => text.includes("[supervision-branch]") && text.includes("codemode belongs to the main Firstmate session")), blocked.join("\n"));
     // The branch's bash runs as the branch actor under main's Pi Pocket identity, with the actor read-only.
     await say(app, branch, "show the actor");
     assert.ok(
