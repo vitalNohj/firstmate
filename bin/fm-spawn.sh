@@ -1544,6 +1544,11 @@ ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
 T3CODE_ABORT_CLEANUP=0
 T3CODE_LEASED=0
+# Pi Pocket worker launch state (bin/backends/pi-pocket.sh): a leased slot and
+# the linked session started in it, until the launch brief is accepted.
+PI_POCKET_LEASED=0
+PI_POCKET_ABORT_CLEANUP=0
+PI_POCKET_LAUNCH_UNCONFIRMED=0
 T3CODE_HOME_ENV=0
 T3CODE_CLAUDE_CHANNEL_WRITTEN=0
 T3CODE_CREATE_UNCERTAIN=0
@@ -1718,6 +1723,24 @@ spawn_abort_cleanup() {
   # lease back only once both succeeded; once T3 accepted the turn, or its
   # outcome is unproven, the agent may be working there, so both are left in
   # place.
+  # A Pocket worker session started for an aborted launch is torn down before
+  # its leased slot goes back, and the slot is kept when that cannot be proven.
+  if [ "$PI_POCKET_ABORT_CLEANUP" = 1 ]; then
+    PI_POCKET_ABORT_CLEANUP=0
+    if ! fm_backend_kill pi-pocket "$T"; then
+      if [ "$PI_POCKET_LEASED" = 1 ]; then
+        PI_POCKET_LEASED=0
+        echo "warning: could not stop the Pi Pocket worker session $T for $ID, so the leased worktree $WT stays leased; stop and archive the session in Pi Pocket, then run 'treehouse return --force $WT' from $PROJ_ABS" >&2
+      else
+        echo "warning: could not stop the Pi Pocket worker session $T for $ID; stop and archive it in Pi Pocket" >&2
+      fi
+    fi
+  fi
+  if [ "$PI_POCKET_LEASED" = 1 ] && [ -n "${WT:-}" ]; then
+    PI_POCKET_LEASED=0
+    (cd "$PROJ_ABS" && treehouse return --force "$WT") >/dev/null 2>&1 \
+      || echo "warning: could not return the leased worktree $WT for $ID; run 'treehouse return --force $WT' from $PROJ_ABS" >&2
+  fi
   if [ "$T3CODE_CREATE_UNCERTAIN" = 1 ]; then
     # t3_thread_launch has no idempotency key, so a launch whose outcome was
     # lost may have left a thread whose id never came back.
@@ -2227,6 +2250,10 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   if [ "$BACKEND" = tern ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=tern does not support --secondmate spawns yet" >&2
+    exit 1
+  fi
+  if [ "$BACKEND" = pi-pocket ] && [ "$KIND" = secondmate ]; then
+    echo "error: backend=pi-pocket runs ship and scout workers only; a secondmate needs a top-level session, which Pi Pocket does not start for an extension" >&2
     exit 1
   fi
   fm_backend_runtime_check "$BACKEND" || exit 1
@@ -3023,10 +3050,15 @@ cortex)
   }
   ;;
 pi | pi-signed)
+  # A Pocket worker runs in Pi Pocket's own agent: no Pi CLI is launched.
+  if [ "$BACKEND" = pi-pocket ]; then
+    PI_BIN=pi
+  else
   PI_BIN=$(resolve_pi_executable "$HARNESS") || {
     echo "error: $HARNESS executable not found on PATH; install it or select a different verified harness" >&2
     exit 1
   }
+  fi
   PI_TUI_MODE=
   if pi_supports_tui_mode "$PI_BIN"; then
     PI_TUI_MODE=' --tui-mode regular'
@@ -3180,6 +3212,22 @@ if [ "$BACKEND" = t3code ]; then
   fi
   if [ -n "$WORKER_ACCOUNT" ]; then
     echo "error: backend=t3code cannot apply the $HARNESS worker account pin because T3's provider instance owns the account; select that instance in config/t3code-instances instead" >&2
+    exit 1
+  fi
+fi
+# Pi Pocket starts the worker itself, on the owner's own accounts and its own
+# environment, so the same launch settings refuse here too.
+if [ "$BACKEND" = pi-pocket ]; then
+  if [ "$RAW_LAUNCH" = 1 ]; then
+    echo "error: backend=pi-pocket cannot run a raw launch command because Pi Pocket starts the agent itself; pass the pi harness or choose another backend" >&2
+    exit 1
+  fi
+  if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
+    echo "error: backend=pi-pocket cannot apply config/launch-env-allowlist because Pi Pocket starts the agent with its own server's environment; remove that file or choose another backend" >&2
+    exit 1
+  fi
+  if [ -n "$WORKER_ACCOUNT" ]; then
+    echo "error: backend=pi-pocket cannot apply the $HARNESS worker account pin because Pi Pocket's owner accounts run the worker; remove the pin or choose another backend" >&2
     exit 1
   fi
 fi
@@ -4523,7 +4571,17 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # uncommitted changes are exactly as the previous agent left them, and nothing
   # below may touch them.
   [ "$KIND" = secondmate ] || WT=$RELAUNCH_WT
-  if [ "$RELAUNCH_REBIND" -eq 0 ]; then
+  if [ "$BACKEND" = pi-pocket ]; then
+    # A Pocket worker's replacement is a new linked session (started below in
+    # the recorded worktree), never the old one: an old session whose run
+    # failed is torn down first, so two sessions never share the worktree.
+    fm_backend_kill pi-pocket "$RELAUNCH_TARGET" || {
+      echo "error: could not stop task $ID's previous Pi Pocket session $RELAUNCH_TARGET; refusing to start a second worker in its worktree" >&2
+      exit 1
+    }
+    T=
+    WT_TARGET=
+  elif [ "$RELAUNCH_REBIND" -eq 0 ]; then
     # Adopt the recorded endpoint instead of creating one. This is what keeps a
     # relaunch a REPLACEMENT rather than a second copy of the task: no new
     # terminal, no second worktree, and every uncommitted change left exactly
@@ -5014,6 +5072,28 @@ EOF
     fi
     T3CODE_ABORT_CLEANUP=1
     ;;
+  pi-pocket)
+    # A durable lease, as for T3: there is no pane to run the interactive
+    # `treehouse get` in. The linked session starts later, once the task's
+    # wiring exists, so a refused start leaves only this lease to hand back.
+    WT=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$ID") || {
+      echo "error: treehouse get --lease failed to lease a worktree for $ID from $PROJ_ABS" >&2
+      exit 1
+    }
+    [ -n "$WT" ] || { echo "error: treehouse get --lease did not report a worktree for $ID" >&2; exit 1; }
+    validate_spawn_worktree "treehouse get --lease" "$WT (leased to $ID; once inspected, release it with 'treehouse return --force $WT' from $PROJ_ABS)"
+    PI_POCKET_LEASED=1
+    freshen_spawn_worktree_base "$WT" "$BASE_BRANCH" "$PROJ_ABS" "$MODE" || {
+      if [ "$?" -eq 2 ]; then
+        PI_POCKET_LEASED=0
+        echo "error: $WT stays leased to $ID; once inspected, release it with 'treehouse return --force $WT' from $PROJ_ABS" >&2
+      fi
+      exit 1
+    }
+    # No session yet: the record's window is the label, its target the
+    # session id the start below fills in.
+    T=
+    ;;
   esac
   # Orca and the Herdr projection own their own abort cleanup above; every other
   # endpoint a fresh polytoken spawn opened is closed by spawn_abort_cleanup when
@@ -5043,6 +5123,7 @@ spawn_send_text_line() { # <target> <text>
   paseo) fm_backend_paseo_send_text_line "$1" "$2" "$W" ;;
   rex) fm_backend_rex_send_text_line "$1" "$2" "$W" ;;
   t3code) fm_backend_t3code_send_literal "$1" "$2" ;;
+  pi-pocket) fm_backend_pi_pocket_send_literal "$1" "$2" ;;
   tern) fm_backend_tern_send_text_line "$1" "$2" "$W" ;;
   esac
 }
@@ -5067,6 +5148,7 @@ spawn_send_literal() { # <target> <text>
   paseo) fm_backend_paseo_send_literal "$1" "$2" "$W" ;;
   rex) fm_backend_rex_send_literal "$1" "$2" "$W" ;;
   t3code) fm_backend_t3code_send_literal "$1" "$2" ;;
+  pi-pocket) fm_backend_pi_pocket_send_literal "$1" "$2" ;;
   tern) fm_backend_tern_send_literal "$1" "$2" "$W" ;;
   esac
 }
@@ -5080,6 +5162,7 @@ spawn_send_key() { # <target> <key>
   paseo) fm_backend_paseo_send_key "$1" "$2" "$W" ;;
   rex) fm_backend_rex_send_key "$1" "$2" "$W" ;;
   t3code) fm_backend_t3code_send_literal "$1" "$2" ;;
+  pi-pocket) fm_backend_pi_pocket_send_literal "$1" "$2" ;;
   tern) fm_backend_tern_send_key "$1" "$2" "$W" ;;
   esac
 }
@@ -5094,6 +5177,8 @@ spawn_enter_recorded_worktree() {
   # T3 starts the agent in the leased worktree its thread launch bound;
   # there is no shell endpoint to receive a cd command.
   [ "$BACKEND" = t3code ] && return 0
+  # Pi Pocket starts the session in the leased worktree as its folder.
+  [ "$BACKEND" = pi-pocket ] && return 0
   spawn_send_text_line "$WT_TARGET" "cd -- $(shell_quote "$WT")" || {
     echo "error: task $ID's endpoint could not be moved into its recorded worktree '$WT'; refusing to launch outside the copy holding its work" >&2
     exit 1
@@ -5106,7 +5191,7 @@ spawn_enter_recorded_worktree() {
 spawn_assert_agent_worktree() {
   local expected seen i
   [ "$KIND" = secondmate ] && return 0
-  case "$BACKEND" in orca|t3code) return 0 ;; esac
+  case "$BACKEND" in orca|t3code|pi-pocket) return 0 ;; esac
   expected=$(real_path_or_raw "$WT")
   for i in $(seq 1 20); do
     seen=$(spawn_current_path "$WT_TARGET" || true)
@@ -5553,6 +5638,10 @@ polytoken_spawn_fail() {  # <detail>
 
 if [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = orca ]; then
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
+elif [ "$RELAUNCH" -eq 1 ] && [ "$BACKEND" = pi-pocket ]; then
+  # The replacement is a new linked session started in the recorded worktree
+  # below; the old one was torn down by the exit that preceded this relaunch.
+  validate_spawn_worktree "relaunch" "$WT"
 elif [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
   # proven instead is that the adopted endpoint's shell is actually sitting in
@@ -5587,8 +5676,8 @@ elif [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  # A t3code slot was leased and validated in its target branch above.
-  if [ "$BACKEND" != t3code ]; then
+  # A t3code or pi-pocket slot was leased and validated in its target branch above.
+  if [ "$BACKEND" != t3code ] && [ "$BACKEND" != pi-pocket ]; then
     spawn_send_text_line "$WT_TARGET" 'treehouse get'
 
     # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
@@ -5675,7 +5764,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     SPAWN_SLOT_CLAIMED=1
   fi
 fi
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != t3code ]; then
+if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != t3code ] && [ "$BACKEND" != pi-pocket ]; then
   freshen_spawn_worktree_base "$WT" "$BASE_BRANCH" "$PROJ_ABS" "$MODE" || exit 1
 fi
 
@@ -5685,6 +5774,30 @@ fi
 # tab's original project directory.
 spawn_enter_recorded_worktree
 spawn_assert_agent_worktree
+
+# The Pocket worker session, for a fresh spawn and a relaunch alike: a linked
+# session of the main Firstmate Pi Pocket conversation, started by the drop-in
+# in the recorded worktree on a model from the owner's subagent list. Its
+# first message is neutral; the brief follows as an unfenced submit below.
+if [ "$BACKEND" = pi-pocket ]; then
+  pi_pocket_rc=0
+  T=$(fm_backend_pi_pocket_session_start "$ID" "$WT" "${MODEL:-default}" "${EFFORT:-default}" \
+    "$(spawn_claude_task_channel_statement)" "$EXCLUDE_TOOLS") || pi_pocket_rc=$?
+  case "$pi_pocket_rc" in
+    0) ;;
+    7)
+      echo "error: the Pi Pocket worker session start for $ID did not report an outcome; a session may exist in Pi Pocket under fm-$ID: archive it there, then retry" >&2
+      exit 1
+      ;;
+    *)
+      echo "error: Pi Pocket did not start a worker session for $ID; the refusal above names why (this backend never falls back to another one)" >&2
+      exit 1
+      ;;
+  esac
+  [ -n "$T" ] || { echo "error: the Pi Pocket drop-in did not report a session id for $ID" >&2; exit 1; }
+  PI_POCKET_ABORT_CLEANUP=1
+  WT_TARGET=$T
+fi
 
 # Pre-register Claude's workspace trust for the directory this launch starts in,
 # at the first point that directory is known and before any per-task state is
@@ -5948,6 +6061,17 @@ esac
 # command does not carry, so the record would never be updated.
 busy_notify_turnend=true
 WIRING_HARNESS=$HARNESS
+# A Pocket worker's busy events come from the drop-in (run.started/run.ended),
+# which applies them to the incarnation armed here; there is no Pi process to
+# load an extension into.
+if [ "$BACKEND" = pi-pocket ]; then
+  WIRING_HARNESS=
+  BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID" --state idle --source fm-spawn --event pocket-start) || {
+    echo "error: failed to arm the busy-state contract for $ID" >&2
+    exit 1
+  }
+  [ "$RELAUNCH" -ne 1 ] || RELAUNCH_REPLACEMENT_BUSY_GEN=$BUSY_GEN
+fi
 if [ "$KIND" = secondmate ]; then
   busy_notify_turnend=false
   if [ "$RAW_LAUNCH" -ne 0 ]; then
@@ -5967,7 +6091,7 @@ if [ "$KIND" = secondmate ]; then
     esac
   fi
 fi
-BUSY_GEN=
+[ "$BACKEND" = pi-pocket ] || BUSY_GEN=
   case "$WIRING_HARNESS" in
   codex*)
     if fm_busy_codex_semantic_source; then
@@ -6633,6 +6757,7 @@ fi
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 [ "$BACKEND" = t3code ] && META_WINDOW=$W
+[ "$BACKEND" = pi-pocket ] && META_WINDOW=$W
 SPAWN_GEN="s$(date +%s).${BASHPID:-$$}.$RANDOM"
 SPAWN_META_PATH="$STATE/$ID.meta"
 if [ "$SPAWN_META_LOCK_HELD" != 1 ]; then
@@ -6650,7 +6775,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp base_branch upstream_consent forge backup_remote backup_prefix model effort opencode_version account account_provider omp_profile busy_gen spawn_gen approval_mode traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id paseo_terminal_id paseo_workspace_id rex_server rex_session_id rex_window_id rex_block_id t3_thread_id t3_project_id tern_session_id tern_tab_id tern_block_id home projects control_relaunch_tx polytoken_session polytoken_port polytoken_credential", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp base_branch upstream_consent forge backup_remote backup_prefix model effort opencode_version account account_provider omp_profile busy_gen spawn_gen approval_mode traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id paseo_terminal_id paseo_workspace_id rex_server rex_session_id rex_window_id rex_block_id t3_thread_id t3_project_id pocket_session tern_session_id tern_tab_id tern_block_id home projects control_relaunch_tx polytoken_session polytoken_port polytoken_credential", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -6732,6 +6857,8 @@ preserve_relaunch_meta() {
     echo "t3_thread_id=$T"
     echo "t3_project_id=$T3CODE_PROJECT_ID"
   fi
+  [ "$BACKEND" != pi-pocket ] || echo "pocket_session=$T"
+
   if [ "$BACKEND" = tern ]; then
     echo "tern_session_id=$TERN_SESSION_ID"
     echo "tern_tab_id=$TERN_TAB_ID"
@@ -7173,6 +7300,24 @@ if [ "$BACKEND" = t3code ]; then
       exit 1
     }
   fi
+elif [ "$BACKEND" = pi-pocket ]; then
+  # No pane to export into: the drop-in gives these facts to every command the
+  # worker runs (Pi Pocket's commandEnv), under the same conditions as the
+  # pane path below.
+  PI_POCKET_ENV=("GOTMPDIR=$TASK_TMP/gotmp" COMPACT_ADVISER_DISABLE=1 "FM_TASK_INBOX=$STATE_REAL/$ID.inbox" "FM_TASK_ID=$ID")
+  if [ "$GIT_HOOKS_INSTALLED" = 1 ]; then
+    PI_POCKET_ENV+=(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath "GIT_CONFIG_VALUE_0=$GIT_HOOKS_DIR")
+  fi
+  if [ "$LAVISH_AXI_HOST_CONFIG_PRESENT" = 1 ]; then
+    PI_POCKET_ENV+=("LAVISH_AXI_HOST=$LAVISH_AXI_HOST")
+  fi
+  if [ -n "$SPAWN_TRACEPARENT" ] && spawn_record_traceparent; then
+    PI_POCKET_ENV+=("TRACEPARENT=$SPAWN_TRACEPARENT")
+  fi
+  fm_backend_pi_pocket_configure "$T" "${PI_POCKET_ENV[@]}" || {
+    echo "error: could not give the Pi Pocket worker session $T for $ID its task environment" >&2
+    exit 1
+  }
 else
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
@@ -7275,6 +7420,21 @@ if [ "$BACKEND" = t3code ]; then
   T3CODE_ABORT_CLEANUP=0
   T3CODE_LEASED=0
   T3CODE_HOME_ENV=0
+elif [ "$BACKEND" = pi-pocket ]; then
+  # The launch-brief doorbell, unfenced: a Durable submit with a request id
+  # that makes a retry of the same brief a no-op. The drop-in refuses it when
+  # the worker's model left the owner's subagent list or spend is held.
+  PI_POCKET_BRIEF_TEXT=$("$FM_ROOT/bin/fm-operational-input.sh" encode launch-brief < "$BRIEF") || exit 1
+  SPAWN_LAUNCH_SENT=1
+  fm_backend_pi_pocket_submit "$T" "$PI_POCKET_BRIEF_TEXT" "fm-launch-$ID-$SPAWN_GEN" || {
+    if [ "$?" -ne 7 ]; then
+      echo "error: the Pi Pocket drop-in refused the launch brief for $ID on session $T; the refusal above names why" >&2
+      exit 1
+    fi
+    PI_POCKET_LAUNCH_UNCONFIRMED=1
+  }
+  PI_POCKET_ABORT_CLEANUP=0
+  PI_POCKET_LEASED=0
 else
   if ! (umask 077 && mkdir "$LAUNCH_DIR") 2>/dev/null; then
     if [ -L "$LAUNCH_DIR" ] || [ ! -d "$LAUNCH_DIR" ] || [ ! -O "$LAUNCH_DIR" ] ||
@@ -7523,6 +7683,10 @@ fi
 fm_lock_release "$SPAWN_META_LOCK"
 SPAWN_META_LOCK_HELD=0
 
+if [ "$PI_POCKET_LAUNCH_UNCONFIRMED" = 1 ]; then
+  echo "error: the launch brief for $ID may already have been delivered to Pi Pocket session $T: the drop-in did not answer in time. The task record is kept; check the session in Pi Pocket, and if the brief is absent resend it with: bin/fm-pi-pocket-bridge.mjs send --state $STATE_REAL --session $T --text-file <encoded brief> --request-id fm-launch-$ID-$SPAWN_GEN" >&2
+  exit 1
+fi
 if [ "$T3CODE_LAUNCH_UNCONFIRMED" = 1 ]; then
   echo "error: the launch brief for $ID may already have been delivered to T3 thread $T: its outcome is unproven (a lost reply or a T3 error that can follow a commit). The task record is kept; inspect the thread in T3 Code, and if the brief is absent resend only the identical brief text, which reuses its request id within the hour" >&2
   exit 1

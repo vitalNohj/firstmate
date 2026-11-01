@@ -10,6 +10,7 @@
 //   spawn --task ID --cwd DIR [--model M] [--thinking E] [--title T]
 //         [--prompt-file F] [--env-file F] [--exclude-tools a,b] [--attempt A]
 //                                             start a worker session: {session, address, model}
+//   configure --session N --env-file F        add the task environment its commands get: {}
 //   send --session N (--text T | --text-file F) [--when-busy followUp|steer] [--request-id R]
 //                                             submit into the worker, unfenced: {submission}
 //   interrupt --session N                     abort its run: {cancel: confirmed|not-running}
@@ -41,7 +42,7 @@ function die(code, message) {
 }
 
 const [verb, ...rest] = process.argv.slice(2);
-const VERBS = new Set(["status", "spawn", "send", "interrupt", "capture", "state", "kill"]);
+const VERBS = new Set(["status", "spawn", "configure", "send", "interrupt", "capture", "state", "kill"]);
 if (!VERBS.has(verb)) die(2, `usage: fm-pi-pocket-bridge.mjs <${[...VERBS].join("|")}> --state <state-dir> [options]`);
 const opts = {};
 for (let index = 0; index < rest.length; index += 1) {
@@ -89,6 +90,10 @@ switch (verb) {
       env: opts["env-file"] ? JSON.parse(read(opts["env-file"])) : {},
       excludeTools: (opts["exclude-tools"] || "").split(",").filter(Boolean),
     });
+    break;
+  case "configure":
+    if (!opts["env-file"]) die(2, "error: configure needs --env-file");
+    Object.assign(request, { session: session(), env: JSON.parse(read(opts["env-file"])) });
     break;
   case "send": {
     const text = opts["text-file"] ? read(opts["text-file"]) : opts.text;

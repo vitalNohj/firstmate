@@ -1378,7 +1378,7 @@ type WorkerRecord = {
 type BridgeRequest = {
     v: 1;
     id: string;
-    verb: "spawn" | "send" | "interrupt" | "capture" | "state" | "kill" | "status";
+    verb: "spawn" | "configure" | "send" | "interrupt" | "capture" | "state" | "kill" | "status";
     server: string;
     conversation: string;
     pid: number;
@@ -1401,6 +1401,16 @@ type LinkedApi = {
 
 function bridgeDir(home: string): string {
     return join(stateOf(home), BRIDGE_DIR);
+}
+
+/** The task environment a worker's commands get: plain names, string values, and never a Pi Pocket identity. */
+function workerEnv(value: unknown): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const [name, item] of Object.entries((value ?? {}) as Record<string, unknown>)) {
+        if (WORKER_ENV_KEY.test(name) && typeof item === "string" && !name.startsWith("FM_PI_POCKET_")) env[name] = item;
+    }
+
+    return env;
 }
 
 const validTask = (task: unknown): task is string => typeof task === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(task);
@@ -1659,10 +1669,7 @@ function createWorkers(host: Partial<Host>) {
         if (!cwd.startsWith("/") || !(await stat(cwd).catch(() => undefined))?.isDirectory()) return refuse("invalid", `the worker folder ${cwd} is not a directory`);
         const held = heldBack(main);
         if (held !== undefined) return refuse("held", `Pi Pocket holds this session back: ${held}`);
-        const env: Record<string, string> = {};
-        for (const [name, value] of Object.entries((request.env ?? {}) as Record<string, unknown>)) {
-            if (WORKER_ENV_KEY.test(name) && typeof value === "string" && !name.startsWith("FM_PI_POCKET_")) env[name] = value;
-        }
+        const env = workerEnv(request.env);
         const excludeTools = Array.isArray(request.excludeTools) ? request.excludeTools.filter((name): name is string => typeof name === "string" && name !== "") : [];
         const existing = await byTask(home, task);
         if (existing !== undefined && existing.retired !== true && existing.archived !== true) {
@@ -1747,6 +1754,15 @@ function createWorkers(host: Partial<Host>) {
         }
         if (record.main !== Number(main)) return refuse("foreign", `the worker session ${String(record.session)} belongs to another main session`);
         switch (request.verb) {
+            case "configure": {
+                if (record.retired === true || record.archived === true) return refuse("retired", `the worker for ${record.task} was torn down`);
+                const env = workerEnv(request.env);
+                await lane(record.session, async () => {
+                    const latest = (await byTask(home, record.task)) ?? record;
+                    await save({ ...latest, env: { ...latest.env, ...env } });
+                });
+                return { ok: true };
+            }
             case "send": {
                 const text = typeof request.text === "string" ? request.text : "";
                 if (text === "") return refuse("invalid", "send needs text");

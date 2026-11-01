@@ -66,6 +66,45 @@ fm_backend_pi_pocket_runtime_check() {
   fm_backend_pi_pocket_bridge status >/dev/null
 }
 
+# fm_backend_pi_pocket_session_start <task> <cwd> <model> <effort> <prompt>
+# [exclude-tools]: start the worker's linked session in <cwd> on <model> and
+# <effort> (default: the first usable model on the owner's subagent list),
+# with a neutral first message; the brief follows as an unfenced submit.
+# Prints the session id. Exit 3 is the drop-in's refusal (a model off the
+# owner's list, a spend hold, plan mode); 7 means the start may have happened.
+fm_backend_pi_pocket_session_start() {  # <task> <cwd> <model> <effort> <prompt> [exclude-tools]
+  local task=$1 cwd=$2 model=$3 effort=$4 prompt=$5 exclude=${6:-} prompt_file out rc=0
+  prompt_file=$(mktemp "${TMPDIR:-/tmp}/fm-pi-pocket-prompt.XXXXXX") || return 1
+  printf '%s' "$prompt" > "$prompt_file" || { rm -f "$prompt_file"; return 1; }
+  local -a args=(spawn --task "$task" --cwd "$cwd" --title "fm-$task" --prompt-file "$prompt_file")
+  [ -z "$model" ] || [ "$model" = default ] || args+=(--model "$model")
+  [ -z "$effort" ] || [ "$effort" = default ] || args+=(--thinking "$effort")
+  [ -z "$exclude" ] || args+=(--exclude-tools "$exclude")
+  out=$(fm_backend_pi_pocket_bridge "${args[@]}") || rc=$?
+  rm -f "$prompt_file"
+  [ "$rc" -eq 0 ] || return "$rc"
+  printf '%s' "$out" | fm_backend_pi_pocket_json_get session
+}
+
+# fm_backend_pi_pocket_configure <session> <NAME=value>...: the task
+# environment every command the worker runs gets (Pi Pocket's commandEnv).
+fm_backend_pi_pocket_configure() {  # <session> <NAME=value>...
+  local session=$1 env_file rc=0
+  shift
+  env_file=$(mktemp "${TMPDIR:-/tmp}/fm-pi-pocket-env.XXXXXX") || return 1
+  node -e '
+const env = {};
+for (const pair of process.argv.slice(1)) {
+  const at = pair.indexOf("=");
+  if (at > 0) env[pair.slice(0, at)] = pair.slice(at + 1);
+}
+process.stdout.write(JSON.stringify(env));
+' "$@" > "$env_file" || { rm -f "$env_file"; return 1; }
+  fm_backend_pi_pocket_bridge configure --session "$session" --env-file "$env_file" >/dev/null || rc=$?
+  rm -f "$env_file"
+  return "$rc"
+}
+
 # fm_backend_pi_pocket_probe: one word naming the session's row in the status
 # table: busy, idle, dead (its last run failed, from Pi Pocket's run-failed
 # signal), missing (archived, retired, or gone), or unreadable.
