@@ -321,6 +321,18 @@ test_spawn_starts_session_and_submits_brief() {
     "$ROOT/bin/fm-control.sh" "$id" interrupt 2>&1) || fail "fm-control interrupt must succeed"$'\n'"$out"
   [ "$(pp_world 'w.workers["100"].aborts')" = 1 ] || fail "fm-control interrupt must abort the run"$'\n'"$out"
 
+  # fm-control relaunch: the old session is torn down and a new one starts in the same worktree with the brief.
+  pp_set 'w.workers["100"].busy = false'
+  out=$(HOME="$CASE_DIR/user-home" PATH="$FB:$PATH" FM_PP_TREEHOUSE_LOG="$CASE_DIR/treehouse.log" FM_PP_WT="$WT" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+    FM_PROJECTS_OVERRIDE="$CASE_DIR/unused-projects" FM_SPAWN_NO_GUARD=1 "$ROOT/bin/fm-control.sh" "$id" relaunch --note "the earlier session stopped" 2>&1); rc=$?
+  expect_code 0 "$rc" "fm-control relaunch must succeed"$'\n'"$out"
+  [ "$(pp_world 'w.workers["100"].retired')" = true ] || fail "relaunch must tear the old session down first"$'\n'"$out"
+  [ "$(pp_world 'w.workers["101"].cwd')" = "$WT" ] || fail "relaunch must start the new session in the same worktree"$'\n'"$out"
+  assert_contains "$(pp_world 'w.workers["101"].submissions[0].text')" "FIRSTMATE_OP: v1 launch-brief:" "the new session must get the brief"
+  assert_grep "pocket_session=101" "$STATE/$id.meta" "meta must name the new session"
+  [ "$(grep -c "get --lease" "$CASE_DIR/treehouse.log")" = 1 ] || fail "relaunch must reuse the worktree, not lease another"
+
   # fm-teardown: the session is torn down through the adapter.
   printf 'report\n' > "$DATA/$id/report.md"
   printf 'decisions_reviewed=1\ndecision_keys=\n' >> "$STATE/$id.meta"
@@ -328,8 +340,8 @@ test_spawn_starts_session_and_submits_brief() {
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
     FM_SPAWN_NO_GUARD=1 "$ROOT/bin/fm-teardown.sh" "$id" 2>&1); rc=$?
   expect_code 0 "$rc" "teardown must succeed"$'\n'"$out"
-  [ "$(pp_world 'w.workers["100"].retired')" = true ] || fail "teardown must retire the session without stop/archive"$'\n'"$out"
-  pass "fm-spawn/fm-control/fm-teardown --backend pi-pocket: lease, neutral start, task env, brief submit, abort, retire"
+  [ "$(pp_world 'w.workers["101"].retired')" = true ] || fail "teardown must retire the session without stop/archive"$'\n'"$out"
+  pass "fm-spawn/fm-control/fm-teardown --backend pi-pocket: lease, neutral start, task env, brief submit, abort, relaunch as a new session, retire"
 }
 
 test_spawn_refuses_without_bridge_and_never_falls_back() {

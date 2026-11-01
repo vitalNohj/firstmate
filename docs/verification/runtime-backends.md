@@ -2496,7 +2496,7 @@ FM_PI_POCKET_DROPIN_FILTER="Pocket worker|run events|restart cut" bin/fm-test-ru
 
 ```text
 ✔ a Pocket worker is a linked session in its worktree whose brief arrives unfenced, with its task env, prompt, and blocked tools
-✔ Pocket worker submits refuse a model off the owner's list and a spend hold, and an unlisted spawn model is refused
+✔ Pocket worker submits refuse a model off the owner's list and a spend hold, and a spawn refuses an unlisted model, a hold, and plan mode
 ✔ doubled and missed run events change a worker's busy state once, and the list reconcile corrects a lost run.ended
 ✔ a Pocket worker interrupt aborts its run, and a kill without linked-session stop retires it and refuses later sends
 ✔ a Pocket worker kill stops and archives it, reading the archive back, when Pi Pocket has linked-session stop and archive
@@ -2530,7 +2530,7 @@ ok - adapter: start, configure, send, capture, state, interrupt, keys, failed ru
 ok - adapter: kill stops and archives when Pi Pocket has linked-session stop and archive
 ok - adapter: an unlisted model and a spend hold are refused as blockers, before any submit
 ok - client: an unanswered send exits 7, and a retry with the same request id submits once
-ok - fm-spawn/fm-control/fm-teardown --backend pi-pocket: lease, neutral start, task env, brief submit, abort, retire
+ok - fm-spawn/fm-control/fm-teardown --backend pi-pocket: lease, neutral start, task env, brief submit, abort, relaunch as a new session, retire
 ok - fm-spawn --backend pi-pocket: no bridge is a blocker before any lease, never a fallback
 ok - fm-spawn --backend pi-pocket: a refused start (spend hold) is a blocker and returns the lease
 ok - fm-spawn --backend pi-pocket: refuses a harness other than pi

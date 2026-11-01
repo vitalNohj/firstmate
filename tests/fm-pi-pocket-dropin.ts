@@ -1091,7 +1091,7 @@ test("a Pocket worker is a linked session in its worktree whose brief arrives un
     }
 });
 
-test("Pocket worker submits refuse a model off the owner's list and a spend hold, and an unlisted spawn model is refused", { timeout: 90_000 }, async () => {
+test("Pocket worker submits refuse a model off the owner's list and a spend hold, and a spawn refuses an unlisted model, a hold, and plan mode", { timeout: 90_000 }, async () => {
     const { app, id, fmHome } = await workerMain();
     const wt = worktree("worker-gates");
     const refused = await bridgeCall(fmHome, id, ["spawn", "--task", "task-unlisted", "--cwd", wt, "--model", "faux/faux-2"]);
@@ -1117,6 +1117,18 @@ test("Pocket worker submits refuse a model off the owner's list and a spend hold
     assert.match(heldSpawn.err, /held: /);
     await settle();
     assert.equal((await userTexts(app, session)).length, before, "a refused submit sends nothing");
+
+    // Main in plan mode: Pi Pocket refuses the start, and the drop-in reports that refusal.
+    await app.spend.setSessionBudget(owner(app), id, null);
+    const { PlanDoc } = await import(join(checkout, "src/server/docs.ts"));
+    await app.harness.commit(async (tx: { doc: (doc: unknown, id: unknown) => Promise<{ on: boolean }> }) => {
+        (await tx.doc(PlanDoc, id)).on = true;
+        return undefined;
+    }, context);
+    const planned = await bridgeCall(fmHome, id, ["spawn", "--task", "task-plan", "--cwd", wt]);
+    assert.equal(planned.code, 3, planned.out);
+    assert.match(planned.err, /start: Pi Pocket refused to start the worker session: This session is in plan mode/);
+    assert.equal(workerRecord(fmHome, "task-plan"), undefined, "a refused start records no worker");
 });
 
 test("doubled and missed run events change a worker's busy state once, and the list reconcile corrects a lost run.ended", { timeout: 90_000 }, async () => {
