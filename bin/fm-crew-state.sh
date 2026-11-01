@@ -1342,19 +1342,19 @@ if ! pane_readable "$BACKEND_TARGET"; then
   # report unverified, and tern's classifier is not promoted to recovery grade)
   # keep their historical capture-failure-means-gone reading.
   case "$TASK_BACKEND" in
-    tmux|herdr|rex|t3code) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
+    tmux|herdr|rex|t3code|pi-pocket) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
     *) AGENT_STATE=none ;;
   esac
   case "$TASK_BACKEND:$AGENT_STATE" in
-    tmux:alive|herdr:alive|rex:alive|t3code:alive)
+    tmux:alive|herdr:alive|rex:alive|t3code:alive|pi-pocket:alive)
       ;;
-    tmux:missing|herdr:missing|rex:missing|t3code:missing)
+    tmux:missing|herdr:missing|rex:missing|t3code:missing|pi-pocket:missing)
       emit unknown none "backend target gone: $BACKEND_TARGET"
       ;;
-    tmux:dead|herdr:dead|rex:dead|t3code:dead)
+    tmux:dead|herdr:dead|rex:dead|t3code:dead|pi-pocket:dead)
       emit unknown none "backend target gone: $BACKEND_TARGET (agent gone, pane shell remains)"
       ;;
-    tmux:*|herdr:*|rex:*|t3code:*)
+    tmux:*|herdr:*|rex:*|t3code:*|pi-pocket:*)
       emit unknown none "backend unreachable ($TASK_BACKEND endpoint state: $AGENT_STATE)"
       ;;
     *)

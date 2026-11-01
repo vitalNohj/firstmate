@@ -1046,6 +1046,16 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
         ;;
     esac
   fi
+  # pi-pocket likewise: the drop-in reads the run state from Pi Pocket itself.
+  if [ "$backend" = pi-pocket ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
+    native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
+    case "$native" in
+      busy|idle|unknown)
+        printf '%s pi-pocket-native' "$native"
+        return 0
+        ;;
+    esac
+  fi
   case "$harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then
@@ -1241,7 +1251,7 @@ fm_busy_is_busy() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local verdict
   verdict=$(fm_busy_classify "$@")
   case "$verdict" in
-    busy\ *|unknown\ t3code-native) return 0 ;;
+    busy\ *|unknown\ t3code-native|unknown\ pi-pocket-native) return 0 ;;
     *) return 1 ;;
   esac
 }

@@ -394,8 +394,8 @@ fm_control_harness_supported "$HARNESS" \
   || die "task $ID records harness '${RECORDED_HARNESS:-none}', which has no verified control mechanics; fm-control refuses to guess an interrupt key or exit command"
 
 fm_backend_validate "$BACKEND" || exit 1
-if [ "$BACKEND" = t3code ]; then
-  fm_backend_runtime_check t3code || exit 1
+if [ "$BACKEND" = t3code ] || [ "$BACKEND" = pi-pocket ]; then
+  fm_backend_runtime_check "$BACKEND" || exit 1
 fi
 
 # --- shared helpers ---------------------------------------------------------
@@ -593,6 +593,13 @@ deliver_interrupt() {
     printf '%s' "${cancel:-unconfirmed}"
     return 0
   fi
+  # Pi Pocket likewise: the drop-in aborts the worker session's run.
+  if [ "$BACKEND" = pi-pocket ]; then
+    cancel=$(fm_backend_pi_pocket_native_interrupt "$T") \
+      || die "interrupt was not delivered to task $ID on $BACKEND"
+    printf '%s' "${cancel:-unconfirmed}"
+    return 0
+  fi
   prepare_interrupt_ack
   send_interrupt_keys
   if [ "$INTERRUPT_ARMED" = no ]; then
@@ -693,6 +700,23 @@ retire_busy_incarnation() {
   fi
 }
 
+# pi_pocket_exit: tear the worker session down through the drop-in and prove
+# it reads missing. Prints `already-stopped` or `stopped`.
+pi_pocket_exit() {
+  local state
+  state=$(agent_state)
+  case "$state" in
+    missing) printf 'already-stopped'; return 0 ;;
+    alive|dead) ;;
+    *) die "task $ID's Pi Pocket session reads '$state' rather than a positively classified state; refusing to tear it down blind" ;;
+  esac
+  fm_backend_kill "$BACKEND" "$T" || die "the Pi Pocket worker session for task $ID could not be stopped"
+  state=$(agent_state)
+  [ "$state" = missing ] || die "task $ID's Pi Pocket session still reads '$state' after its stop"
+  retire_busy_incarnation
+  printf 'stopped'
+}
+
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped`, `endpoint-gone`, or `stopped`.
 do_exit() {
@@ -700,6 +724,13 @@ do_exit() {
   require_state_verified_backend exit
   fm_control_backend_exit_supported "$BACKEND" \
     || die "task $ID runs on the $BACKEND backend, whose T3 Orchestrator V2 tools have no session stop, so 'exit' cannot stop its agent; 'interrupt' ends the running turn and teardown archives the thread"
+  # A Pi Pocket worker has no process to stop: an idle session is still the
+  # agent. Its stop is its teardown (stop + archive, or abort + retire), which
+  # keeps the transcript in Pi Pocket and the worktree untouched.
+  if [ "$BACKEND" = pi-pocket ]; then
+    pi_pocket_exit
+    return $?
+  fi
   state=$(agent_state)
   case "$state" in
     dead)

@@ -52,7 +52,7 @@
 # `backend=tmux` for a default-backend task, so existing and newly spawned
 # default-path metas stay byte-identical. Only a task spawned on a non-tmux
 # spawn-capable backend, currently herdr, zellij, orca, cmux, paseo, rex, or
-# t3code, or tern, carries an explicit `backend=` line.
+# t3code, tern, or pi-pocket, carries an explicit `backend=` line.
 #
 # Event-source framing (herdr-addendum "Events as the core abstraction"): a
 # backend's supervision surface is conceptually an EVENT SOURCE - it produces
@@ -94,9 +94,13 @@ FM_BACKEND_CONFIG_DIR="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # tern is EXPERIMENTAL and spawn-capable, session-provider-only like cmux
 # (docs/tern-backend.md); docs/verification/runtime-backends.md records what
 # was exercised against a real Tern.
+# pi-pocket is EXPERIMENTAL, spawn-capable, and explicit-only (never
+# auto-detected and never the default): ship and scout workers run as Pi Pocket
+# linked sessions of the main Firstmate Pi Pocket conversation, driven through
+# the Firstmate drop-in's worker bridge (docs/pi-pocket-backend.md).
 # codex-app remains deliberately absent; see docs/codex-app-backend.md.
-FM_BACKEND_KNOWN="tmux herdr zellij orca cmux paseo rex t3code tern"
-FM_BACKEND_SPAWN="tmux herdr zellij orca cmux paseo rex t3code tern"
+FM_BACKEND_KNOWN="tmux herdr zellij orca cmux paseo rex t3code tern pi-pocket"
+FM_BACKEND_SPAWN="tmux herdr zellij orca cmux paseo rex t3code tern pi-pocket"
 
 # fm_backend_list_contains: whitespace-delimited membership without relying on
 # shell word splitting. fm-backend.sh is normally sourced by bash scripts, but
@@ -331,8 +335,8 @@ fm_backend_explicit_name() {
 # notice names the winning signal, so a fallback-detected cmux (bundle id or
 # ancestry, after the claude wrapper stripped CMUX_WORKSPACE_ID) is visibly
 # distinct from the primary-marker case.
-# Paseo and tern are never auto-detected, so they only ever come out of this
-# function from FM_BACKEND or config/backend.
+# Paseo, tern, and pi-pocket are never auto-detected, so they only ever come
+# out of this function from FM_BACKEND or config/backend.
 fm_backend_name() {
   local detected marker
   fm_backend_explicit_name && return 0
@@ -386,10 +390,11 @@ fm_backend_validate_spawn() {  # <name>
 #     paths parse the backend's JSON output (see each adapter's
 #     tool check, e.g. fm_backend_herdr_tool_check);
 #   - the treehouse worktree provider for every session-provider-only backend
-#     (tmux, herdr, zellij, cmux, paseo, rex, t3code, tern); orca owns its own task worktree and
+#     (tmux, herdr, zellij, cmux, paseo, rex, t3code, tern, pi-pocket); orca owns its own task worktree and
 #     terminal, so it drops both treehouse and any other backend's session CLI;
 #   - node for t3code, whose adapter speaks MCP to the T3 server through
-#     bin/fm-t3-mcp.mjs.
+#     bin/fm-t3-mcp.mjs, and for pi-pocket, whose adapter speaks to the
+#     Firstmate drop-in's worker bridge through bin/fm-pi-pocket-bridge.mjs.
 # Prints a single space-separated line and returns 0 for a known backend; returns
 # 1 and prints nothing for an unknown backend.
 fm_backend_required_tools() {  # <backend>
@@ -403,6 +408,7 @@ fm_backend_required_tools() {  # <backend>
     tern)   printf '%s' 'tern jq treehouse' ;;
     orca)   printf '%s' 'orca' ;;
     t3code) printf '%s' 'node treehouse' ;;
+    pi-pocket) printf '%s' 'node treehouse' ;;
     *) return 1 ;;
   esac
 }
@@ -459,6 +465,10 @@ fm_backend_target_of_meta() {  # <meta-file>
   fi
   if [ "$backend" = t3code ]; then
     terminal=$(fm_meta_get "$meta" t3_thread_id)
+    [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
+  fi
+  if [ "$backend" = pi-pocket ]; then
+    terminal=$(fm_meta_get "$meta" pocket_session)
     [ -n "$terminal" ] && { printf '%s' "$terminal"; return 0; }
   fi
   window=$(fm_meta_get "$meta" window)
@@ -710,6 +720,23 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
       fi
       window=$thread
       ;;
+    pi-pocket)
+      [ "$binding" = "$id" ] || {
+        echo "REFUSED: Pi Pocket endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
+        return 1
+      }
+      thread=$(fm_backend_meta_exact_value "$meta" pocket_session) || thread=
+      [ -n "$thread" ] || {
+        echo "REFUSED: missing pocket_session in $meta; cannot stop the Pi Pocket worker session; preserving task state." >&2
+        return 1
+      }
+      case "$thread" in *[!0-9]*) thread= ;; esac
+      if [ "$window" != "fm-$id" ] || [ -z "$thread" ]; then
+        echo "REFUSED: Pi Pocket endpoint metadata for task $id is malformed or inconsistent; preserving task state." >&2
+        return 1
+      fi
+      window=$thread
+      ;;
     tern)
       [ "$binding" = "$id" ] || {
         echo "REFUSED: legacy tern endpoint metadata for task $id lacks an exact task binding; preserving task state." >&2
@@ -854,6 +881,9 @@ fm_backend_source() {  # <name>
     t3code)
       set -- fm-composer-lib.sh fm-transition-lib.sh
       ;;
+    pi-pocket)
+      set -- fm-composer-lib.sh
+      ;;
     tern)
       set -- fm-backend-hometag-lib.sh fm-composer-lib.sh fm-timeout-lib.sh fm-agent-process-lib.sh fm-session-lock-lib.sh fm-gemini-lib.sh fm-cursor-lib.sh
       ;;
@@ -921,6 +951,13 @@ fm_backend_source() {  # <name>
         # shellcheck source=/dev/null
         . "$adapter" || return 1
         _FM_BACKEND_T3CODE_SOURCED=1
+      fi
+      ;;
+    pi-pocket)
+      if [ -z "${_FM_BACKEND_PI_POCKET_SOURCED:-}" ]; then
+        # shellcheck source=/dev/null
+        . "$adapter" || return 1
+        _FM_BACKEND_PI_POCKET_SOURCED=1
       fi
       ;;
     tern)
@@ -1005,6 +1042,7 @@ fm_backend_capture() {  # <backend> <target> <lines> [expected-label]
     paseo) fm_backend_paseo_capture "$@" ;;
     rex) fm_backend_rex_capture "$@" ;;
     t3code) fm_backend_t3code_capture "$@" ;;
+    pi-pocket) fm_backend_pi_pocket_capture "$@" ;;
     tern) fm_backend_tern_capture "$@" ;;
     *) echo "error: no capture implementation for backend '$backend'" >&2; return 1 ;;
   esac
@@ -1059,6 +1097,7 @@ fm_backend_send_key() {  # <backend> <target> <key> [expected-label]
     paseo) fm_backend_paseo_send_key "$@" ;;
     rex) fm_backend_rex_send_key "$@" ;;
     t3code) fm_backend_t3code_send_key "$@" ;;
+    pi-pocket) fm_backend_pi_pocket_send_key "$@" ;;
     tern) fm_backend_tern_send_key "$@" ;;
     *) echo "error: no send-key implementation for backend '$backend'" >&2; return 1 ;;
   esac
@@ -1103,6 +1142,7 @@ fm_backend_send_text_submit() {  # <backend> <target> <text> <retries> <enter-sl
     paseo) fm_backend_paseo_send_text_submit "$@" || rc=$? ;;
     rex) fm_backend_rex_send_text_submit "$@" || rc=$? ;;
     t3code) fm_backend_t3code_send_text_submit "$@" || rc=$? ;;
+    pi-pocket) fm_backend_pi_pocket_send_text_submit "$@" || rc=$? ;;
     tern) fm_backend_tern_send_text_submit "$@" || rc=$? ;;
     *) echo "error: no send-text implementation for backend '$backend'" >&2; rc=1 ;;
   esac
@@ -1139,6 +1179,7 @@ fm_backend_kill() {  # <backend> <target>
     paseo) fm_backend_paseo_kill "$@" ;;
     rex) fm_backend_rex_kill "$@" ;;
     t3code) fm_backend_t3code_kill "$1" ;;
+    pi-pocket) fm_backend_pi_pocket_kill "$1" ;;
     tern) fm_backend_tern_kill "$@" ;;
     *) echo "error: no kill implementation for backend '$backend'" >&2; return 1 ;;
   esac
@@ -1179,6 +1220,7 @@ fm_backend_busy_state() {  # <backend> <target>
     herdr) fm_backend_herdr_busy_state "$@" ;;
     rex) fm_backend_rex_busy_state "$@" ;;
     t3code) fm_backend_t3code_busy_state "$@" ;;
+    pi-pocket) fm_backend_pi_pocket_busy_state "$@" ;;
     tern) fm_backend_tern_busy_state "$@" ;;
     *) printf 'unknown' ;;
   esac
@@ -1209,6 +1251,7 @@ fm_backend_composer_state() {  # <backend> <target> [expected-label] -> empty|pe
     rex) fm_backend_rex_composer_state "$@" ;;
     zellij) fm_backend_zellij_composer_state "$@" ;;
     t3code) fm_backend_t3code_composer_state "$@" ;;
+    pi-pocket) fm_backend_pi_pocket_composer_state "$@" ;;
     tern) fm_backend_tern_composer_state "$@" ;;
     *) printf 'unknown' ;;
   esac
@@ -1276,6 +1319,10 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       fm_backend_source t3code || return 1
       fm_backend_t3code_target_exists "$target"
       ;;
+    pi-pocket)
+      fm_backend_source pi-pocket || return 1
+      fm_backend_pi_pocket_target_exists "$target"
+      ;;
     tern)
       fm_backend_source tern || return 1
       fm_backend_tern_target_ready "$target" "$expected_label"
@@ -1322,6 +1369,7 @@ fm_backend_agent_state() {  # <backend> <target>
     herdr) fm_backend_herdr_agent_state "$target" ;;
     rex) fm_backend_rex_agent_state "$target" ;;
     t3code) fm_backend_t3code_agent_state "$target" ;;
+    pi-pocket) fm_backend_pi_pocket_agent_state "$target" ;;
     tern) fm_backend_tern_agent_state "$target" ;;
     *) printf 'unverified' ;;
   esac
@@ -1456,6 +1504,7 @@ fm_backend_runtime_check() {  # <backend>
   case "$1" in
     orca) fm_backend_orca_runtime_check ;;
     t3code) fm_backend_t3code_runtime_check ;;
+    pi-pocket) fm_backend_pi_pocket_runtime_check ;;
     *) return 0 ;;
   esac
 }
@@ -1464,6 +1513,7 @@ fm_backend_validate_harness() {  # <backend> <harness>
   fm_backend_source "$1" || return 1
   case "$1" in
     t3code) fm_backend_t3code_validate_harness "$2" ;;
+    pi-pocket) fm_backend_pi_pocket_validate_harness "$2" ;;
     *) return 0 ;;
   esac
 }
