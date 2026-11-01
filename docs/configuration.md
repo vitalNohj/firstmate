@@ -550,8 +550,9 @@ For spawn-capable adapters, the runtime session-provider backend controls where 
 | `rex` | Experimental; no dedicated real-backend CI lane | [`docs/rex-backend.md`](rex-backend.md) |
 | `t3code` | Experimental; no dedicated real-backend CI lane | [`docs/t3code-backend.md`](t3code-backend.md) |
 | `tern` | Experimental; no dedicated real-backend CI lane | [`docs/tern-backend.md`](tern-backend.md) |
+| `pi-pocket` | Experimental and explicit-only; ship and scout workers as Pi Pocket linked sessions of a Pi Pocket primary; no dedicated real-backend CI lane | [`docs/pi-pocket-backend.md`](pi-pocket-backend.md) |
 
-Treehouse remains the worktree provider for tmux, herdr, zellij, cmux, paseo, rex, t3code, and tern, since herdr, zellij, cmux, paseo, rex, t3code, and tern are session providers only; Orca provides both the task worktree and terminal endpoint.
+Treehouse remains the worktree provider for tmux, herdr, zellij, cmux, paseo, rex, t3code, tern, and pi-pocket, since herdr, zellij, cmux, paseo, rex, t3code, tern, and pi-pocket are session providers only; Orca provides both the task worktree and terminal endpoint.
 
 ### Backend selection order
 
@@ -573,13 +574,15 @@ If more than one runtime marker is present, detection resolves innermost-first: 
 See [`docs/cmux-backend.md`](cmux-backend.md#runtime-detection) for why cmux can be selected when `CMUX_WORKSPACE_ID` is absent, and [`docs/rex-backend.md`](rex-backend.md#auto-detection) for why a nested tmux or Herdr inside a Rex block is never read as Rex.
 
 Auto-detected Herdr and Rex stay silent like tmux, while auto-detected cmux prints a stderr notice naming `config/backend` and `--backend tmux` because cmux remains experimental.
-T3 Code, Zellij, Orca, Paseo, and tern are never auto-detected; select them by putting the name in a local `config/backend` file, by exporting `FM_BACKEND=<name>`, or by telling the first mate in chat.
+T3 Code, Zellij, Orca, Paseo, tern, and pi-pocket are never auto-detected; select them by putting the name in a local `config/backend` file, by exporting `FM_BACKEND=<name>`, or by telling the first mate in chat.
 Paseo and tern stay explicit-only because their runtime markers leak into every descendant process, so they cannot stand for a selection (see [`docs/paseo-backend.md`](paseo-backend.md#selection-is-explicit) and [`docs/tern-backend.md`](tern-backend.md#selection-is-explicit)).
+A Pi Pocket primary still defaults to herdr: Pocket workers are an opt-in (`config/backend=pi-pocket` or a per-task `--backend pi-pocket`), never the default ([`docs/pi-pocket-backend.md`](pi-pocket-backend.md#selection)).
 
 ### Accepted backends and secondmate limits
 
-Any value other than `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `rex`, `t3code`, or `tern` is rejected until another adapter is implemented and verified.
-`fm-spawn.sh` accepts `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `rex`, `t3code`, and `tern` for ship and scout tasks; `backend=orca`, `backend=cmux`, `backend=paseo`, and `backend=tern` all still refuse `--secondmate` until secondmate launch semantics are designed for each, while `backend=t3code` supports secondmates and runs only the `claude` and `codex` harnesses.
+Any value other than `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `rex`, `t3code`, `tern`, or `pi-pocket` is rejected until another adapter is implemented and verified.
+`fm-spawn.sh` accepts `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `rex`, `t3code`, `tern`, and `pi-pocket` for ship and scout tasks; `backend=orca`, `backend=cmux`, `backend=paseo`, and `backend=tern` all still refuse `--secondmate` until secondmate launch semantics are designed for each, while `backend=t3code` supports secondmates and runs only the `claude` and `codex` harnesses.
+`backend=pi-pocket` refuses `--secondmate` (a secondmate needs a top-level session, which Pi Pocket does not start for an extension) and runs only the `pi` harness, Pi Pocket's own agent.
 
 `codex-app` is not an accepted runtime backend yet; [`docs/codex-app-backend.md`](codex-app-backend.md) owns the Codex App boundary.
 
@@ -621,6 +624,7 @@ Task meta records `backend=` only for a non-default backend; an absent `backend=
 
 - A cmux task additionally records `cmux_workspace_id=` and `cmux_surface_id=`.
 - A t3code task additionally records `t3_thread_id=` and `t3_project_id=`, with `window=fm-<id>` kept as the shared firstmate alias.
+- A pi-pocket task additionally records `pocket_session=`, the Pi Pocket session id of its worker, with `window=fm-<id>` kept as the shared firstmate alias.
 
 - A tern task additionally records `tern_session_id=`, `tern_tab_id=`, and `tern_block_id=`.
 
