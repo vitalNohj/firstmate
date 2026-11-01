@@ -6,13 +6,14 @@
 // request it took, so no test needs a Pi Pocket server.
 //
 // usage: pi-pocket-fake-bridge.mjs --state DIR --world FILE --log FILE
-//          --server PID --conversation ID [--parent-pid PID]
+//          --server PID --conversation ID --token T [--parent-pid PID]
 //
 // The world (every key optional):
 //   models    the owner's subagent model list (default ["faux/faux-1"])
 //   held      a spend-hold reason; spawn and every submit refuse with it
 //   stop      true when this Pi Pocket has linkedSessions.stop and archive
 //   silent    true to take requests and never answer (the helper's timeout)
+//   silentVerbs  the verbs to take and never answer
 //   down      true to stop the heartbeat (the bridge is not running)
 //   workers   { "<session>": { task, model, busy, failed, retired, archived,
 //               gone, submissions: [{text, whenBusy, requestId}], transcript } }
@@ -141,8 +142,8 @@ function tick() {
     }
     appendFileSync(opts.log, `${JSON.stringify(request)}\n`);
     rmSync(path, { force: true });
-    if (world.silent === true) continue;
-    const result = request.server === opts.server && request.conversation === opts.conversation ? handle(world, request) : refuse("untrusted", "the request does not come from the conversation that holds this home's lock");
+    if (world.silent === true || (world.silentVerbs ?? []).includes(request.verb)) continue;
+    const result = request.server === opts.server && request.conversation === opts.conversation && request.token === opts.token ? handle(world, request) : refuse("untrusted", "the request does not come from the conversation that holds this home's lock");
     writeWorld(world);
     const staged = join(dir, "results", `.${name}.tmp`);
     writeFileSync(staged, JSON.stringify(result), { mode: 0o600 });

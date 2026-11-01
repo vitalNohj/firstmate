@@ -25,7 +25,7 @@ export PATH="$FAKEBIN:$PATH"
 FAKE="$ROOT/tests/pi-pocket-fake-bridge.mjs"
 FAKE_PID=
 # The identity a command of the main Pi Pocket session carries.
-export FM_PI_POCKET_CONVERSATION=7 FM_PI_POCKET_SERVER_PID=4242
+export FM_PI_POCKET_CONVERSATION=7 FM_PI_POCKET_SERVER_PID=4242 FM_PI_POCKET_BRIDGE_TOKEN=fixture-token
 TASK_IDS="$TMP_ROOT/task-ids"
 RUN_TAG=$(printf '%05x%04x' "$(( $$ % 1048576 ))" "$RANDOM")
 
@@ -65,7 +65,7 @@ pp_case() {
   printf '%s\n' "${2:-{\}}" > "$WORLD"
   : > "$LOG"
   node "$FAKE" --state "$STATE" --world "$WORLD" --log "$LOG" --server "$FM_PI_POCKET_SERVER_PID" \
-    --conversation "$FM_PI_POCKET_CONVERSATION" --parent-pid "$$" >"$CASE_DIR/fake.out" 2>&1 &
+    --conversation "$FM_PI_POCKET_CONVERSATION" --token "$FM_PI_POCKET_BRIDGE_TOKEN" --parent-pid "$$" >"$CASE_DIR/fake.out" 2>&1 &
   FAKE_PID=$!
   local _
   for _ in $(seq 1 100); do
@@ -374,6 +374,22 @@ test_spawn_refused_start_returns_lease() {
   pass "fm-spawn --backend pi-pocket: a refused start (spend hold) is a blocker and returns the lease"
 }
 
+test_spawn_unanswered_start_keeps_lease() {
+  local id out rc
+  id=$(uid ppsilent)
+  pp_case spawn-silent
+  pp_spawn_setup "$id"
+  # The bridge answers its status check, then takes the start and never answers.
+  pp_set 'w.silentVerbs = ["spawn"]'
+  out=$(FM_POCKET_BRIDGE_SPAWN_TIMEOUT_MS=400 pp_spawn "$id" --scout --model faux/faux-1 --backend pi-pocket); rc=$?
+  [ "$rc" -ne 0 ] || fail "an unanswered start must abort the spawn"$'\n'"$out"
+  assert_contains "$out" "did not report an outcome" "the refusal must say the start outcome is unknown"
+  assert_contains "$out" "stays leased to $id" "the refusal must say the worktree stays leased"
+  assert_no_grep "return --force" "$CASE_DIR/treehouse.log" "a start that may have bound a session must keep the lease"
+  assert_absent "$STATE/$id.meta" "an unanswered start records nothing"
+  pass "fm-spawn --backend pi-pocket: a start whose answer never came keeps the worktree lease"
+}
+
 test_spawn_refuses_secondmate_and_other_harness() {
   local id out rc
   id=$(uid ppharn)
@@ -398,4 +414,5 @@ test_unanswered_send_is_unconfirmed_and_retry_safe
 test_spawn_starts_session_and_submits_brief
 test_spawn_refuses_without_bridge_and_never_falls_back
 test_spawn_refused_start_returns_lease
+test_spawn_unanswered_start_keeps_lease
 test_spawn_refuses_secondmate_and_other_harness

@@ -43,9 +43,13 @@ The drop-in answers a request only when all of the following hold, the same trus
 
 - The request is a private regular file of the server's user.
 - It names this server process and the conversation that holds the home's lock.
-- Its writer is alive, its parent chain reaches this server, and its environment carries that conversation's Pi Pocket marker.
+- It carries this server process's bridge secret, `FM_PI_POCKET_BRIDGE_TOKEN`.
+  The drop-in generates the secret at startup, never writes it to disk, and gives it only to the marked bash commands of a Firstmate home's main session.
+  Those commands never include the supervision session or a worker.
+- Its writer is alive and its parent chain reaches this server.
+  Where `/proc` shows the writer's environment, that environment must also carry the conversation's Pi Pocket marker.
 
-A worker's own commands carry an empty marker, so a worker cannot drive the bridge.
+A worker's own commands carry an empty marker and no secret, so a worker cannot drive the bridge, even on a platform where another process's environment cannot be read.
 
 | Verb | What the drop-in does |
 | --- | --- |

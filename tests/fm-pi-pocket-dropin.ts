@@ -272,9 +272,10 @@ const route = (request: unknown) => {
     if (text.endsWith("what happened in the fleet")) return call("fm_branch_outcomes", {});
     // A Pocket worker: its task environment, and a run long enough for a restart to cut.
     if (text.endsWith("show the task env")) {
-        return call("bash", { command: `printf 'task=%s inbox=%s marker=%s' "$FM_TASK_ID" "$FM_TASK_INBOX" "\${FM_PI_POCKET_CONVERSATION:-none}"` });
+        return call("bash", { command: `printf 'task=%s inbox=%s marker=%s token=%s' "$FM_TASK_ID" "$FM_TASK_INBOX" "\${FM_PI_POCKET_CONVERSATION:-none}" "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
     }
     if (text.endsWith("work for a long time")) return call("bash", { command: "sleep 20" });
+    if (text.endsWith("show the bridge token")) return call("bash", { command: `printf 'token=%s' "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
     if (text.endsWith("report from main")) return call("fm_branch_report", { task: "task-a", verdict: "routine", summary: "main reporting" });
     // The supervision session: a wake for a task it reports on, and one it leaves without an outcome.
     const reported = /FIRSTMATE SUPERVISION WAKE: signal: (task-report[a-z0-9-]*)\.status/.exec(text);
@@ -318,11 +319,20 @@ const clientKey = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 6
 
 type Called = { code: number; out: string; err: string };
 
+/** The bridge secret main's marked bash commands carry, read once from one of them (see "show the bridge token"). */
+let bridgeToken = "";
+
+async function readBridgeToken(app: App, main: unknown): Promise<void> {
+    await say(app, main as never, "show the bridge token");
+    const said = (await toolSaid(app, main)).findLast((text) => text.includes("token="))!;
+    bridgeToken = /token=(\S+)/.exec(said)![1]!;
+}
+
 /** One bridge call, as a command of main's session: a child of this server carrying main's Pi Pocket identity. */
-function bridgeCall(fmHome: string, main: unknown, args: string[]): Promise<Called> {
+function bridgeCall(fmHome: string, main: unknown, args: string[], token = bridgeToken): Promise<Called> {
     return new Promise((resolve) => {
         const child = spawn(process.execPath, [join(fmHome, "bin", "fm-pi-pocket-bridge.mjs"), ...args, "--state", join(fmHome, "state")], {
-            env: { ...process.env, FM_PI_POCKET_CONVERSATION: String(main), FM_PI_POCKET_SERVER_PID: String(process.pid) },
+            env: { ...process.env, FM_PI_POCKET_CONVERSATION: String(main), FM_PI_POCKET_SERVER_PID: String(process.pid), FM_PI_POCKET_BRIDGE_TOKEN: token },
             stdio: ["ignore", "pipe", "pipe"],
         });
         let out = "";
@@ -428,6 +438,7 @@ if (process.argv.includes("--worker-child")) {
     const id = await newSession(app, fmHome);
     await say(app, id, "start firstmate");
     await bridgeUp(fmHome, id);
+    await readBridgeToken(app, id);
     armBusy(fmHome, "task-cut");
     const session = await spawnWorker(fmHome, id, "task-cut", wt);
     const sent = await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "work for a long time"]);
@@ -1027,6 +1038,7 @@ async function workerMain() {
     await ctx.app.setSubagentModels(owner(ctx.app), ["faux/faux-1"]);
     await say(ctx.app, ctx.id, "start firstmate");
     await bridgeUp(ctx.fmHome, ctx.id);
+    await readBridgeToken(ctx.app, ctx.id);
 
     return ctx;
 }
@@ -1055,7 +1067,7 @@ test("a Pocket worker is a linked session in its worktree whose brief arrives un
     await until(async () => (await toolSaid(app, session)).some((text) => text.includes("task=task-w")), "the worker's env command", LONG);
     await idle(app, session);
     const said = await toolSaid(app, session);
-    assert.ok(said.some((text) => text.includes("task=task-w inbox=/fixture/task-w.inbox marker=none")), said.join("\n"));
+    assert.ok(said.some((text) => text.includes("task=task-w inbox=/fixture/task-w.inbox marker=none token=none")), said.join("\n"));
     const texts = await userTexts(app, session);
     const brief = texts.find((text) => text.includes("show the task env"))!;
     assert.ok(!brief.includes(FENCE), "a submit is not fenced like a linked-session message");
@@ -1086,6 +1098,11 @@ test("a Pocket worker is a linked session in its worktree whose brief arrives un
         renameSync(join(dir, "requests", `.${name}.tmp`), join(dir, "requests", name));
         await until(() => existsSync(join(dir, "results", name)), "the forged request's answer", LONG);
         assert.equal(readJsonFile(join(dir, "results", name))?.code, "untrusted");
+        // Main's identity without the bridge secret, as a supervision-branch command or a worker that copied main's
+        // marker has it, is refused too, even where the writer's environment cannot be read.
+        const tokenless = await bridgeCall(fmHome, id, ["state", "--session", String(session)], "forged");
+        assert.equal(tokenless.code, 3, tokenless.out + tokenless.err);
+        assert.match(tokenless.err, /untrusted/);
     } finally {
         writer.kill();
     }
@@ -1163,7 +1180,7 @@ test("doubled and missed run events change a worker's busy state once, and the l
     await until(() => workerRecord(fmHome, "task-e")?.failed === undefined, "the next run", LONG);
 });
 
-test("a Pocket worker interrupt aborts its run, and a kill without linked-session stop retires it and refuses later sends", { timeout: 90_000 }, async () => {
+test("a Pocket worker interrupt aborts its run, a kill without linked-session stop retires it and refuses later sends, and a relaunched task's old session id reaches nothing", { timeout: 90_000 }, async () => {
     const { app, id, fmHome } = await workerMain();
     const wt = worktree("worker-kill");
     armBusy(fmHome, "task-k");
@@ -1184,6 +1201,18 @@ test("a Pocket worker interrupt aborts its run, and a kill without linked-sessio
     assert.match(after.err, /retired: the worker for task-k was torn down/);
     assert.deepEqual(JSON.parse((await bridgeCall(fmHome, id, ["state", "--session", String(session)])).out), { ok: true, state: "missing", busy: "unknown" });
     assert.equal(count(await userTexts(app, session), "are you there"), 0);
+
+    // A relaunch's replacement session takes the task's record; the old session id never reaches the replacement.
+    const replacement = await spawnWorker(fmHome, id, "task-k", wt);
+    assert.notEqual(replacement, session);
+    await idle(app, replacement);
+    const stale = await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "stale steer"]);
+    assert.equal(stale.code, 3);
+    assert.match(stale.err, /missing: no Pocket worker is recorded for session/);
+    assert.deepEqual(JSON.parse((await bridgeCall(fmHome, id, ["kill", "--session", String(session)])).out), { ok: true, archived: false, absent: true });
+    assert.equal(workerRecord(fmHome, "task-k")?.session, replacement);
+    assert.equal(workerRecord(fmHome, "task-k")?.retired, undefined, "a stale kill leaves the replacement running");
+    assert.equal(count(await userTexts(app, replacement), "stale steer"), 0);
 });
 
 test("a Pocket worker kill stops and archives it, reading the archive back, when Pi Pocket has linked-session stop and archive", { timeout: 90_000 }, async () => {

@@ -2498,7 +2498,7 @@ FM_PI_POCKET_DROPIN_FILTER="Pocket worker|run events|restart cut" bin/fm-test-ru
 ✔ a Pocket worker is a linked session in its worktree whose brief arrives unfenced, with its task env, prompt, and blocked tools
 ✔ Pocket worker submits refuse a model off the owner's list and a spend hold, and a spawn refuses an unlisted model, a hold, and plan mode
 ✔ doubled and missed run events change a worker's busy state once, and the list reconcile corrects a lost run.ended
-✔ a Pocket worker interrupt aborts its run, and a kill without linked-session stop retires it and refuses later sends
+✔ a Pocket worker interrupt aborts its run, a kill without linked-session stop retires it and refuses later sends, and a relaunched task's old session id reaches nothing
 ✔ a Pocket worker kill stops and archives it, reading the archive back, when Pi Pocket has linked-session stop and archive
 ✔ after a Pi Pocket restart cut a worker's run, it gets one short nudge, recorded so it is sent once
 ```
@@ -2509,7 +2509,7 @@ The following facts were observed on that build:
 - Its first message carried Pi Pocket's linked-session fence; the brief submitted through the Durable conversation carried none.
 - The same request id submitted once.
 - A worker's bash saw `FM_TASK_ID` and `FM_TASK_INBOX` from `host.commandEnv` and an empty Pi Pocket marker.
-- A request whose writer was not a command of main was answered `untrusted`.
+- A request whose writer was not a command of main, or that lacked the server's bridge secret, was answered `untrusted`.
 - `run.started`/`run.ended` arrived for the worker's runs, and a run cut by a killed server ended under the restarted one.
 
 Pi Pocket 0.28.0-beta.1 has neither `linkedSessions.stop`/`archive` nor the run-failed signal.
@@ -2533,6 +2533,7 @@ ok - client: an unanswered send exits 7, and a retry with the same request id su
 ok - fm-spawn/fm-control/fm-teardown --backend pi-pocket: lease, neutral start, task env, brief submit, abort, relaunch as a new session, retire
 ok - fm-spawn --backend pi-pocket: no bridge is a blocker before any lease, never a fallback
 ok - fm-spawn --backend pi-pocket: a refused start (spend hold) is a blocker and returns the lease
+ok - fm-spawn --backend pi-pocket: a start whose answer never came keeps the worktree lease
 ok - fm-spawn --backend pi-pocket: refuses a harness other than pi
 ```
 

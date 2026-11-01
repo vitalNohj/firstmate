@@ -39,6 +39,12 @@ export const pocketApi = 2;
 const SERVER_PID = String(process.pid);
 /** One server process: a watcher task created under another one was re-driven by a restart. */
 const BOOT = `${process.pid}-${Math.round(performance.timeOrigin)}`;
+/**
+ * This server process's worker-bridge secret: only the marked commands of a Firstmate home's own sessions get it, never
+ * a worker's, and it is never written to disk, so a bridge request carrying it came from one of those commands even
+ * where another process's environment cannot be read.
+ */
+const BRIDGE_TOKEN = randomUUID();
 const WATCH_KIND = "x.firstmate.watch";
 const REPAIR_TOOL = "fm_watch_arm_pocket";
 const SESSION_PREFIX = "pi-pocket:";
@@ -173,7 +179,7 @@ function run(
 
 /** The marker of part 1: this conversation, served by this server, so bin/fm-lock.sh can bind the lock to it. */
 function markerEnv(home: string, conversationId: ConversationId): Record<string, string> {
-    return { FM_HOME: home, FM_PI_POCKET_CONVERSATION: String(conversationId), FM_PI_POCKET_SERVER_PID: SERVER_PID };
+    return { FM_HOME: home, FM_PI_POCKET_CONVERSATION: String(conversationId), FM_PI_POCKET_SERVER_PID: SERVER_PID, FM_PI_POCKET_BRIDGE_TOKEN: BRIDGE_TOKEN };
 }
 
 function signalsOf(...signals: (AbortSignal | undefined)[]): AbortSignal {
@@ -472,6 +478,8 @@ function branchPrompt(home: string): Promise<string> {
 function branchEnv(home: string, main: ConversationId): Record<string, string> {
     return {
         ...markerEnv(home, main),
+        // Main alone starts and steers Pocket workers.
+        FM_PI_POCKET_BRIDGE_TOKEN: "",
         FM_SUPERVISION_ACTOR: "branch",
         FM_LEASE_HOLDER_PID: SERVER_PID,
         FM_SUPERVISION_PRIMARY_HARNESS: "pi-pocket",
@@ -1429,7 +1437,8 @@ async function privateDir(path: string): Promise<boolean> {
  * marker (the trust gate of fm_pi_pocket_trusted_server_pid in bin/fm-session-lock-lib.sh). A worker's commands carry
  * no marker, so a worker cannot drive the bridge.
  */
-async function trustedWriter(pid: number, conversation: string): Promise<boolean> {
+async function trustedWriter(pid: number, conversation: string, token: unknown): Promise<boolean> {
+    if (token !== BRIDGE_TOKEN) return false;
     if (!Number.isSafeInteger(pid) || pid <= 1 || !alive(pid)) return false;
     const environ = await readFile(`/proc/${String(pid)}/environ`, "latin1").catch(() => undefined);
     if (environ !== undefined) {
@@ -1530,12 +1539,17 @@ function createWorkers(host: Partial<Host>) {
     async function bySessionIn(home: string, session: unknown): Promise<WorkerRecord | undefined> {
         const id = Number(session);
         if (!Number.isSafeInteger(id) || id <= 0) return undefined;
+        // A relaunch replaces a task's record with its new session, so an old session id resolves to nothing rather
+        // than to the replacement worker.
         const known = bySession.get(id);
-        if (known?.home === home) return (await byTask(home, known.task)) ?? known;
+        if (known?.home === home) {
+            const latest = (await byTask(home, known.task)) ?? known;
+            return latest.session === id ? latest : undefined;
+        }
         await load(home);
         const found = bySession.get(id);
 
-        return found?.home === home ? found : undefined;
+        return found?.home === home && found.session === id ? found : undefined;
     }
 
     /** fm-busy-event.sh: the one writer of the busy record and the turn-ended notification. */
@@ -1822,7 +1836,7 @@ function createWorkers(host: Partial<Host>) {
                     result = refuse("invalid", "the request is not a valid bridge request");
                 } else if (request.server !== SERVER_PID || (await ownership(home, request.conversation as unknown as ConversationId)) !== "owned" || request.conversation !== String(runtime.conversationId)) {
                     result = refuse("untrusted", "the request does not come from the Pi Pocket conversation that holds this home's lock on this server");
-                } else if (!(await trustedWriter(request.pid, request.conversation))) {
+                } else if (!(await trustedWriter(request.pid, request.conversation, request.token))) {
                     result = refuse("untrusted", "the request's writer is not a command of the conversation that holds this home's lock");
                 } else {
                     try {
@@ -1969,7 +1983,7 @@ function registerWorkerEvents(host: Partial<Host>, web: PocketSurface | undefine
                 const record = await workers.worker(command.conversationId);
                 if (record === undefined) return undefined;
                 // A worker's commands never carry a supervisor identity: the bridge and the lock trust none of them.
-                return { ...record.env, FM_PI_POCKET_CONVERSATION: "", FM_PI_POCKET_SERVER_PID: "" };
+                return { ...record.env, FM_PI_POCKET_CONVERSATION: "", FM_PI_POCKET_SERVER_PID: "", FM_PI_POCKET_BRIDGE_TOKEN: "" };
             }),
         );
     }

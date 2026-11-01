@@ -22,13 +22,17 @@
 // waits for its result. The drop-in answers only a request whose writer is a
 // command of the Pi Pocket conversation that holds the home's lock on this
 // server (FM_PI_POCKET_CONVERSATION and FM_PI_POCKET_SERVER_PID, the same
-// marker bin/fm-session-lock-lib.sh's fm_pi_pocket_trusted_server_pid reads).
+// marker bin/fm-session-lock-lib.sh's fm_pi_pocket_trusted_server_pid reads)
+// and that carries the server's bridge secret, FM_PI_POCKET_BRIDGE_TOKEN,
+// which the drop-in gives only to its marked commands and never to a worker.
 //
 // Prints the result as one JSON object (capture prints its text). Exit codes:
 //   0 ok; 2 usage; 3 refused by the drop-in (its reason on stderr, prefixed
 //   with its code); 5 the bridge is not running or this is not a Pi Pocket
 //   command; 7 no answer in time (a send may still have landed: retrying it
 //   with the same --request-id is safe).
+// --timeout-ms overrides the wait (default 60 s for spawn and kill, 30 s
+// otherwise); FM_POCKET_BRIDGE_SPAWN_TIMEOUT_MS overrides spawn's default.
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -54,7 +58,8 @@ if (!opts.state) die(2, "error: --state is required");
 
 const conversation = process.env.FM_PI_POCKET_CONVERSATION || "";
 const server = process.env.FM_PI_POCKET_SERVER_PID || "";
-if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversation) || !/^[0-9]+$/.test(server)) {
+const token = process.env.FM_PI_POCKET_BRIDGE_TOKEN || "";
+if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversation) || !/^[0-9]+$/.test(server) || token === "") {
   die(5, "error: backend=pi-pocket needs a command of the Firstmate Pi Pocket session; this command carries no Pi Pocket identity");
 }
 
@@ -70,7 +75,7 @@ if (heartbeat?.server !== server || heartbeat?.conversation !== conversation || 
 }
 
 const read = (path) => readFileSync(path, "utf8");
-const request = { v: 1, id: `${Date.now()}-${process.pid}-${randomUUID().slice(0, 8)}`, verb, server, conversation, pid: process.pid };
+const request = { v: 1, id: `${Date.now()}-${process.pid}-${randomUUID().slice(0, 8)}`, verb, server, conversation, token, pid: process.pid };
 const session = () => {
   const value = Number(opts.session);
   if (!Number.isSafeInteger(value) || value <= 0) die(2, "error: --session must be a positive session id");
@@ -125,7 +130,7 @@ const staged = join(requests, `.${name}.tmp`);
 writeFileSync(staged, JSON.stringify(request), { mode: 0o600 });
 renameSync(staged, join(requests, name));
 
-const timeoutMs = Number(opts["timeout-ms"] || (verb === "spawn" || verb === "kill" ? 60000 : 30000));
+const timeoutMs = Number(opts["timeout-ms"] || (verb === "spawn" ? process.env.FM_POCKET_BRIDGE_SPAWN_TIMEOUT_MS || 60000 : verb === "kill" ? 60000 : 30000));
 const deadline = Date.now() + timeoutMs;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 let result;

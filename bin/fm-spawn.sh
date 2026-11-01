@@ -5786,7 +5786,10 @@ if [ "$BACKEND" = pi-pocket ]; then
   case "$pi_pocket_rc" in
     0) ;;
     7)
-      echo "error: the Pi Pocket worker session start for $ID did not report an outcome; a session may exist in Pi Pocket under fm-$ID: archive it there, then retry" >&2
+      # The drop-in may still have started a session in this worktree, so the
+      # lease is kept rather than handed back to the pool under it.
+      PI_POCKET_LEASED=0
+      echo "error: the Pi Pocket worker session start for $ID did not report an outcome; a session may exist in Pi Pocket under fm-$ID, so $WT stays leased to $ID: archive that session in Pi Pocket, then release the worktree with 'treehouse return --force $WT' from $PROJ_ABS and retry" >&2
       exit 1
       ;;
     *)
