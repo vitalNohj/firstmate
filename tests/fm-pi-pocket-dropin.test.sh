@@ -150,13 +150,14 @@ test_dropin_in_pi_pocket() {
   cp "$ROOT/tests/fm-pi-pocket-dropin.ts" "$dir/run/dropin.test.ts"
   mkdir -p "$dir/tmp"
   out=$(cd "$dir/run" && TMPDIR="$dir/tmp" FM_PI_POCKET_CHECKOUT="$CHECKOUT" FM_PI_POCKET_BIN="$ROOT/bin" \
-    FM_PI_POCKET_DROPIN="$DROPIN" "$NODE" --test --test-concurrency=1 dropin.test.ts 2>&1)
+    FM_PI_POCKET_DROPIN="$DROPIN" FM_POCKET_BRIDGE_RECONCILE_MS=300 \
+    "$NODE" --test --test-concurrency=1 ${FM_PI_POCKET_DROPIN_FILTER:+--test-name-pattern="$FM_PI_POCKET_DROPIN_FILTER"} dropin.test.ts 2>&1)
   rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2
     fail "the drop-in's Pi Pocket tests failed (exit $rc)"
   fi
-  pass "drop-in: first-request session start with the whole digest, lock binding, wake delivery, marker scope, seatbelts, held-back delivery, retry limit, turn-end guard, crash restart, and the supervision branch (one visible linked session, wake routing, outcomes on main, fallback to main incl. a past-deadline turn, restart without a duplicate) in a real Pi Pocket app"
+  pass "drop-in: first-request session start with the whole digest, lock binding, wake delivery, marker scope, seatbelts, held-back delivery, retry limit, turn-end guard, crash restart, and the supervision branch (one visible linked session, wake routing, outcomes on main, fallback to main incl. a past-deadline turn, restart without a duplicate), and Pocket workers (unfenced brief, task env, seatbelts, trust, model-list and spend refusals, run events and reconcile, interrupt, retire and archive teardown, one restart nudge) in a real Pi Pocket app"
 }
 
 test_install_copies_idempotently_and_skips_without_pi_pocket
