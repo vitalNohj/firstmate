@@ -35,6 +35,14 @@ Accept it with Enter and verify the instructions begin processing.
 The decision persists per path in `~/.pi/agent/trust.json`, or in the pinned root's `trust.json` under a worker account pin, so later spawns in the same pooled slot under that root skip it.
 For unattended seeded-secondmate launches, `../../../bin/fm-spawn.sh --help` owns the capability-gated project-trust approval mechanics; [runtime verification](../../../../../docs/verification/runtime-backends.md#pi-seeded-secondmate-project-trust) owns the regression evidence.
 
+## Pocket agent runtime
+
+On the `pi-pocket` backend a `pi` worker is Pi Pocket's own agent, a linked session of the main Firstmate Pi Pocket conversation, and none of the CLI and TUI facts above apply: no Pi executable is launched and there is no pane, trust dialog, or `/quit`.
+The Firstmate Pi Pocket drop-in owns its busy state (Pi Pocket's run events), its task environment, and its seatbelts.
+Escape and Ctrl-C abort the turn, `exit` is its teardown, and `relaunch` starts a new session in the same worktree.
+The model must be on the owner's subagent list in Pi Pocket, and the effort must be one that model supports.
+[`docs/pi-pocket-backend.md`](../../../../../docs/pi-pocket-backend.md) owns that lifecycle; the [verification record](../../../../../docs/verification/runtime-backends.md#pi-pocket-workers) owns its evidence, verified on 2026-11-01 with Pi Pocket 0.28.0-beta.1.
+
 ## Worker turn-end extension
 
 `../../../bin/fm-spawn.sh` keeps the worker turn-end extension in `state/`, outside the worktree, because project-local extension files worsen the trust gate and pollute the project.

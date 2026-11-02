@@ -231,6 +231,7 @@ Firstmate's skills live in two separate places with different audiences:
 - [docs/rex-backend.md](docs/rex-backend.md) - current setup, auto-detection, block-id routing, the absence proof, and limits for the experimental Rex backend.
 - [docs/t3code-backend.md](docs/t3code-backend.md) - current setup, sign-in, and limits for the experimental T3 Code backend.
 - [docs/tern-backend.md](docs/tern-backend.md) - current setup, surfaces capture, native-state degradation, and limits for the experimental tern backend.
+- [docs/pi-pocket-backend.md](docs/pi-pocket-backend.md) - current setup, the worker bridge, and limits for the experimental, explicit-only Pi Pocket worker backend.
 - [docs/codex-app-backend.md](docs/codex-app-backend.md) - the current blocked Codex App backend boundary and rollout contract.
 - [docs/verification/runtime-backends.md](docs/verification/runtime-backends.md) - active maintainer verification for runtime backend guarantees.
 - [docs/gerrit-forge-integration.md](docs/gerrit-forge-integration.md) - maintainer architecture for the forge axis: why change-shaped review is not a forge variant, the mode/forge/shape composition test, and where responsibility for forge mechanics sits.

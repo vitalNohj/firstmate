@@ -327,7 +327,9 @@ fm_control_relaunch_resume_flag() {  # <harness> <registered-agent>
 # exposes only an interrupt and an Enter, so it can deliver neither Escape nor
 # Ctrl+U (bin/backends/orca.sh's fm_backend_orca_send_key). T3 has no composer
 # to clear, so Ctrl+U has nothing to do there; Escape and Ctrl+C are both a
-# turn interrupt (bin/backends/t3code.sh's fm_backend_t3code_send_key).
+# turn interrupt (bin/backends/t3code.sh's fm_backend_t3code_send_key). Pi
+# Pocket is the same: Escape and Ctrl+C abort the run, Enter is a no-op
+# (bin/backends/pi-pocket.sh's fm_backend_pi_pocket_send_key).
 fm_control_backend_supports_key() {  # <backend> <key>
   local backend=${1-} key=${2-}
   case "$backend" in
@@ -337,7 +339,7 @@ fm_control_backend_supports_key() {  # <backend> <key>
     orca)
       case "$key" in Enter|C-c) return 0 ;; esac
       ;;
-    t3code)
+    t3code|pi-pocket)
       case "$key" in Escape|Enter|C-c) return 0 ;; esac
       ;;
   esac
@@ -345,14 +347,14 @@ fm_control_backend_supports_key() {  # <backend> <key>
 }
 
 # Whether <backend> has a recovery-grade agent-state classifier. tmux, herdr,
-# rex, and t3code implement fm_backend_agent_state; zellij, orca, cmux, and paseo report
+# rex, t3code, and pi-pocket implement fm_backend_agent_state; zellij, orca, cmux, and paseo report
 # `unverified`, and tern's `tern process` classifier answers for display but is
 # not promoted to this list, so no reading of theirs can prove an agent stopped.
 # The control plane refuses a stop-proving verb there instead of reporting an
 # unprovable transition as success.
 fm_control_backend_state_verified() {  # <backend>
   case "${1-}" in
-    tmux|herdr|rex|t3code) return 0 ;;
+    tmux|herdr|rex|t3code|pi-pocket) return 0 ;;
   esac
   return 1
 }
@@ -376,11 +378,13 @@ fm_control_backend_exit_supported() {  # <backend>
 # nightlies refused a driver change outright), never the fresh agent a
 # relaunch promises. So t3code has no replacement to launch and a relaunch
 # is refused before anything is stopped (docs/t3code-backend.md "Active
-# limits"). zellij, orca, cmux, and paseo never reach this table: they fail
+# limits"). A Pi Pocket worker's replacement is a new linked session: exit
+# tears the old session down and bin/fm-spawn.sh --relaunch starts a fresh
+# one in the same worktree (docs/pi-pocket-backend.md). zellij, orca, cmux, and paseo never reach this table: they fail
 # fm_control_backend_state_verified first.
 fm_control_backend_relaunch_supported() {  # <backend>
   case "${1-}" in
-    tmux|herdr|rex) return 0 ;;
+    tmux|herdr|rex|pi-pocket) return 0 ;;
   esac
   return 1
 }
@@ -488,6 +492,16 @@ fm_control_endpoint_absence_verdict() {  # <backend> <target> [meta]
         alive) printf 'alive\t' ;;
         missing) printf 'gone\t' ;;
         *) printf 'unproven\tthe T3 server could not be reached to re-read thread %s' "$target" ;;
+      esac
+      ;;
+    pi-pocket)
+      # A Pocket `missing` is the drop-in's own answer (archived, retired, or
+      # no such linked session); an unreachable bridge reads `unreadable`.
+      case "$(fm_backend_pi_pocket_agent_state "$target")" in
+        dead) printf 'dead\t' ;;
+        alive) printf 'alive\t' ;;
+        missing) printf 'gone\t' ;;
+        *) printf 'unproven\tthe Firstmate Pi Pocket worker bridge could not be reached to re-read session %s' "$target" ;;
       esac
       ;;
     *)

@@ -2484,6 +2484,61 @@ ok - real rex: no state-changing call left the test sessions and every other ses
 
 Use the [Rex regression entry points](../rex-backend.md#regression-entry-points) to refresh this record after a Rex upgrade, and the opt-in live composer guard after any tool upgrade.
 
+## Pi Pocket workers
+
+Verified on 2026-11-01 with Pi Pocket 0.28.0-beta.1 (commit `4618ec87`), Node v24.21.0, on Linux 7.0.0, for the `pi-pocket` backend ([`pi-pocket-backend.md`](../pi-pocket-backend.md)) with the Pocket agent runtime (Pi Durable inside Pi Pocket, harness `pi`).
+The drop-in suite loaded `pi-pocket/firstmate.ts` into a real Pi Pocket app on temporary data directories with a scripted faux model; it never touched a live Pi Pocket server or data directory.
+Firstmate's side was the real `bin/fm-pi-pocket-bridge.mjs`, run as a child of the app's process with the main conversation's marker, exactly as a command of main runs:
+
+```sh
+FM_PI_POCKET_DROPIN_FILTER="Pocket worker|run events|restart cut" bin/fm-test-run.sh tests/fm-pi-pocket-dropin.test.sh
+```
+
+```text
+✔ a Pocket worker is a linked session in its worktree whose brief arrives unfenced, with its task env, prompt, and blocked tools
+✔ Pocket worker submits refuse a model off the owner's list and a spend hold, and a spawn refuses an unlisted model, a hold, and plan mode
+✔ doubled and missed run events change a worker's busy state once, and the list reconcile corrects a lost run.ended
+✔ a Pocket worker interrupt aborts its run, a kill without linked-session stop retires it and refuses later sends, and a relaunched task's old session id reaches nothing
+✔ a Pocket worker kill stops and archives it, reading the archive back, when Pi Pocket has linked-session stop and archive
+✔ after a Pi Pocket restart cut a worker's run, it gets one short nudge, recorded so it is sent once
+```
+
+The following facts were observed on that build:
+
+- The linked session ran in the task worktree on the listed model, under the main session.
+- Its first message carried Pi Pocket's linked-session fence; the brief submitted through the Durable conversation carried none.
+- The same request id submitted once.
+- A worker's bash saw `FM_TASK_ID` and `FM_TASK_INBOX` from `host.commandEnv` and an empty Pi Pocket marker.
+- A request whose writer was not a command of main, or that lacked the server's bridge secret, was answered `untrusted`.
+- `run.started`/`run.ended` arrived for the worker's runs, and a run cut by a killed server ended under the restarted one.
+
+Pi Pocket 0.28.0-beta.1 has neither `linkedSessions.stop`/`archive` nor the run-failed signal.
+Those tests replaced `stop`, `archive`, and `list` on the app's own `linkedSessions` object, and emitted `run.ended` with `outcome` on its own event bus.
+They used the shapes on the fork branches behind TannerMidd/pi-pocket pull requests 247 and 248.
+The stop-and-archive path and the `dead` state are therefore verified against those shapes, not against a released Pi Pocket.
+
+The portable adapter suite needs no Pi Pocket install:
+
+```sh
+bin/fm-test-run.sh tests/fm-backend-pi-pocket.test.sh
+```
+
+```text
+ok - registry: pi-pocket is known and spawn-capable, never auto-detected
+ok - runtime check: needs the main session's identity and a live drop-in bridge
+ok - adapter: start, configure, send, capture, state, interrupt, keys, failed run, and kill-as-retire with send refusal
+ok - adapter: kill stops and archives when Pi Pocket has linked-session stop and archive
+ok - adapter: an unlisted model and a spend hold are refused as blockers, before any submit
+ok - client: an unanswered send exits 7, and a retry with the same request id submits once
+ok - fm-spawn/fm-control/fm-teardown --backend pi-pocket: lease, neutral start, task env, brief submit, abort, relaunch as a new session, retire
+ok - fm-spawn --backend pi-pocket: no bridge is a blocker before any lease, never a fallback
+ok - fm-spawn --backend pi-pocket: a refused start (spend hold) is a blocker and returns the lease
+ok - fm-spawn --backend pi-pocket: a start whose answer never came keeps the worktree lease
+ok - fm-spawn --backend pi-pocket: refuses a harness other than pi
+```
+
+The installed Pi Pocket user service has not yet been observed running a Pocket worker.
+
 ## T3 Code
 
 ### Orchestrator V2 transport

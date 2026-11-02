@@ -35,6 +35,7 @@
     "docs/rex-backend.md",
     "docs/t3code-backend.md",
     "docs/tern-backend.md",
+    "docs/pi-pocket-backend.md",
     "docs/remote-secondmates.md"
   ],
   "requiredOwnerPointers": [
@@ -104,6 +105,10 @@
     },
     {
       "source": "docs/t3code-backend.md",
+      "target": "docs/verification/runtime-backends.md"
+    },
+    {
+      "source": "docs/pi-pocket-backend.md",
       "target": "docs/verification/runtime-backends.md"
     },
     {
@@ -338,6 +343,10 @@
     },
     {
       "path": "docs/cmux-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/pi-pocket-backend.md",
       "audience": "operator-current"
     },
     {

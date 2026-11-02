@@ -12,7 +12,7 @@
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
@@ -39,6 +39,12 @@ export const pocketApi = 2;
 const SERVER_PID = String(process.pid);
 /** One server process: a watcher task created under another one was re-driven by a restart. */
 const BOOT = `${process.pid}-${Math.round(performance.timeOrigin)}`;
+/**
+ * This server process's worker-bridge secret: only the marked commands of a Firstmate home's own sessions get it, never
+ * a worker's, and it is never written to disk, so a bridge request carrying it came from one of those commands even
+ * where another process's environment cannot be read.
+ */
+const BRIDGE_TOKEN = randomUUID();
 const WATCH_KIND = "x.firstmate.watch";
 const REPAIR_TOOL = "fm_watch_arm_pocket";
 const SESSION_PREFIX = "pi-pocket:";
@@ -173,7 +179,7 @@ function run(
 
 /** The marker of part 1: this conversation, served by this server, so bin/fm-lock.sh can bind the lock to it. */
 function markerEnv(home: string, conversationId: ConversationId): Record<string, string> {
-    return { FM_HOME: home, FM_PI_POCKET_CONVERSATION: String(conversationId), FM_PI_POCKET_SERVER_PID: SERVER_PID };
+    return { FM_HOME: home, FM_PI_POCKET_CONVERSATION: String(conversationId), FM_PI_POCKET_SERVER_PID: SERVER_PID, FM_PI_POCKET_BRIDGE_TOKEN: BRIDGE_TOKEN };
 }
 
 function signalsOf(...signals: (AbortSignal | undefined)[]): AbortSignal {
@@ -472,6 +478,8 @@ function branchPrompt(home: string): Promise<string> {
 function branchEnv(home: string, main: ConversationId): Record<string, string> {
     return {
         ...markerEnv(home, main),
+        // Main alone starts and steers Pocket workers.
+        FM_PI_POCKET_BRIDGE_TOKEN: "",
         FM_SUPERVISION_ACTOR: "branch",
         FM_LEASE_HOLDER_PID: SERVER_PID,
         FM_SUPERVISION_PRIMARY_HARNESS: "pi-pocket",
@@ -1327,6 +1335,662 @@ async function ensureWatch(
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Pocket workers: ship and scout workers as linked sessions (docs/pi-pocket-backend.md)
+
+const BRIDGE_KIND = "x.firstmate.pocket-bridge";
+const BRIDGE_DIR = "pocket-bridge";
+const BRIDGE_POLL_MS = positive("FM_POCKET_BRIDGE_POLL_MS", 250);
+const BRIDGE_RECONCILE_MS = positive("FM_POCKET_BRIDGE_RECONCILE_MS", 15000);
+const BRIDGE_REQUEST_LIMIT = 1024 * 1024;
+/** The first message of a worker session: linkedSessions.start fences it, so it carries no task; the brief follows unfenced. */
+const WORKER_FIRST_MESSAGE =
+    "Firstmate is starting a task worker in this session. Its task instructions follow as the next message; do nothing until they arrive.";
+/** The one short doorbell after a server restart cut a worker's run. */
+const WORKER_NUDGE =
+    "Firstmate: the Pi Pocket server restarted while you were working, which interrupted your last tool call. Check where your task stands and continue it.";
+const WORKER_ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
+const WORKERS_INDEX = "firstmate-pocket-workers.json";
+
+/** One worker, in state/pocket-bridge/workers/<task>.json: the durable registry a restarted server re-attaches from. */
+type WorkerRecord = {
+    task: string;
+    home: string;
+    /** The main conversation that started it, and the linked session it is. */
+    main: number;
+    session: number;
+    address: string;
+    cwd: string;
+    model: string;
+    thinking?: string;
+    /** The task environment commandEnv gives every command the worker runs. */
+    env: Record<string, string>;
+    /** config/crew-exclude-tools at spawn time. */
+    excludeTools: string[];
+    /** The worker channel statement, rendered as its system-prompt section. */
+    prompt: string;
+    /** linkedSessions.start's idempotency key. */
+    key: string;
+    busy: boolean;
+    /** The server process that recorded busy: a run.ended from another one ended a run a restart cut. */
+    busyBoot?: string;
+    /** The server process whose run a restart cut, and the one already nudged for it. */
+    cut?: string;
+    nudgedFor?: string;
+    /** Why its last run failed, from the run-failed signal; cleared by a later run. */
+    failed?: string;
+    /** Torn down without linkedSessions.stop/archive: Firstmate never sends to it again. */
+    retired?: boolean;
+    archived?: boolean;
+};
+
+type BridgeRequest = {
+    v: 1;
+    id: string;
+    verb: "spawn" | "configure" | "send" | "interrupt" | "capture" | "state" | "kill" | "status";
+    server: string;
+    conversation: string;
+    pid: number;
+    task?: string;
+    session?: number;
+    [key: string]: unknown;
+};
+
+type BridgeResult = { ok: true; [key: string]: unknown } | { ok: false; code: string; error: string };
+
+const refuse = (code: string, error: string): BridgeResult => ({ ok: false, code, error });
+
+type LinkedRow = { address: string; busy?: boolean; archived?: boolean; failed?: string };
+type LinkedApi = {
+    start: (source: ConversationId, request: Record<string, string>, key: string) => Promise<{ session: ConversationId; address: string }>;
+    list: (source: ConversationId) => Promise<LinkedRow[]>;
+    stop?: (source: ConversationId, request: { to: string }, key: string) => Promise<{ busy: boolean }>;
+    archive?: (source: ConversationId, request: { to: string; archived?: boolean }, key: string) => Promise<{ archived: boolean }>;
+};
+
+function bridgeDir(home: string): string {
+    return join(stateOf(home), BRIDGE_DIR);
+}
+
+/** The task environment a worker's commands get: plain names, string values, and never a Pi Pocket identity. */
+function workerEnv(value: unknown): Record<string, string> {
+    const env: Record<string, string> = {};
+    for (const [name, item] of Object.entries((value ?? {}) as Record<string, unknown>)) {
+        if (WORKER_ENV_KEY.test(name) && typeof item === "string" && !name.startsWith("FM_PI_POCKET_")) env[name] = item;
+    }
+
+    return env;
+}
+
+const validTask = (task: unknown): task is string => typeof task === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(task);
+
+/** An owner-only directory this process made, refused when it is a link, foreign, or open to others. */
+async function privateDir(path: string): Promise<boolean> {
+    await mkdir(path, { recursive: true, mode: 0o700 });
+    const info = await lstat(path).catch(() => undefined);
+
+    return info !== undefined && info.isDirectory() && !info.isSymbolicLink() && info.uid === process.getuid?.() && (info.mode & 0o077) === 0;
+}
+
+/**
+ * The writer of a request is a process this server started for the conversation that holds the lock: it is alive, its
+ * parent chain reaches this server, and, where /proc shows it, its environment carries that conversation's Pi Pocket
+ * marker (the trust gate of fm_pi_pocket_trusted_server_pid in bin/fm-session-lock-lib.sh). A worker's commands carry
+ * no marker, so a worker cannot drive the bridge.
+ */
+async function trustedWriter(pid: number, conversation: string, token: unknown): Promise<boolean> {
+    if (token !== BRIDGE_TOKEN) return false;
+    if (!Number.isSafeInteger(pid) || pid <= 1 || !alive(pid)) return false;
+    const environ = await readFile(`/proc/${String(pid)}/environ`, "latin1").catch(() => undefined);
+    if (environ !== undefined) {
+        const vars = new Set(environ.split("\0"));
+        if (!vars.has(`FM_PI_POCKET_CONVERSATION=${conversation}`) || !vars.has(`FM_PI_POCKET_SERVER_PID=${SERVER_PID}`)) return false;
+    }
+    let current = pid;
+    for (let hop = 0; hop < 32; hop += 1) {
+        if (String(current) === SERVER_PID) return true;
+        const ran = await run("ps", ["-o", "ppid=", "-p", String(current)], { cwd: "/" });
+        const parent = Number(ran.stdout.trim());
+        if (ran.code !== 0 || !Number.isSafeInteger(parent) || parent <= 1) return false;
+        current = parent;
+    }
+
+    return false;
+}
+
+function transcriptText(messages: readonly { role: string; content: unknown }[], lines: number): string {
+    const out: string[] = [];
+    for (const message of messages) {
+        if (message.role === "system") continue;
+        const parts = typeof message.content === "string" ? [{ type: "text", text: message.content }] : Array.isArray(message.content) ? (message.content as { type?: string; text?: string; name?: string; arguments?: unknown }[]) : [];
+        for (const part of parts) {
+            if (part.type === "text" && (part.text ?? "").trim() !== "") out.push(`${message.role}: ${part.text ?? ""}`);
+            else if (part.type === "toolCall") out.push(`${message.role}: [tool ${part.name ?? "?"}] ${JSON.stringify(part.arguments ?? {}).slice(0, 400)}`);
+        }
+    }
+
+    return out.join("\n").split("\n").slice(-Math.max(1, lines)).join("\n");
+}
+
+/**
+ * The Pocket worker registry and the bridge that serves Firstmate's backend adapter (bin/backends/pi-pocket.sh): one
+ * per server process, shared by every home this server's main sessions supervise.
+ */
+function createWorkers(host: Partial<Host>) {
+    const requestFor = requests(host);
+    const heldBack = (id: ConversationId) => (typeof host.heldBack === "function" ? host.heldBack(id) : undefined);
+    const linked = () => host.linkedSessions as unknown as LinkedApi | undefined;
+    /** Every known worker by its session id, loaded from the homes this server has served, so hooks work after a restart. */
+    const bySession = new Map<number, WorkerRecord>();
+    const homes = new Set<string>();
+    const lanes = new Map<number, Promise<unknown>>();
+    const indexPath = typeof host.dataDir === "string" ? join(host.dataDir, WORKERS_INDEX) : undefined;
+
+    /** One change to one worker at a time, in arrival order. */
+    function lane<T>(session: number, change: () => Promise<T>): Promise<T> {
+        const next = (lanes.get(session) ?? Promise.resolve()).then(change, change);
+        lanes.set(session, next.catch(() => undefined));
+
+        return next;
+    }
+
+    const recordPath = (home: string, task: string) => join(bridgeDir(home), "workers", `${task}.json`);
+
+    async function save(record: WorkerRecord): Promise<void> {
+        await privateDir(join(bridgeDir(record.home), "workers"));
+        await writeJson(recordPath(record.home, record.task), record);
+        bySession.set(record.session, record);
+    }
+
+    /** Load a home's registry, once per home and again on request; remember the home for the next server process. */
+    async function load(home: string): Promise<void> {
+        const dir = join(bridgeDir(home), "workers");
+        for (const name of await readdir(dir).catch(() => [] as string[])) {
+            if (!name.endsWith(".json")) continue;
+            const record = await readJson<WorkerRecord>(join(dir, name));
+            if (record !== undefined && Number.isSafeInteger(record.session) && record.home === home) bySession.set(record.session, record);
+        }
+        if (homes.has(home)) return;
+        homes.add(home);
+        if (indexPath !== undefined) await writeJson(indexPath, { homes: [...homes] }).catch(() => undefined);
+    }
+
+    // A restarted server knows its workers before any bridge task runs: their hooks, prompt, and env must hold at once.
+    const ready = (async () => {
+        if (indexPath === undefined) return;
+        const index = await readJson<{ homes?: unknown }>(indexPath);
+        for (const home of Array.isArray(index?.homes) ? index.homes : []) if (typeof home === "string") await load(home).catch(() => undefined);
+    })();
+
+    /** The worker a session is, or undefined for every other session. */
+    const worker = async (id: ConversationId | number | undefined) => {
+        if (id === undefined) return undefined;
+        await ready;
+
+        return bySession.get(Number(id));
+    };
+
+    async function byTask(home: string, task: string): Promise<WorkerRecord | undefined> {
+        const record = await readJson<WorkerRecord>(recordPath(home, task));
+        if (record !== undefined) bySession.set(record.session, record);
+
+        return record;
+    }
+
+    async function bySessionIn(home: string, session: unknown): Promise<WorkerRecord | undefined> {
+        const id = Number(session);
+        if (!Number.isSafeInteger(id) || id <= 0) return undefined;
+        // A relaunch replaces a task's record with its new session, so an old session id resolves to nothing rather
+        // than to the replacement worker.
+        const known = bySession.get(id);
+        if (known?.home === home) {
+            const latest = (await byTask(home, known.task)) ?? known;
+            return latest.session === id ? latest : undefined;
+        }
+        await load(home);
+        const found = bySession.get(id);
+
+        return found?.home === home && found.session === id ? found : undefined;
+    }
+
+    /** fm-busy-event.sh: the one writer of the busy record and the turn-ended notification. */
+    async function busyEvent(record: WorkerRecord, state: "busy" | "idle", event: string): Promise<void> {
+        const args = ["apply", stateOf(record.home), record.task, state, "--current-gen", "--source", "pi-pocket", "--event", event];
+        if (state === "idle") args.push("--turn-ended");
+        await script(record.home, "fm-busy-event.sh", args);
+    }
+
+    /** A run began or ended in a worker. A doubled or missed event is harmless: only a change of busy acts. */
+    async function runEvent(session: number, busy: boolean, outcome?: { outcome?: string; failure?: string }, event = busy ? "run-started" : "run-ended") {
+        await ready;
+        if (!bySession.has(session)) return;
+
+        return lane(session, async () => {
+            const known = bySession.get(session);
+            if (known === undefined) return;
+            const record = (await byTask(known.home, known.task)) ?? known;
+            if (record.session !== session) return;
+            const next: WorkerRecord = { ...record };
+            if (busy) {
+                delete next.failed;
+            } else if (outcome?.outcome === "failed") {
+                next.failed = outcome.failure?.trim() || "the run failed";
+            } else if (outcome?.outcome !== undefined) {
+                delete next.failed;
+            }
+            if (record.busy === busy) {
+                if (next.failed !== record.failed) await save(next);
+                return;
+            }
+            next.busy = busy;
+            if (busy) {
+                next.busyBoot = BOOT;
+            } else {
+                if (record.busyBoot !== undefined && record.busyBoot !== BOOT) next.cut = record.busyBoot;
+                delete next.busyBoot;
+            }
+            await save(next);
+            await busyEvent(next, busy ? "busy" : "idle", event);
+        });
+    }
+
+    /** Refuse a submit Pi Pocket would not check: an unlisted model, or a spend hold on main or the worker. */
+    async function gate(runtime: { snapshot?: unknown }, context: Context, record: WorkerRecord): Promise<BridgeResult | undefined> {
+        const allowed = typeof host.subagentModels === "function" ? host.subagentModels() : [];
+        let model = record.model;
+        try {
+            const agent = (await (runtime as Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "snapshot">).snapshot(AgentDoc, record.session as unknown as ConversationId, context)) as { model?: { provider: string; modelId: string } } | undefined;
+            if (agent?.model !== undefined) model = `${agent.model.provider}/${agent.model.modelId}`;
+        } catch {
+            // The recorded model stands.
+        }
+        if (!allowed.includes(model)) {
+            return refuse("model", `the worker's model ${model} is not on the owner's subagent model list in Pi Pocket; add it there, or relaunch the worker on a listed model`);
+        }
+        const held = heldBack(record.main as unknown as ConversationId) ?? heldBack(record.session as unknown as ConversationId);
+        if (held !== undefined) return refuse("held", `Pi Pocket holds this work back: ${held}`);
+
+        return undefined;
+    }
+
+    /** The model and effort a new worker starts on: a listed model the owner can use, and an effort it supports. */
+    async function selection(model: unknown, thinking: unknown): Promise<{ model: string; thinking?: string } | BridgeResult> {
+        const allowed = typeof host.subagentModels === "function" ? host.subagentModels() : [];
+        if (allowed.length === 0) {
+            return refuse("model", "the owner's subagent model list in Pi Pocket is empty, so no worker model is allowed; add the dispatch model there");
+        }
+        const usable = async (spec: string) => {
+            if (typeof host.resolveModel !== "function") return true;
+            try {
+                const ref = host.resolveModel(spec);
+                return typeof host.modelProblem !== "function" || (await host.modelProblem(ref)) === undefined;
+            } catch {
+                return false;
+            }
+        };
+        const named = typeof model === "string" && model.trim() !== "" && model !== "default" ? model.trim() : undefined;
+        let chosen: string | undefined;
+        if (named !== undefined) {
+            if (!allowed.includes(named)) return refuse("model", `the model ${named} is not on the owner's subagent model list in Pi Pocket (${allowed.join(", ")})`);
+            if (!(await usable(named))) return refuse("model", `Pi Pocket cannot use the model ${named} now (not signed in, or the sign-in expired)`);
+            chosen = named;
+        } else {
+            for (const candidate of allowed) {
+                if (await usable(candidate)) {
+                    chosen = candidate;
+                    break;
+                }
+            }
+            if (chosen === undefined) return refuse("model", "Pi Pocket can use none of the models on the owner's subagent model list now");
+        }
+        const effort = typeof thinking === "string" && thinking !== "" && thinking !== "default" ? thinking : undefined;
+        if (effort === undefined) return { model: chosen };
+        const info = typeof host.modelInfo === "function" ? host.modelInfo(chosen) : undefined;
+        if (info !== undefined && !info.thinkingLevels.some((level) => level === effort)) {
+            return refuse("effort", `the model ${chosen} does not support the effort ${effort} (${info.thinkingLevels.join(", ")})`);
+        }
+
+        return { model: chosen, thinking: effort };
+    }
+
+    type Runtime = TaskRuntime<{ home: string }, { phase: "serve" }, null, object>;
+
+    async function submit(runtime: Runtime, context: Context, record: WorkerRecord, content: string, key: string, whenBusy: "followUp" | "steer"): Promise<BridgeResult> {
+        if (record.retired === true || record.archived === true) {
+            return refuse("retired", `the worker for ${record.task} was torn down; Firstmate sends nothing more to it`);
+        }
+        const refused = await gate(runtime, context, record);
+        if (refused !== undefined) return refused;
+        const conversation = await runtime.conversation(record.session as unknown as ConversationId, context);
+        if (conversation === undefined) return refuse("missing", `the worker session ${String(record.session)} is gone`);
+        const submission = await conversation.submit({ type: "input", content, whenBusy, requestId: requestFor(record.session as unknown as ConversationId, key) }, context);
+
+        return { ok: true, submission: String(submission.id) };
+    }
+
+    async function rowOf(record: WorkerRecord): Promise<LinkedRow | undefined> {
+        const api = linked();
+        if (typeof api?.list !== "function") throw new Error("this Pi Pocket does not list linked sessions");
+
+        return (await api.list(record.main as unknown as ConversationId)).find((row) => row.address === record.address);
+    }
+
+    async function spawnWorker(home: string, main: ConversationId, request: BridgeRequest): Promise<BridgeResult> {
+        const api = linked();
+        if (typeof api?.start !== "function") return refuse("unsupported", "this Pi Pocket has no linked sessions, which Pocket workers need");
+        const task = request.task;
+        if (!validTask(task)) return refuse("invalid", "spawn needs a valid task id");
+        const cwd = typeof request.cwd === "string" ? request.cwd : "";
+        if (!cwd.startsWith("/") || !(await stat(cwd).catch(() => undefined))?.isDirectory()) return refuse("invalid", `the worker folder ${cwd} is not a directory`);
+        const held = heldBack(main);
+        if (held !== undefined) return refuse("held", `Pi Pocket holds this session back: ${held}`);
+        const env = workerEnv(request.env);
+        const excludeTools = Array.isArray(request.excludeTools) ? request.excludeTools.filter((name): name is string => typeof name === "string" && name !== "") : [];
+        const existing = await byTask(home, task);
+        if (existing !== undefined && existing.retired !== true && existing.archived !== true) {
+            // The same spawn again (a lost reply): the session it already started.
+            return { ok: true, session: existing.session, address: existing.address, model: existing.model, reused: true };
+        }
+        const chosen = await selection(request.model, request.thinking);
+        if ("ok" in chosen) return chosen;
+        const attempt = typeof request.attempt === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(request.attempt) ? request.attempt : request.id;
+        const key = `firstmate-worker-${hash(home)}-${task}-${attempt}`;
+        let started: { session: ConversationId; address: string };
+        try {
+            started = await api.start(
+                main,
+                {
+                    title: typeof request.title === "string" && request.title !== "" ? request.title : `fm-${task}`,
+                    message: WORKER_FIRST_MESSAGE,
+                    cwd,
+                    model: chosen.model,
+                    ...(chosen.thinking === undefined ? {} : { thinking: chosen.thinking }),
+                },
+                key,
+            );
+        } catch (error) {
+            return refuse("start", `Pi Pocket refused to start the worker session: ${(error as Error).message}`);
+        }
+        const record: WorkerRecord = {
+            task,
+            home,
+            main: Number(main),
+            session: Number(started.session),
+            address: started.address,
+            cwd,
+            model: chosen.model,
+            ...(chosen.thinking === undefined ? {} : { thinking: chosen.thinking }),
+            env,
+            excludeTools,
+            prompt: typeof request.prompt === "string" ? request.prompt : "",
+            key,
+            busy: false,
+        };
+        await save(record);
+
+        return { ok: true, session: record.session, address: record.address, model: record.model, ...(record.thinking === undefined ? {} : { thinking: record.thinking }) };
+    }
+
+    async function killWorker(record: WorkerRecord, runtime: Runtime, context: Context): Promise<BridgeResult> {
+        const api = linked();
+        if (record.archived === true || record.retired === true) return { ok: true, archived: record.archived === true, retired: record.retired === true };
+        if (typeof api?.stop === "function" && typeof api.archive === "function") {
+            try {
+                await api.stop(record.main as unknown as ConversationId, { to: record.address }, `${record.key}-stop`);
+                await api.archive(record.main as unknown as ConversationId, { to: record.address, archived: true }, `${record.key}-archive`);
+                const row = await rowOf(record);
+                if (row !== undefined && row.archived !== true) return refuse("unconfirmed", `the worker session ${String(record.session)} did not read back archived`);
+                if (row?.busy === true) return refuse("unconfirmed", `the worker session ${String(record.session)} still reads busy after its stop`);
+            } catch (error) {
+                return refuse("kill", `Pi Pocket could not stop and archive the worker session: ${(error as Error).message}`);
+            }
+            await lane(record.session, () => save({ ...record, archived: true, busy: false }));
+
+            return { ok: true, archived: true };
+        }
+        // No stop or archive in this Pi Pocket: abort its run and retire it, so Firstmate never sends to it again.
+        const conversation = await runtime.conversation(record.session as unknown as ConversationId, context);
+        await conversation?.abort(context);
+        await lane(record.session, () => save({ ...record, retired: true, busy: false }));
+
+        return { ok: true, archived: false, retired: true };
+    }
+
+    async function handle(home: string, runtime: Runtime, context: Context, request: BridgeRequest): Promise<BridgeResult> {
+        const main = runtime.conversationId;
+        if (request.verb === "status") {
+            const api = linked();
+            return { ok: true, pocketVersion: host.pocketVersion ?? "", stop: typeof api?.stop === "function" && typeof api.archive === "function" };
+        }
+        if (request.verb === "spawn") return spawnWorker(home, main, request);
+        const record = await bySessionIn(home, request.session);
+        if (record === undefined) {
+            return request.verb === "state" ? { ok: true, state: "missing", busy: "unknown" } : request.verb === "kill" ? { ok: true, archived: false, absent: true } : refuse("missing", `no Pocket worker is recorded for session ${String(request.session)}`);
+        }
+        if (record.main !== Number(main)) return refuse("foreign", `the worker session ${String(record.session)} belongs to another main session`);
+        switch (request.verb) {
+            case "configure": {
+                if (record.retired === true || record.archived === true) return refuse("retired", `the worker for ${record.task} was torn down`);
+                const env = workerEnv(request.env);
+                await lane(record.session, async () => {
+                    const latest = (await byTask(home, record.task)) ?? record;
+                    await save({ ...latest, env: { ...latest.env, ...env } });
+                });
+                return { ok: true };
+            }
+            case "send": {
+                const text = typeof request.text === "string" ? request.text : "";
+                if (text === "") return refuse("invalid", "send needs text");
+                const key = typeof request.requestId === "string" && request.requestId !== "" ? request.requestId : request.id;
+                return submit(runtime, context, record, text, `fm-worker-${hash(key)}-${clientKey(key)}`, request.whenBusy === "steer" ? "steer" : "followUp");
+            }
+            case "interrupt": {
+                if (record.retired === true || record.archived === true) return refuse("retired", `the worker for ${record.task} was torn down`);
+                const conversation = await runtime.conversation(record.session as unknown as ConversationId, context);
+                if (conversation === undefined) return refuse("missing", `the worker session ${String(record.session)} is gone`);
+                const wasBusy = record.busy;
+                await conversation.abort(context);
+                return { ok: true, cancel: wasBusy ? "confirmed" : "not-running" };
+            }
+            case "capture": {
+                const lines = Number.isSafeInteger(request.lines) && (request.lines as number) > 0 ? (request.lines as number) : 40;
+                const view = await runtime.context(record.session as unknown as ConversationId, context);
+                return { ok: true, text: transcriptText(view.messages as never, lines) };
+            }
+            case "state": {
+                if (record.retired === true || record.archived === true) return { ok: true, state: "missing", busy: "unknown" };
+                let row: LinkedRow | undefined;
+                try {
+                    row = await rowOf(record);
+                } catch (error) {
+                    return refuse("unreadable", (error as Error).message);
+                }
+                if (row === undefined || row.archived === true) return { ok: true, state: "missing", busy: "unknown" };
+                const failed = typeof row.failed === "string" ? row.failed : row.busy === true ? undefined : record.failed;
+                if (failed !== undefined) return { ok: true, state: "dead", busy: "unknown", failed };
+                return { ok: true, state: "alive", busy: row.busy === true ? "busy" : "idle" };
+            }
+            case "kill":
+                return killWorker(record, runtime, context);
+        }
+
+        return refuse("invalid", `unknown verb ${String(request.verb)}`);
+    }
+
+    /** Read, check, and answer every waiting request once. A request that fails the trust check is answered and dropped. */
+    async function serve(home: string, runtime: Runtime, context: Context): Promise<void> {
+        const dir = bridgeDir(home);
+        const inbox = join(dir, "requests");
+        const outbox = join(dir, "results");
+        if (!(await privateDir(inbox)) || !(await privateDir(outbox))) return;
+        for (const name of (await readdir(inbox).catch(() => [] as string[])).sort()) {
+            if (!/^[A-Za-z0-9._-]{1,128}\.json$/.test(name)) continue;
+            const path = join(inbox, name);
+            const info = await lstat(path).catch(() => undefined);
+            const id = name.slice(0, -".json".length);
+            let result: BridgeResult;
+            if (info === undefined || !info.isFile() || info.uid !== process.getuid?.() || info.size > BRIDGE_REQUEST_LIMIT) {
+                result = refuse("untrusted", "the request is not a private regular file of this user");
+            } else {
+                const request = await readJson<BridgeRequest>(path);
+                if (request === undefined || request.v !== 1 || request.id !== id || typeof request.verb !== "string") {
+                    result = refuse("invalid", "the request is not a valid bridge request");
+                } else if (request.server !== SERVER_PID || (await ownership(home, request.conversation as unknown as ConversationId)) !== "owned" || request.conversation !== String(runtime.conversationId)) {
+                    result = refuse("untrusted", "the request does not come from the Pi Pocket conversation that holds this home's lock on this server");
+                } else if (!(await trustedWriter(request.pid, request.conversation, request.token))) {
+                    result = refuse("untrusted", "the request's writer is not a command of the conversation that holds this home's lock");
+                } else {
+                    try {
+                        result = await handle(home, runtime, context, request);
+                    } catch (error) {
+                        if (runtime.signal.aborted || context.abortSignal?.aborted) throw error;
+                        result = refuse("error", (error as Error).message);
+                    }
+                }
+            }
+            await writeJson(join(outbox, name), result);
+            await rm(path, { force: true });
+        }
+    }
+
+    /** Busy from Pi Pocket's own list, for the run events a restart or reload lost or doubled; then the restart nudges. */
+    async function reconcile(home: string, runtime: Runtime, context: Context): Promise<void> {
+        await load(home);
+        const mine = [...bySession.values()].filter((record) => record.home === home && record.main === Number(runtime.conversationId) && record.retired !== true && record.archived !== true);
+        if (mine.length === 0) return;
+        const api = linked();
+        const rows = typeof api?.list === "function" ? await api.list(runtime.conversationId).catch(() => undefined) : undefined;
+        for (const known of mine) {
+            const row = rows?.find((item) => item.address === known.address);
+            if (row !== undefined && typeof row.busy === "boolean" && row.busy !== known.busy) {
+                await runEvent(known.session, row.busy, undefined, "reconcile");
+            } else if (known.busy && known.busyBoot !== BOOT && row?.busy !== true) {
+                await runEvent(known.session, false, undefined, "reconcile");
+            }
+            const record = bySession.get(known.session) ?? known;
+            const cut = record.cut ?? (record.busy && record.busyBoot !== BOOT ? record.busyBoot : undefined);
+            if (cut === undefined || record.nudgedFor === cut) continue;
+            const sent = await submit(runtime, context, record, WORKER_NUDGE, `fm-nudge-${record.task}-${hash(cut)}`, "followUp").catch((error: unknown) => refuse("error", (error as Error).message));
+            if (sent.ok) {
+                await lane(record.session, async () => {
+                    const latest = (await byTask(home, record.task)) ?? record;
+                    await save({ ...latest, nudgedFor: cut });
+                });
+            } else if (sent.code !== "retired") {
+                host.notice?.("warning", `Firstmate could not nudge the Pocket worker for ${record.task} after the restart: ${sent.error}`, runtime.conversationId);
+            }
+        }
+    }
+
+    const bridge = defineTask<{ home: string }, { phase: "serve" }, null>({
+        name: BRIDGE_KIND,
+        version: 1,
+        initial: () => ({ phase: "serve" }),
+        phases: {
+            serve: async (task, runtime, context) => {
+                const { home } = task.input;
+                const signal = signalsOf(runtime.signal, context.abortSignal);
+                await load(home);
+                let reconciled = 0;
+                for (;;) {
+                    signal.throwIfAborted();
+                    const owner = await ownership(home, runtime.conversationId);
+                    if (owner === "other") break;
+                    if (owner === "owned") {
+                        const dir = bridgeDir(home);
+                        if (await privateDir(dir)) {
+                            const api = linked();
+                            await writeJson(join(dir, "heartbeat.json"), {
+                                server: SERVER_PID,
+                                boot: BOOT,
+                                conversation: String(runtime.conversationId),
+                                at: Date.now(),
+                                pocketVersion: host.pocketVersion ?? "",
+                                stop: typeof api?.stop === "function" && typeof api.archive === "function",
+                            });
+                            await serve(home, runtime, context);
+                            if (Date.now() - reconciled >= BRIDGE_RECONCILE_MS) {
+                                reconciled = Date.now();
+                                await reconcile(home, runtime, context).catch(() => undefined);
+                            }
+                        }
+                    }
+                    await pause(BRIDGE_POLL_MS, signal);
+                }
+                await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+            },
+        },
+        abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+    });
+
+    return { bridge, worker, runEvent, load };
+}
+
+type Workers = ReturnType<typeof createWorkers>;
+
+/** A worker's system-prompt section: the channel statement fm-spawn gives every task worker, and its Pocket limits. */
+function workerPrompt(record: WorkerRecord): string {
+    const blocked = [...POCKET_DELEGATION, ...record.excludeTools].sort().join(", ");
+
+    return `${record.prompt.trim() === "" ? "You are a task worker launched by Firstmate." : record.prompt.trim()}\n\nThis Pi Pocket session is the Firstmate task worker for ${record.task}. Firstmate starts and steers it; work in ${record.cwd}. Do not start or message other sessions or subagents: these tools are blocked here: ${blocked}.`;
+}
+
+/** Why a worker may not call a tool, or undefined: Pocket's delegation tools and config/crew-exclude-tools. */
+function workerBlock(record: WorkerRecord, name: string): string | undefined {
+    if (POCKET_DELEGATION.has(name) || name.startsWith("session_")) {
+        return `[pocket-worker] a Firstmate task worker does not start or steer other sessions; Pi Pocket's ${name} tool is blocked here. Report what you need through your task status file instead.`;
+    }
+    if (record.excludeTools.includes(name)) return `[pocket-worker] ${name} is excluded for Firstmate task workers by this home's config/crew-exclude-tools.`;
+
+    return undefined;
+}
+
+/** Start the home's bridge task in the conversation that holds its lock, unless one is live there. */
+async function ensureBridge(
+    api: { readonly conversationId: ConversationId; commit(change: (tx: Tx) => Promise<undefined>, context: Context): Promise<unknown> },
+    workers: Workers,
+    home: string,
+    context: Context,
+): Promise<void> {
+    await api.commit(async (tx) => {
+        const page = await tx.scanTasks({ conversationId: api.conversationId, kind: BRIDGE_KIND, order: "descending" }, 50);
+        if (page.items.some((task) => task.state.status !== "terminal" && !task.abortRequested)) return undefined;
+        await tx.createTask(workers.bridge, { home }, {
+            ownership: { kind: "conversation" },
+            background: true,
+            abandonOnRestart: false,
+            conversationId: api.conversationId,
+        });
+
+        return undefined;
+    }, context);
+}
+
+/** Run events into the worker registry, and the task environment into every command a worker runs. */
+function registerWorkerEvents(host: Partial<Host>, web: PocketSurface | undefined, workers: Workers): void {
+    const stops: (() => unknown)[] = [];
+    if (typeof host.on === "function") {
+        stops.push(host.on("run.started", (event) => workers.runEvent(Number(event.session ?? event.conversationId), true).catch(() => undefined)));
+        stops.push(
+            host.on("run.ended", (event) => {
+                const ended = event as typeof event & { outcome?: string; failure?: string };
+                return workers.runEvent(Number(ended.session ?? ended.conversationId), false, { outcome: ended.outcome, failure: ended.failure }).catch(() => undefined);
+            }),
+        );
+    }
+    if (typeof host.commandEnv === "function") {
+        stops.push(
+            host.commandEnv(async (command) => {
+                const record = await workers.worker(command.conversationId);
+                if (record === undefined) return undefined;
+                // A worker's commands never carry a supervisor identity: the bridge and the lock trust none of them.
+                return { ...record.env, FM_PI_POCKET_CONVERSATION: "", FM_PI_POCKET_SERVER_PID: "", FM_PI_POCKET_BRIDGE_TOKEN: "" };
+            }),
+        );
+    }
+    for (const stop of stops) web?.onDispose?.(stop);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // The extension
 
 /**
@@ -1378,6 +2042,7 @@ type PocketSurface = {
         options?: { access?: string },
     ) => void;
     send?: (event: string, data?: unknown) => void;
+    onDispose?: (dispose: () => unknown) => void;
 };
 
 /**
@@ -1469,6 +2134,8 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
     registerClient(web);
     const supervision = createSupervision(host);
     const watch = createWatchTask(host, supervision, presented);
+    const workers = createWorkers(host);
+    registerWorkerEvents(host, web, workers);
 
     const marked = createBashTool({
         prepare: (execution, api) => {
@@ -1633,7 +2300,10 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             }
             return undefined;
         }, context);
-        if ((await ownership(home, api.conversationId)) === "owned") await ensureWatch(runtime as never, watch, home, context);
+        if ((await ownership(home, api.conversationId)) === "owned") {
+            await ensureWatch(runtime as never, watch, home, context);
+            await ensureBridge(runtime as never, workers, home, context);
+        }
 
         return { messages: [...messages, message] as never };
     };
@@ -1641,9 +2311,11 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
     return defineExtension({
         name: "firstmate",
         tools: [repair, report, outcomesTool, processed],
-        tasks: [watch],
+        tasks: [watch, workers.bridge],
         sections: [
             section("firstmate", async (input) => {
+                const assigned = await workers.worker(input.conversationId);
+                if (assigned !== undefined) return workerPrompt(assigned);
                 const home = await homeOf(input.env?.cwd);
                 if (home === undefined) return undefined;
                 if ((await branchOf(home, input.conversationId)) !== undefined) return branchPrompt(home);
@@ -1677,6 +2349,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     if (before !== "owned" && (await ownership(home, api.conversationId)) === "owned") {
                         await ensureWatch(api, watch, home, context);
                     }
+                    if ((await ownership(home, api.conversationId)) === "owned") await ensureBridge(api, workers, home, context);
 
                     return result;
                 },
@@ -1685,6 +2358,11 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         hooks: [
             hook(ToolTask, {
                 beforeTool: async (call, api, context) => {
+                    const assigned = await workers.worker(api.conversationId);
+                    if (assigned !== undefined) {
+                        const block = workerBlock(assigned, call.name);
+                        return block === undefined ? undefined : { block };
+                    }
                     const home = await homeOf(await hookCwd(api, api.conversationId, context));
                     if (home === undefined) return undefined;
                     const branch = (await branchOf(home, api.conversationId)) !== undefined;

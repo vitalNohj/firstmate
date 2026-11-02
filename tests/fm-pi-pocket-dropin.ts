@@ -6,7 +6,7 @@
 //   FM_PI_POCKET_DROPIN    the drop-in file under test
 // Run with `--child <dataDir> <home>`, the file is instead the server that experiment (b) kills mid-delivery.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import {
     chmodSync,
@@ -270,6 +270,12 @@ const route = (request: unknown) => {
         });
     }
     if (text.endsWith("what happened in the fleet")) return call("fm_branch_outcomes", {});
+    // A Pocket worker: its task environment, and a run long enough for a restart to cut.
+    if (text.endsWith("show the task env")) {
+        return call("bash", { command: `printf 'task=%s inbox=%s marker=%s token=%s' "$FM_TASK_ID" "$FM_TASK_INBOX" "\${FM_PI_POCKET_CONVERSATION:-none}" "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
+    }
+    if (text.endsWith("work for a long time")) return call("bash", { command: "sleep 20" });
+    if (text.endsWith("show the bridge token")) return call("bash", { command: `printf 'token=%s' "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
     if (text.endsWith("report from main")) return call("fm_branch_report", { task: "task-a", verdict: "routine", summary: "main reporting" });
     // The supervision session: a wake for a task it reports on, and one it leaves without an outcome.
     const reported = /FIRSTMATE SUPERVISION WAKE: signal: (task-report[a-z0-9-]*)\.status/.exec(text);
@@ -309,6 +315,87 @@ async function watchTask(app: App, id: unknown) {
 const clientKey = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
 
 // ---------------------------------------------------------------------------------------------------------------
+// Pocket workers: Firstmate's side of the worker bridge is bin/fm-pi-pocket-bridge.mjs, run as a command of main
+
+type Called = { code: number; out: string; err: string };
+
+/** The bridge secret main's marked bash commands carry, read once from one of them (see "show the bridge token"). */
+let bridgeToken = "";
+
+async function readBridgeToken(app: App, main: unknown): Promise<void> {
+    await say(app, main as never, "show the bridge token");
+    const said = (await toolSaid(app, main)).findLast((text) => text.includes("token="))!;
+    bridgeToken = /token=(\S+)/.exec(said)![1]!;
+}
+
+/** One bridge call, as a command of main's session: a child of this server carrying main's Pi Pocket identity. */
+function bridgeCall(fmHome: string, main: unknown, args: string[], token = bridgeToken): Promise<Called> {
+    return new Promise((resolve) => {
+        const child = spawn(process.execPath, [join(fmHome, "bin", "fm-pi-pocket-bridge.mjs"), ...args, "--state", join(fmHome, "state")], {
+            env: { ...process.env, FM_PI_POCKET_CONVERSATION: String(main), FM_PI_POCKET_SERVER_PID: String(process.pid), FM_PI_POCKET_BRIDGE_TOKEN: token },
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        child.stdout!.on("data", (chunk: Buffer) => (out += chunk.toString()));
+        child.stderr!.on("data", (chunk: Buffer) => (err += chunk.toString()));
+        child.on("close", (code) => resolve({ code: code ?? -1, out, err }));
+    });
+}
+
+async function bridgeUp(fmHome: string, main: unknown): Promise<void> {
+    await until(() => {
+        const beat = readJsonFile(join(fmHome, "state", "pocket-bridge", "heartbeat.json"));
+        return beat?.server === String(process.pid) && beat?.conversation === String(main);
+    }, "the worker bridge", LONG);
+}
+
+function readJsonFile(path: string): any {
+    try {
+        return JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+        return undefined;
+    }
+}
+
+const workerRecord = (fmHome: string, task: string) => readJsonFile(join(fmHome, "state", "pocket-bridge", "workers", `${task}.json`));
+
+/** Arm the task's busy contract, as fm-spawn does before a Pocket worker starts. */
+function armBusy(fmHome: string, task: string): void {
+    execFileSync(join(fmHome, "bin", "fm-busy-event.sh"), ["arm", join(fmHome, "state"), task, "--state", "idle", "--source", "fm-spawn", "--event", "pocket-start"], { stdio: "ignore" });
+}
+
+/** The busy record's seq, state, and event. */
+function busyRecord(fmHome: string, task: string): { seq: number; state: string; event: string } | undefined {
+    const path = join(fmHome, "state", `${task}.busy-state`);
+    if (!existsSync(path)) return undefined;
+    const text = readFileSync(path, "utf8");
+    const field = (name: string) => new RegExp(`(?:^| )${name}=(\\S+)`).exec(text)?.[1] ?? "";
+
+    return { seq: Number(field("seq")), state: field("state"), event: field("event") };
+}
+
+async function spawnWorker(fmHome: string, main: unknown, task: string, cwd: string, extra: string[] = []): Promise<number> {
+    const prompt = join(cwd, "..", `${task}.prompt`);
+    const env = join(cwd, "..", `${task}.env`);
+    writeFileSync(prompt, "You are a task worker launched by Firstmate (fixture channel statement).");
+    writeFileSync(env, JSON.stringify({ FM_TASK_ID: task, FM_TASK_INBOX: `/fixture/${task}.inbox`, FM_PI_POCKET_CONVERSATION: "forged" }));
+    const started = await bridgeCall(fmHome, main, ["spawn", "--task", task, "--cwd", cwd, "--prompt-file", prompt, "--env-file", env, ...extra]);
+    assert.equal(started.code, 0, started.err);
+
+    return Number(JSON.parse(started.out).session);
+}
+
+function worktree(name: string): string {
+    const dir = join(root, `${name}-${String(Date.now())}`, "wt");
+    mkdirSync(dir, { recursive: true });
+
+    return dir;
+}
+
+const settle = (ms = 400) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ---------------------------------------------------------------------------------------------------------------
 // Experiment (b)'s server: bind, hold one wake back, report, and wait to be killed.
 
 if (process.argv.includes("--branch-child")) {
@@ -341,6 +428,24 @@ if (process.argv.includes("--stall-child")) {
     process.stdout.write("stall ok\n");
     await app.close();
     process.exit(0);
+}
+
+if (process.argv.includes("--worker-child")) {
+    // The worker restart experiment's first server: start a worker, put it in a long tool call, and wait to be killed.
+    const [dataDir, fmHome, wt] = process.argv.slice(process.argv.indexOf("--worker-child") + 1) as [string, string, string];
+    const app = await open(dataDir, true);
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    const id = await newSession(app, fmHome);
+    await say(app, id, "start firstmate");
+    await bridgeUp(fmHome, id);
+    await readBridgeToken(app, id);
+    armBusy(fmHome, "task-cut");
+    const session = await spawnWorker(fmHome, id, "task-cut", wt);
+    const sent = await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "work for a long time"]);
+    assert.equal(sent.code, 0, sent.err);
+    await until(() => workerRecord(fmHome, "task-cut")?.busy === true, "the worker's long run", LONG);
+    process.stdout.write(`worker ${String(id)} ${String(session)}\n`);
+    await new Promise(() => {});
 }
 
 if (process.argv.includes("--child")) {
@@ -919,4 +1024,255 @@ test("/calm toggles the shared preference file and a reloaded tab can read it", 
         server.closeAllConnections();
         server.close();
     }
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Pocket workers
+
+const NUDGE = "Firstmate: the Pi Pocket server restarted while you were working";
+const FENCE = "a request, not an order";
+
+/** A started main session that holds the lock, serves the worker bridge, and may start workers on faux/faux-1. */
+async function workerMain() {
+    const ctx = await started();
+    await ctx.app.setSubagentModels(owner(ctx.app), ["faux/faux-1"]);
+    await say(ctx.app, ctx.id, "start firstmate");
+    await bridgeUp(ctx.fmHome, ctx.id);
+    await readBridgeToken(ctx.app, ctx.id);
+
+    return ctx;
+}
+
+async function idle(app: App, session: number): Promise<void> {
+    await (await app.harness.conversation(session, context))!.waitForIdle(context);
+}
+
+test("a Pocket worker is a linked session in its worktree whose brief arrives unfenced, with its task env, prompt, and blocked tools", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const wt = worktree("worker-basic");
+    armBusy(fmHome, "task-w");
+    const session = await spawnWorker(fmHome, id, "task-w", wt, ["--exclude-tools", "web_fetch"]);
+    // Listed under main, in the worktree, on the listed model.
+    const listed = app.sessions().find((row: { id: number }) => row.id === session);
+    assert.equal(listed?.cwd, wt);
+    assert.equal(listed?.linkedFrom?.id, Number(id));
+    assert.equal(await sessionModel(app, session), "faux-1");
+    // A repeated spawn of the same task is the session it already started.
+    const again = await spawnWorker(fmHome, id, "task-w", wt);
+    assert.equal(again, session);
+    await idle(app, session);
+
+    const sent = await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "show the task env", "--request-id", "brief-1"]);
+    assert.equal(sent.code, 0, sent.err);
+    await until(async () => (await toolSaid(app, session)).some((text) => text.includes("task=task-w")), "the worker's env command", LONG);
+    await idle(app, session);
+    const said = await toolSaid(app, session);
+    assert.ok(said.some((text) => text.includes("task=task-w inbox=/fixture/task-w.inbox marker=none token=none")), said.join("\n"));
+    const texts = await userTexts(app, session);
+    const brief = texts.find((text) => text.includes("show the task env"))!;
+    assert.ok(!brief.includes(FENCE), "a submit is not fenced like a linked-session message");
+    assert.ok(texts[0]!.includes("Firstmate is starting a task worker"), "the first, fenced message is the neutral one");
+    // The same request id again is the same submission.
+    assert.equal((await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "show the task env", "--request-id", "brief-1"])).code, 0);
+    await settle();
+    assert.equal(count(await userTexts(app, session), "show the task env"), 1);
+    // The worker's prompt section, and its seatbelts.
+    assert.ok(systemPrompts.some((prompt) => prompt.includes("fixture channel statement") && prompt.includes("Firstmate task worker for task-w")));
+    await say(app, session, "ask a subagent");
+    assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes("subagent")));
+    // Run events reached the busy record: the last run ended idle with its turn-ended notification.
+    await until(() => busyRecord(fmHome, "task-w")?.state === "idle" && existsSync(join(fmHome, "state", "task-w.turn-ended")), "the idle record", LONG);
+    const state = await bridgeCall(fmHome, id, ["state", "--session", String(session)]);
+    assert.deepEqual(JSON.parse(state.out), { ok: true, state: "alive", busy: "idle" });
+    const captured = await bridgeCall(fmHome, id, ["capture", "--session", String(session), "--lines", "20"]);
+    assert.ok(captured.out.includes("show the task env"), captured.out);
+    // A worker cannot drive the bridge: a request that claims main but comes from a process without main's Pi Pocket
+    // identity (as every worker command is) is refused.
+    const other = await bridgeCall(fmHome, session, ["state", "--session", String(session)]);
+    assert.equal(other.code, 5, other.out + other.err);
+    const writer = spawn("sleep", ["30"], { env: { PATH: process.env.PATH ?? "" }, stdio: "ignore" });
+    try {
+        const name = `forged-${String(writer.pid)}.json`;
+        const dir = join(fmHome, "state", "pocket-bridge");
+        writeFileSync(join(dir, "requests", `.${name}.tmp`), JSON.stringify({ v: 1, id: name.slice(0, -5), verb: "state", server: String(process.pid), conversation: String(id), pid: writer.pid, session }), { mode: 0o600 });
+        renameSync(join(dir, "requests", `.${name}.tmp`), join(dir, "requests", name));
+        await until(() => existsSync(join(dir, "results", name)), "the forged request's answer", LONG);
+        assert.equal(readJsonFile(join(dir, "results", name))?.code, "untrusted");
+        // Main's identity without the bridge secret, as a supervision-branch command or a worker that copied main's
+        // marker has it, is refused too, even where the writer's environment cannot be read.
+        const tokenless = await bridgeCall(fmHome, id, ["state", "--session", String(session)], "forged");
+        assert.equal(tokenless.code, 3, tokenless.out + tokenless.err);
+        assert.match(tokenless.err, /untrusted/);
+    } finally {
+        writer.kill();
+    }
+});
+
+test("Pocket worker submits refuse a model off the owner's list and a spend hold, and a spawn refuses an unlisted model, a hold, and plan mode", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const wt = worktree("worker-gates");
+    const refused = await bridgeCall(fmHome, id, ["spawn", "--task", "task-unlisted", "--cwd", wt, "--model", "faux/faux-2"]);
+    assert.equal(refused.code, 3);
+    assert.match(refused.err, /model: the model faux\/faux-2 is not on the owner's subagent model list/);
+    const session = await spawnWorker(fmHome, id, "task-g", wt);
+    await idle(app, session);
+    const before = (await userTexts(app, session)).length;
+
+    await app.setSubagentModels(owner(app), ["faux/faux-2"]);
+    const offList = await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "steer one"]);
+    assert.equal(offList.code, 3);
+    assert.match(offList.err, /model: the worker's model faux\/faux-1 is not on the owner's subagent model list/);
+
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await recordCost(app, id, 2);
+    await app.spend.setSessionBudget(owner(app), id, 1);
+    const held = await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "steer two"]);
+    assert.equal(held.code, 3);
+    assert.match(held.err, /held: Pi Pocket holds this work back/);
+    const heldSpawn = await bridgeCall(fmHome, id, ["spawn", "--task", "task-held", "--cwd", wt]);
+    assert.equal(heldSpawn.code, 3);
+    assert.match(heldSpawn.err, /held: /);
+    await settle();
+    assert.equal((await userTexts(app, session)).length, before, "a refused submit sends nothing");
+
+    // Main in plan mode: Pi Pocket refuses the start, and the drop-in reports that refusal.
+    await app.spend.setSessionBudget(owner(app), id, null);
+    const { PlanDoc } = await import(join(checkout, "src/server/docs.ts"));
+    await app.harness.commit(async (tx: { doc: (doc: unknown, id: unknown) => Promise<{ on: boolean }> }) => {
+        (await tx.doc(PlanDoc, id)).on = true;
+        return undefined;
+    }, context);
+    const planned = await bridgeCall(fmHome, id, ["spawn", "--task", "task-plan", "--cwd", wt]);
+    assert.equal(planned.code, 3, planned.out);
+    assert.match(planned.err, /start: Pi Pocket refused to start the worker session: This session is in plan mode/);
+    assert.equal(workerRecord(fmHome, "task-plan"), undefined, "a refused start records no worker");
+});
+
+test("doubled and missed run events change a worker's busy state once, and the list reconcile corrects a lost run.ended", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const wt = worktree("worker-events");
+    armBusy(fmHome, "task-e");
+    const session = await spawnWorker(fmHome, id, "task-e", wt);
+    // The neutral first turn can end before the registry records the worker, so its events may be missed; the
+    // record was armed idle either way.
+    await idle(app, session);
+    await settle(1000);
+    assert.equal(busyRecord(fmHome, "task-e")?.state, "idle");
+    const seq = busyRecord(fmHome, "task-e")!.seq;
+    const emit = (name: "run.started" | "run.ended", extra: object = {}) => app.events.emit(name, { conversationId: session, session, ...extra } as never);
+    // A reload doubles the end of a run that is already over: nothing changes.
+    emit("run.ended");
+    emit("run.ended");
+    await settle();
+    assert.equal(busyRecord(fmHome, "task-e")!.seq, seq);
+    // A run.started whose run.ended a hard close lost: the reconcile reads Pi Pocket's list and ends it.
+    emit("run.started");
+    await until(() => busyRecord(fmHome, "task-e")!.seq >= seq + 1, "the started run", LONG);
+    await until(() => busyRecord(fmHome, "task-e")?.state === "idle" && busyRecord(fmHome, "task-e")?.event === "reconcile", "the reconciled idle", LONG);
+    assert.equal(busyRecord(fmHome, "task-e")!.seq, seq + 2);
+    // The run-failed signal, where Pi Pocket has it: a failed run reads dead until a later run starts.
+    emit("run.started");
+    emit("run.ended", { outcome: "failed", failure: "the provider refused" });
+    await until(() => workerRecord(fmHome, "task-e")?.failed === "the provider refused", "the failed run", LONG);
+    const dead = await bridgeCall(fmHome, id, ["state", "--session", String(session)]);
+    assert.deepEqual(JSON.parse(dead.out), { ok: true, state: "dead", busy: "unknown", failed: "the provider refused" });
+    emit("run.started");
+    await until(() => workerRecord(fmHome, "task-e")?.failed === undefined, "the next run", LONG);
+});
+
+test("a Pocket worker interrupt aborts its run, a kill without linked-session stop retires it and refuses later sends, and a relaunched task's old session id reaches nothing", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const wt = worktree("worker-kill");
+    armBusy(fmHome, "task-k");
+    const session = await spawnWorker(fmHome, id, "task-k", wt);
+    await idle(app, session);
+    assert.equal((await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "work for a long time"])).code, 0);
+    await until(() => workerRecord(fmHome, "task-k")?.busy === true, "the long run", LONG);
+    const interrupted = await bridgeCall(fmHome, id, ["interrupt", "--session", String(session)]);
+    assert.equal(interrupted.code, 0, interrupted.err);
+    assert.equal(JSON.parse(interrupted.out).cancel, "confirmed");
+    await until(() => workerRecord(fmHome, "task-k")?.busy === false, "the aborted run", 10_000);
+
+    const killed = await bridgeCall(fmHome, id, ["kill", "--session", String(session)]);
+    assert.equal(killed.code, 0, killed.err);
+    assert.deepEqual(JSON.parse(killed.out), { ok: true, archived: false, retired: true });
+    const after = await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "are you there"]);
+    assert.equal(after.code, 3);
+    assert.match(after.err, /retired: the worker for task-k was torn down/);
+    assert.deepEqual(JSON.parse((await bridgeCall(fmHome, id, ["state", "--session", String(session)])).out), { ok: true, state: "missing", busy: "unknown" });
+    assert.equal(count(await userTexts(app, session), "are you there"), 0);
+
+    // A relaunch's replacement session takes the task's record; the old session id never reaches the replacement.
+    const replacement = await spawnWorker(fmHome, id, "task-k", wt);
+    assert.notEqual(replacement, session);
+    await idle(app, replacement);
+    const stale = await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "stale steer"]);
+    assert.equal(stale.code, 3);
+    assert.match(stale.err, /missing: no Pocket worker is recorded for session/);
+    assert.deepEqual(JSON.parse((await bridgeCall(fmHome, id, ["kill", "--session", String(session)])).out), { ok: true, archived: false, absent: true });
+    assert.equal(workerRecord(fmHome, "task-k")?.session, replacement);
+    assert.equal(workerRecord(fmHome, "task-k")?.retired, undefined, "a stale kill leaves the replacement running");
+    assert.equal(count(await userTexts(app, replacement), "stale steer"), 0);
+});
+
+test("a Pocket worker kill stops and archives it, reading the archive back, when Pi Pocket has linked-session stop and archive", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const linked = app.linkedSessions as any;
+    const archived = new Set<string>();
+    const stops: string[] = [];
+    linked.stop = async (_source: unknown, request: { to: string }) => {
+        stops.push(request.to);
+        return { busy: false };
+    };
+    linked.archive = async (_source: unknown, request: { to: string }) => {
+        archived.add(request.to);
+        return { archived: true };
+    };
+    const realList = linked.list.bind(linked);
+    linked.list = async (source: unknown) => (await realList(source)).map((row: { address: string }) => (archived.has(row.address) ? { ...row, archived: true } : row));
+    assert.equal(JSON.parse((await bridgeCall(fmHome, id, ["status"])).out).stop, true);
+    const session = await spawnWorker(fmHome, id, "task-a", worktree("worker-archive"));
+    await idle(app, session);
+    const killed = await bridgeCall(fmHome, id, ["kill", "--session", String(session)]);
+    assert.equal(killed.code, 0, killed.err);
+    assert.deepEqual(JSON.parse(killed.out), { ok: true, archived: true });
+    assert.equal(stops.length, 1);
+    assert.equal(workerRecord(fmHome, "task-a")?.archived, true);
+    assert.equal((await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "x"])).code, 3);
+});
+
+test("after a Pi Pocket restart cut a worker's run, it gets one short nudge, recorded so it is sent once", { timeout: 120_000 }, async () => {
+    const fmHome = await home();
+    const dataDir = mkdtempSync(join(root, "worker-restart-"));
+    const wt = worktree("worker-restart");
+    const child = spawn(process.execPath, [process.argv[1]!, "--worker-child", dataDir, fmHome, wt], {
+        env: { ...process.env, TMPDIR: mkdtempSync(join(tmpdir(), "fm-child-")) },
+        stdio: ["ignore", "pipe", "inherit"],
+    });
+    const [id, session] = await new Promise<[number, number]>((resolve, reject) => {
+        let out = "";
+        child.stdout!.on("data", (chunk: Buffer) => {
+            out += chunk.toString();
+            const started = /^worker (\S+) (\S+)$/m.exec(out);
+            if (started) resolve([Number(started[1]), Number(started[2])]);
+        });
+        child.on("close", (code) => reject(new Error(`the child server ended first (${String(code)}): ${out}`)));
+    });
+    child.kill("SIGKILL");
+    await new Promise((resolve) => child.once("close", resolve));
+    assert.equal(workerRecord(fmHome, "task-cut")?.busy, true, "the record says the cut run was going");
+
+    const app = await open(dataDir, false);
+    apps.push(app);
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await bridgeUp(fmHome, id);
+    await until(async () => count(await userTexts(app, session), NUDGE) === 1, "the restart nudge", LONG);
+    await until(() => workerRecord(fmHome, "task-cut")?.nudgedFor !== undefined, "the recorded nudge", LONG);
+    await idle(app, session);
+    // Later reconciles and a reload's doubled run.ended send no second nudge.
+    app.events.emit("run.ended", { conversationId: session, session } as never);
+    await settle(2500);
+    assert.equal(count(await userTexts(app, session), NUDGE), 1);
+    assert.equal(workerRecord(fmHome, "task-cut")?.busy, false);
+    assert.equal(busyRecord(fmHome, "task-cut")?.state, "idle");
 });

@@ -1289,6 +1289,11 @@ if [ "$BACKEND" = t3code ]; then
   fm_backend_runtime_check t3code || exit 1
   [ "$TEARDOWN_META_KIND" != secondmate ] || t3code_secondmate_lsof_check "$ID" "$(fm_meta_get "$META" home)" || exit 1
 fi
+# The Pocket worker bridge must answer before any local teardown mutation, so a
+# worker session is never left running in a slot handed back to the pool.
+if [ "$BACKEND" = pi-pocket ]; then
+  fm_backend_runtime_check pi-pocket || exit 1
+fi
 if [ "${FM_TEARDOWN_GUARD_DONE:-0}" != 1 ]; then
   "$FM_ROOT/bin/fm-guard.sh" || true
 fi
@@ -3921,6 +3926,15 @@ if [ "$BACKEND" = t3code ]; then
     endpoint_close_refusal "$ID" t3code "$T" 0 || exit 1
   }
 fi
+# A Pocket worker session likewise stops before its slot goes back: stop +
+# archive with an archived read-back where Pi Pocket offers them, else an
+# abort and a retired mark the drop-in then honors by refusing every send.
+if [ "$BACKEND" = pi-pocket ]; then
+  fm_backend_kill pi-pocket "$T" || {
+    echo "error: could not stop the Pi Pocket worker session $T for $ID; reload the Firstmate drop-in in Pi Pocket (or stop the session there) and re-run teardown" >&2
+    endpoint_close_refusal "$ID" pi-pocket "$T" 0 || exit 1
+  }
+fi
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
     require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
@@ -4041,7 +4055,7 @@ elif [ "$BACKEND" = rex ] && [ "$KIND" = secondmate ] && [ "$TEARDOWN_WINDOWLESS
   ( unset FM_ROOT_OVERRIDE; FM_HOME="$HOME_PATH" FM_ROOT="$HOME_PATH" STATE="$HOME_PATH/state" \
     fm_backend_kill "$BACKEND" "$T" "" "fm-$ID" ) \
     || endpoint_close_refusal "$ID" "$BACKEND" "$T" 1 || exit 1
-elif [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
+elif [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$BACKEND" != pi-pocket ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
   # Undo Firstmate's own opt-in Rex attention mark, progress, and tint first
   # (bin/fm-rex-marks.sh), so a pane the close cannot reach is not left showing
   # a stale request. A task with no cached record costs nothing.
