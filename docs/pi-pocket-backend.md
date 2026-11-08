@@ -49,7 +49,7 @@ The drop-in answers a request only when all of the following hold, the same trus
 - Its writer is alive and its parent chain reaches this server.
   Where `/proc` shows the writer's environment, that environment must also carry the conversation's Pi Pocket marker.
 
-A worker's own commands carry an empty marker and no secret, so a worker cannot drive the bridge, even on a platform where another process's environment cannot be read.
+A worker's own commands carry `FM_HOME` for its recorded Firstmate home, but an empty conversation marker, server pid, and bridge secret, so a worker cannot drive the bridge, even on a platform where another process's environment cannot be read.
 
 | Verb | What the drop-in does |
 | --- | --- |
@@ -91,9 +91,12 @@ A start Pi Pocket refuses (for example main in plan mode) is reported the same w
 
 The drop-in gives a worker:
 
-- **Task environment.** Its commands get `FM_TASK_ID`, `FM_TASK_INBOX`, `GOTMPDIR`, the Git hook path, and the other launch facts a pane worker exports, through `host.commandEnv`.
+- **Task environment.** Its commands get `FM_HOME`, `FM_TASK_ID`, `FM_TASK_INBOX`, `GOTMPDIR`, the Git hook path, and the other launch facts a pane worker exports, through `host.commandEnv`.
+  `FM_HOME` always names the worker's recorded Firstmate home, including after a restart with an older registry, and a supplied task environment cannot replace it.
 - **System-prompt section.** The task-worker channel statement, plus the worker's limits.
-- **Blocked tools.** Pi Pocket's delegation tools (`subagent`, `team`, `schedule`, `watch_pr`, and every `session_*` tool) are blocked in a worker, and so is every tool in `config/crew-exclude-tools`.
+- **Blocked tools.** The supervisor tools `fm_watch_arm_pocket`, `fm_branch_report`, `fm_branch_outcomes`, and `fm_branch_processed` are omitted from a worker's model tool declarations and codemode prompt, listed as blocked in its worker instructions, and refused if called anyway, including from a script.
+  Main and supervision sessions keep their existing tools and permissions.
+  Pi Pocket's delegation tools (`subagent`, `team`, `schedule`, `watch_pr`, and every `session_*` tool) are blocked in a worker, and so is every tool in `config/crew-exclude-tools`.
 
 ## Steering and control
 
@@ -157,5 +160,5 @@ bin/fm-test-run.sh tests/fm-backend-pi-pocket.test.sh tests/fm-pi-pocket-dropin.
 
 [`tests/fm-backend-pi-pocket.test.sh`](../tests/fm-backend-pi-pocket.test.sh) covers the adapter, the bridge client, and the `fm-spawn`, `fm-control`, and `fm-teardown` paths against a [fake bridge](../tests/pi-pocket-fake-bridge.mjs) and fake Treehouse.
 [`tests/fm-pi-pocket-dropin.test.sh`](../tests/fm-pi-pocket-dropin.test.sh) runs the drop-in's side of the bridge in a real Pi Pocket app on temporary data directories with a scripted model.
-It covers the unfenced brief, the task environment, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
+It covers the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, hidden supervisor tools and refused forced calls without changing main or supervision sessions, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#pi-pocket-workers) records the dated results.

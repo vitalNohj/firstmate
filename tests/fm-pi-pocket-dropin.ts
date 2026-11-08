@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, mock, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 
 const checkout = process.env.FM_PI_POCKET_CHECKOUT!;
 const bin = process.env.FM_PI_POCKET_BIN!;
@@ -39,6 +40,7 @@ const WAKE = "FIRSTMATE WATCHER WAKE: ";
 const BRANCH_WAKE = "FIRSTMATE SUPERVISION WAKE: ";
 const PROCESSING = "supervision processing request";
 const LONG = 30_000;
+const SUPERVISOR_TOOLS = ["fm_watch_arm_pocket", "fm_branch_report", "fm_branch_outcomes", "fm_branch_processed"];
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixtures
@@ -246,6 +248,17 @@ const route = (request: unknown) => {
         return call("bash", { command: "sleep 60" });
     }
     if (role === "toolResult") return fauxAssistantMessage([fauxText("noted the tool result")]);
+    if (text.endsWith("list the offered tools")) {
+        return fauxAssistantMessage([fauxText(`offered tools: ${getCurrentTools(all as never).map((tool) => tool.name).join(", ")}`)]);
+    }
+    const forced = /force supervisor tool (fm_[a-z_]+)$/.exec(text);
+    if (forced) {
+        const args = forced[1] === "fm_branch_report" ? { task: "task-w", verdict: "routine", summary: "worker reporting" } : forced[1] === "fm_branch_processed" ? { through: 1 } : {};
+        return call(forced[1]!, args);
+    }
+    if (text.endsWith("process outcomes from a script")) {
+        return call("codemode", { code: `return await tools.fm_branch_processed({ through: 1 });` });
+    }
     if (text.endsWith("start firstmate")) return call("bash", { command: "bin/fm-session-start.sh" });
     if (text.endsWith("go elsewhere")) return call("bash", { command: "cd /tmp && ls" });
     if (text.endsWith("background the watcher")) return call("bash", { command: "bin/fm-watch-arm.sh --restart &" });
@@ -272,7 +285,7 @@ const route = (request: unknown) => {
     if (text.endsWith("what happened in the fleet")) return call("fm_branch_outcomes", {});
     // A Pocket worker: its task environment, and a run long enough for a restart to cut.
     if (text.endsWith("show the task env")) {
-        return call("bash", { command: `printf 'task=%s inbox=%s marker=%s token=%s' "$FM_TASK_ID" "$FM_TASK_INBOX" "\${FM_PI_POCKET_CONVERSATION:-none}" "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
+        return call("bash", { command: `printf 'task=%s inbox=%s home=%s marker=%s server=%s token=%s' "$FM_TASK_ID" "$FM_TASK_INBOX" "\${FM_HOME:-none}" "\${FM_PI_POCKET_CONVERSATION:-none}" "\${FM_PI_POCKET_SERVER_PID:-none}" "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
     }
     if (text.endsWith("work for a long time")) return call("bash", { command: "sleep 20" });
     if (text.endsWith("show the bridge token")) return call("bash", { command: `printf 'token=%s' "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
@@ -298,6 +311,8 @@ async function open(dataDir: string, enable: boolean): Promise<App> {
     copyFileSync(dropIn, join(dataDir, "extensions", "firstmate.ts"));
     copyFileSync(join(dirname(dropIn), "firstmate.js"), join(dataDir, "extensions", "firstmate.js"));
     const app = await openApp(scriptedModel(route), dataDir);
+    // Newer Pocket defers subagent until tool search; offer it so the scripted calls still exercise our guard.
+    if (typeof helpers.offerSubagents === "function") helpers.offerSubagents(app);
     if (enable) await app.setExtensionEnabled(owner(app), "firstmate.ts", true);
 
     return app;
@@ -1052,6 +1067,12 @@ test("a Pocket worker is a linked session in its worktree whose brief arrives un
     const wt = worktree("worker-basic");
     armBusy(fmHome, "task-w");
     const session = await spawnWorker(fmHome, id, "task-w", wt, ["--exclude-tools", "web_fetch"]);
+    assert.equal(workerRecord(fmHome, "task-w")?.env.FM_HOME, fmHome, "spawn records the worker's Firstmate home without an env-file entry");
+    const envFile = join(wt, "..", "configure.env");
+    writeFileSync(envFile, JSON.stringify({ FM_HOME: "/forged/home", FM_PI_POCKET_CONVERSATION: "forged", FM_PI_POCKET_SERVER_PID: "123", FM_PI_POCKET_BRIDGE_TOKEN: "forged" }));
+    const configured = await bridgeCall(fmHome, id, ["configure", "--session", String(session), "--env-file", envFile]);
+    assert.equal(configured.code, 0, configured.err);
+    assert.equal(workerRecord(fmHome, "task-w")?.env.FM_HOME, fmHome, "configure cannot replace the recorded home");
     // Listed under main, in the worktree, on the listed model.
     const listed = app.sessions().find((row: { id: number }) => row.id === session);
     assert.equal(listed?.cwd, wt);
@@ -1067,7 +1088,7 @@ test("a Pocket worker is a linked session in its worktree whose brief arrives un
     await until(async () => (await toolSaid(app, session)).some((text) => text.includes("task=task-w")), "the worker's env command", LONG);
     await idle(app, session);
     const said = await toolSaid(app, session);
-    assert.ok(said.some((text) => text.includes("task=task-w inbox=/fixture/task-w.inbox marker=none token=none")), said.join("\n"));
+    assert.ok(said.some((text) => text.includes(`task=task-w inbox=/fixture/task-w.inbox home=${fmHome} marker=none server=none token=none`)), said.join("\n"));
     const texts = await userTexts(app, session);
     const brief = texts.find((text) => text.includes("show the task env"))!;
     assert.ok(!brief.includes(FENCE), "a submit is not fenced like a linked-session message");
@@ -1106,6 +1127,65 @@ test("a Pocket worker is a linked session in its worktree whose brief arrives un
     } finally {
         writer.kill();
     }
+});
+
+/** The actual tool declarations the model saw, not the conversation's stored tool configuration. */
+async function offeredTools(app: App, session: number): Promise<string[]> {
+    await say(app, session, "list the offered tools");
+    const view = await (await app.harness.conversation(session, context))!.context(context);
+    const answer = view.messages
+        .filter((message: { role: string }) => message.role === "assistant")
+        .map((message: { role: string; content: unknown }) => lastText({ messages: [message] }).text)
+        .findLast((text: string) => text.startsWith("offered tools: "));
+    assert.ok(answer !== undefined, "the model received and listed its offered tool declarations");
+
+    return answer.slice("offered tools: ".length).split(", ");
+}
+
+test("Pocket workers hide all Firstmate supervisor tools and refuse forced calls while main and supervision keep their tools", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const session = await spawnWorker(fmHome, id, "task-w", worktree("worker-supervisor-tools"));
+    await idle(app, session);
+    const offered = await offeredTools(app, session);
+    assert.ok(offered.includes("bash"), "ordinary worker tools remain offered");
+    for (const name of SUPERVISOR_TOOLS) assert.ok(!offered.includes(name), `${name} must not be offered to a worker`);
+    for (const name of SUPERVISOR_TOOLS) {
+        await say(app, session, `force supervisor tool ${name}`);
+        assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes(name)), `${name} must be refused by the worker guard`);
+    }
+    await say(app, session, "process outcomes from a script");
+    assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes("fm_branch_processed")), "nested calls cannot process supervisor outcomes");
+    assert.equal(outcomeRows(fmHome).length, 0, "a forced worker report records no outcome");
+    assert.equal(existsSync(join(fmHome, "state", ".branch-outcomes-processed")), false, "a worker never acknowledges an outcome");
+    const workerSystem = systemPrompts.findLast((prompt) => prompt.includes("Firstmate task worker for task-w"));
+    assert.ok(workerSystem !== undefined);
+    for (const name of SUPERVISOR_TOOLS) assert.ok(workerSystem.includes(name), `${name} is explained in the worker's blocked list`);
+    const mainTools = await offeredTools(app, Number(id));
+    const branch = await branchStarted(app, fmHome);
+    const branchTools = await offeredTools(app, branch);
+    for (const name of SUPERVISOR_TOOLS) {
+        assert.ok(mainTools.includes(name), `${name} remains offered to main`);
+        assert.ok(branchTools.includes(name), `${name} has unchanged visibility in supervision`);
+    }
+});
+
+test("Pocket workers hide supervisor tools from codemode-only catalogs without hiding ordinary worker tools or main's catalog", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    await app.setExtensionSettings(owner(app), "codemode", { mode: "only" });
+    const session = await spawnWorker(fmHome, id, "task-only", worktree("worker-codemode-only"));
+    await idle(app, session);
+    await offeredTools(app, session);
+    const workerSystem = systemPrompts.findLast((prompt) => prompt.includes("Firstmate task worker for task-only"))!;
+    const catalog = [...workerSystem.matchAll(/<codemode>\n([\s\S]*?)\n<\/codemode>/g)].at(-1)?.[1];
+    assert.ok(catalog !== undefined && catalog.includes("bash"), "codemode-only lists ordinary worker tools");
+    for (const name of SUPERVISOR_TOOLS) assert.ok(!catalog.includes(name), `${name} must not appear in the worker's codemode catalog`);
+    await say(app, session, "process outcomes from a script");
+    assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes("fm_branch_processed")));
+    await offeredTools(app, Number(id));
+    const mainSystem = systemPrompts.findLast((prompt) => prompt.includes("The Firstmate Pi Pocket drop-in is active in this session"))!;
+    const mainCatalog = [...mainSystem.matchAll(/<codemode>\n([\s\S]*?)\n<\/codemode>/g)].at(-1)?.[1];
+    assert.ok(mainCatalog !== undefined && mainCatalog.includes("bash"));
+    for (const name of SUPERVISOR_TOOLS) assert.ok(mainCatalog.includes(name), `${name} remains in main's codemode catalog`);
 });
 
 test("Pocket worker submits refuse a model off the owner's list and a spend hold, and a spawn refuses an unlisted model, a hold, and plan mode", { timeout: 90_000 }, async () => {
@@ -1182,6 +1262,10 @@ test("doubled and missed run events change a worker's busy state once, and the l
 
 test("a Pocket worker interrupt aborts its run, a kill without linked-session stop retires it and refuses later sends, and a relaunched task's old session id reaches nothing", { timeout: 90_000 }, async () => {
     const { app, id, fmHome } = await workerMain();
+    // Exercise the older capability path even when the installed Pocket can stop and archive linked sessions.
+    const linked = app.linkedSessions as any;
+    linked.stop = undefined;
+    linked.archive = undefined;
     const wt = worktree("worker-kill");
     armBusy(fmHome, "task-k");
     const session = await spawnWorker(fmHome, id, "task-k", wt);
@@ -1261,6 +1345,10 @@ test("after a Pi Pocket restart cut a worker's run, it gets one short nudge, rec
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("close", resolve));
     assert.equal(workerRecord(fmHome, "task-cut")?.busy, true, "the record says the cut run was going");
+    // A registry written before FM_HOME was supplied still gets the right command environment on restart.
+    const legacy = workerRecord(fmHome, "task-cut")!;
+    delete legacy.env.FM_HOME;
+    writeFileSync(join(fmHome, "state", "pocket-bridge", "workers", "task-cut.json"), JSON.stringify(legacy));
 
     const app = await open(dataDir, false);
     apps.push(app);
@@ -1275,4 +1363,10 @@ test("after a Pi Pocket restart cut a worker's run, it gets one short nudge, rec
     assert.equal(count(await userTexts(app, session), NUDGE), 1);
     assert.equal(workerRecord(fmHome, "task-cut")?.busy, false);
     assert.equal(busyRecord(fmHome, "task-cut")?.state, "idle");
+    await say(app, session, "show the task env");
+    assert.ok((await toolSaid(app, session)).some((text) => text.includes(`home=${fmHome} marker=none server=none token=none`)));
+    const offered = await offeredTools(app, session);
+    for (const name of SUPERVISOR_TOOLS) assert.ok(!offered.includes(name), `${name} stays hidden after restart`);
+    await say(app, session, "force supervisor tool fm_branch_processed");
+    assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes("fm_branch_processed")));
 });

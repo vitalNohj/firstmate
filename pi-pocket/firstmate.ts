@@ -84,6 +84,8 @@ const BRANCH_TITLE = "Firstmate supervision";
 const REPORT_TOOL = "fm_branch_report";
 const OUTCOMES_TOOL = "fm_branch_outcomes";
 const PROCESSED_TOOL = "fm_branch_processed";
+/** Supervisor-only tools: never offered to a task worker, and refused even when a call arrives anyway. */
+const SUPERVISOR_TOOLS = new Set([REPAIR_TOOL, REPORT_TOOL, OUTCOMES_TOOL, PROCESSED_TOOL]);
 /**
  * Context tools from the billion-context Pi Pocket extension. They only manage this session's own context and never
  * touch fleet state, so the branch may use them; every other tool stays blocked.
@@ -1412,13 +1414,13 @@ function bridgeDir(home: string): string {
 }
 
 /** The task environment a worker's commands get: plain names, string values, and never a Pi Pocket identity. */
-function workerEnv(value: unknown): Record<string, string> {
+function workerEnv(value: unknown, home: string): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [name, item] of Object.entries((value ?? {}) as Record<string, unknown>)) {
         if (WORKER_ENV_KEY.test(name) && typeof item === "string" && !name.startsWith("FM_PI_POCKET_")) env[name] = item;
     }
 
-    return env;
+    return { ...env, FM_HOME: home };
 }
 
 const validTask = (task: unknown): task is string => typeof task === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(task);
@@ -1683,7 +1685,7 @@ function createWorkers(host: Partial<Host>) {
         if (!cwd.startsWith("/") || !(await stat(cwd).catch(() => undefined))?.isDirectory()) return refuse("invalid", `the worker folder ${cwd} is not a directory`);
         const held = heldBack(main);
         if (held !== undefined) return refuse("held", `Pi Pocket holds this session back: ${held}`);
-        const env = workerEnv(request.env);
+        const env = workerEnv(request.env, home);
         const excludeTools = Array.isArray(request.excludeTools) ? request.excludeTools.filter((name): name is string => typeof name === "string" && name !== "") : [];
         const existing = await byTask(home, task);
         if (existing !== undefined && existing.retired !== true && existing.archived !== true) {
@@ -1770,7 +1772,7 @@ function createWorkers(host: Partial<Host>) {
         switch (request.verb) {
             case "configure": {
                 if (record.retired === true || record.archived === true) return refuse("retired", `the worker for ${record.task} was torn down`);
-                const env = workerEnv(request.env);
+                const env = workerEnv(request.env, record.home);
                 await lane(record.session, async () => {
                     const latest = (await byTask(home, record.task)) ?? record;
                     await save({ ...latest, env: { ...latest.env, ...env } });
@@ -1929,13 +1931,16 @@ type Workers = ReturnType<typeof createWorkers>;
 
 /** A worker's system-prompt section: the channel statement fm-spawn gives every task worker, and its Pocket limits. */
 function workerPrompt(record: WorkerRecord): string {
-    const blocked = [...POCKET_DELEGATION, ...record.excludeTools].sort().join(", ");
+    const blocked = [...SUPERVISOR_TOOLS, ...POCKET_DELEGATION, ...record.excludeTools].sort().join(", ");
 
-    return `${record.prompt.trim() === "" ? "You are a task worker launched by Firstmate." : record.prompt.trim()}\n\nThis Pi Pocket session is the Firstmate task worker for ${record.task}. Firstmate starts and steers it; work in ${record.cwd}. Do not start or message other sessions or subagents: these tools are blocked here: ${blocked}.`;
+    return `${record.prompt.trim() === "" ? "You are a task worker launched by Firstmate." : record.prompt.trim()}\n\nThis Pi Pocket session is the Firstmate task worker for ${record.task}. Firstmate starts and steers it; work in ${record.cwd}. Do not supervise the fleet or start or message other sessions or subagents: these tools are blocked here: ${blocked}.`;
 }
 
-/** Why a worker may not call a tool, or undefined: Pocket's delegation tools and config/crew-exclude-tools. */
+/** Why a worker may not call a tool, or undefined: supervisor tools, Pocket delegation, and config/crew-exclude-tools. */
 function workerBlock(record: WorkerRecord, name: string): string | undefined {
+    if (SUPERVISOR_TOOLS.has(name)) {
+        return `[pocket-worker] ${name} is a Firstmate supervisor tool, not a task-worker tool. Report what you need through your task status file instead.`;
+    }
     if (POCKET_DELEGATION.has(name) || name.startsWith("session_")) {
         return `[pocket-worker] a Firstmate task worker does not start or steer other sessions; Pi Pocket's ${name} tool is blocked here. Report what you need through your task status file instead.`;
     }
@@ -1983,7 +1988,7 @@ function registerWorkerEvents(host: Partial<Host>, web: PocketSurface | undefine
                 const record = await workers.worker(command.conversationId);
                 if (record === undefined) return undefined;
                 // A worker's commands never carry a supervisor identity: the bridge and the lock trust none of them.
-                return { ...record.env, FM_PI_POCKET_CONVERSATION: "", FM_PI_POCKET_SERVER_PID: "", FM_PI_POCKET_BRIDGE_TOKEN: "" };
+                return { ...record.env, FM_HOME: record.home, FM_PI_POCKET_CONVERSATION: "", FM_PI_POCKET_SERVER_PID: "", FM_PI_POCKET_BRIDGE_TOKEN: "" };
             }),
         );
     }
@@ -2324,6 +2329,17 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             }),
         ],
         wraps: [
+            // Codemode renders callable tools separately from the model's tool declarations.
+            wrapSection("codemode", (inner) => ({
+                ...inner,
+                render: async (input, context) => {
+                    if ((await workers.worker(input.conversationId)) === undefined) return inner.render(input, context);
+
+                    const agent = { ...input.agent, callable: input.agent.callable.filter((tool) => !SUPERVISOR_TOOLS.has(tool.name)) };
+
+                    return inner.render({ ...input, agent }, context);
+                },
+            })),
             // The supervision session's prompt is bin/fm-branch-prompt.sh alone: the home's AGENTS.md is main's
             // supervisor contract, and its skills list is main's, so neither is rendered there.
             ...["project_context", "skills"].map((key) =>
@@ -2398,6 +2414,17 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 // A fresh conversation's first request runs the session start, and after a compaction the digest is
                 // gone from context: either way the hook runs it once and gives the model the whole digest.
                 beforeRequest: async ({ messages }, api, context) => {
+                    if ((await workers.worker(api.conversationId)) !== undefined) {
+                        // Tool declarations are system-message patches. Filter every addition, including old ones
+                        // after a restart or compaction; the ToolTask guard still refuses forced and nested calls.
+                        return {
+                            messages: messages.map((message) =>
+                                message.role === "system" && message.toolsAdded !== undefined
+                                    ? { ...message, toolsAdded: message.toolsAdded.filter((tool) => !SUPERVISOR_TOOLS.has(tool.name)) }
+                                    : message,
+                            ),
+                        };
+                    }
                     const summary = messages.findLastIndex((message) => userText(message as never).startsWith(COMPACTED));
                     if (summary < 0) return firstStart(messages, api, context);
                     const compaction = hash(userText(messages[summary] as never));
