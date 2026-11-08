@@ -20,11 +20,11 @@
 //
 // Each call writes one request into <state-dir>/pocket-bridge/requests and
 // waits for its result. The drop-in answers only a request whose writer is a
-// command of the Pi Pocket conversation that holds the home's lock on this
-// server (FM_PI_POCKET_CONVERSATION and FM_PI_POCKET_SERVER_PID, the same
-// marker bin/fm-session-lock-lib.sh's fm_pi_pocket_trusted_server_pid reads)
-// and that carries the server's bridge secret, FM_PI_POCKET_BRIDGE_TOKEN,
-// which the drop-in gives only to its marked commands and never to a worker.
+// marked command of main or its supervision session, carrying main's identity
+// (FM_PI_POCKET_CONVERSATION and FM_PI_POCKET_SERVER_PID, the same marker
+// bin/fm-session-lock-lib.sh's fm_pi_pocket_trusted_server_pid reads) and the
+// server's role-specific bridge secret, FM_PI_POCKET_BRIDGE_TOKEN. No worker
+// gets a secret; docs/pi-pocket-backend.md owns the trust and verb limits.
 //
 // Prints the result as one JSON object (capture prints its text). Exit codes:
 //   0 ok; 2 usage; 3 refused by the drop-in (its reason on stderr, prefixed

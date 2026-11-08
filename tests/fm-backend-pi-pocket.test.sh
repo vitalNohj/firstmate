@@ -344,6 +344,41 @@ test_spawn_starts_session_and_submits_brief() {
   pass "fm-spawn/fm-control/fm-teardown --backend pi-pocket: lease, neutral start, task env, brief submit, abort, relaunch as a new session, retire"
 }
 
+test_supervision_can_teardown_but_not_relaunch_pocket_workers() {
+  local id out rc before
+  id=$(uid ppbranch)
+  pp_case supervision
+  pp_spawn_setup "$id"
+  out=$(pp_spawn "$id" --scout --model faux/faux-1 --backend pi-pocket); rc=$?
+  expect_code 0 "$rc" "main must start the worker"$'\n'"$out"
+  before=$(pp_verbs)
+
+  out=$(FM_SUPERVISION_ACTOR=branch pp_spawn "${id}new" --scout --model faux/faux-1 --backend pi-pocket); rc=$?
+  [ "$rc" -ne 0 ] || fail "the branch must not start a new task"$'\n'"$out"
+  assert_contains "$out" "supervision branch never performs this action" "fm-spawn keeps its branch actor refusal"
+  [ "$(pp_verbs)" = "$before" ] || fail "a refused branch spawn must not reach the bridge"
+
+  out=$(HOME="$CASE_DIR/user-home" PATH="$FB:$PATH" FM_PP_TREEHOUSE_LOG="$CASE_DIR/treehouse.log" FM_PP_WT="$WT" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+    FM_PROJECTS_OVERRIDE="$CASE_DIR/unused-projects" FM_SPAWN_NO_GUARD=1 FM_SUPERVISION_ACTOR=branch \
+    "$ROOT/bin/fm-control.sh" "$id" relaunch --note "the branch needs a replacement" 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "the branch must not relaunch a Pocket worker"$'\n'"$out"
+  assert_contains "$out" "only the main Firstmate session starts Pocket workers" "relaunch must explain the main-only blocker"
+  [ "$(pp_verbs)" = "$before" ] || fail "a refused relaunch must not stop or replace the worker"
+  [ "$(pp_world 'w.workers["100"].retired')" = undefined ] || fail "a refused relaunch leaves the worker running"
+  assert_grep "pocket_session=100" "$STATE/$id.meta" "a refused relaunch keeps the worker binding"
+
+  printf 'report\n' > "$DATA/$id/report.md"
+  printf 'decisions_reviewed=1\ndecision_keys=\n' >> "$STATE/$id.meta"
+  out=$(HOME="$CASE_DIR/user-home" PATH="$FB:$PATH" FM_PP_TREEHOUSE_LOG="$CASE_DIR/treehouse.log" FM_PP_WT="$WT" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+    FM_SPAWN_NO_GUARD=1 FM_SUPERVISION_ACTOR=branch "$ROOT/bin/fm-teardown.sh" "$id" 2>&1); rc=$?
+  expect_code 0 "$rc" "the branch must be able to clean up main's worker"$'\n'"$out"
+  [ "$(pp_world 'w.workers["100"].retired')" = true ] || fail "branch teardown must retire the Pocket session"
+  assert_grep "return" "$CASE_DIR/treehouse.log" "branch teardown must return the landed isolated copy"
+  pass "supervision: Pocket cleanup succeeds, while spawn and relaunch refuse without stopping the worker"
+}
+
 test_spawn_refuses_without_bridge_and_never_falls_back() {
   local id out rc
   id=$(uid ppdown)
@@ -412,6 +447,7 @@ test_kill_with_stop_archives
 test_model_and_spend_refusals
 test_unanswered_send_is_unconfirmed_and_retry_safe
 test_spawn_starts_session_and_submits_brief
+test_supervision_can_teardown_but_not_relaunch_pocket_workers
 test_spawn_refuses_without_bridge_and_never_falls_back
 test_spawn_refused_start_returns_lease
 test_spawn_unanswered_start_keeps_lease

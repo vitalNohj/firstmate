@@ -248,6 +248,9 @@ const route = (request: unknown) => {
         return call("bash", { command: "sleep 60" });
     }
     if (role === "toolResult") return fauxAssistantMessage([fauxText("noted the tool result")]);
+    if (text.startsWith("run fixture command:\n")) {
+        return call("bash", { command: `${text.slice("run fixture command:\n".length)}\nrc=$?\nprintf '\\nfixture-exit=%s\\n' "$rc"` });
+    }
     if (text.endsWith("list the offered tools")) {
         return fauxAssistantMessage([fauxText(`offered tools: ${getCurrentTools(all as never).map((tool) => tool.name).join(", ")}`)]);
     }
@@ -1162,14 +1165,93 @@ test("a Pocket worker is a linked session in its worktree whose brief arrives un
         renameSync(join(dir, "requests", `.${name}.tmp`), join(dir, "requests", name));
         await until(() => existsSync(join(dir, "results", name)), "the forged request's answer", LONG);
         assert.equal(readJsonFile(join(dir, "results", name))?.code, "untrusted");
-        // Main's identity without the bridge secret, as a supervision-branch command or a worker that copied main's
-        // marker has it, is refused too, even where the writer's environment cannot be read.
+        // Main's identity without the bridge secret, as a worker that copied main's marker has it, is refused too,
+        // even where the writer's environment cannot be read.
         const tokenless = await bridgeCall(fmHome, id, ["state", "--session", String(session)], "forged");
         assert.equal(tokenless.code, 3, tokenless.out + tokenless.err);
         assert.match(tokenless.err, /untrusted/);
     } finally {
         writer.kill();
     }
+});
+
+/** Run a real bash tool call in this session, including the drop-in's role-specific environment. */
+async function sessionCommand(app: App, session: unknown, command: string): Promise<Called> {
+    await say(app, session as never, `run fixture command:\n${command}`);
+    const out = (await toolSaid(app, session)).at(-1)!;
+    const match = /\nfixture-exit=([0-9]+)/.exec(out);
+    assert.ok(match !== null, out);
+
+    return { code: Number(match[1]), out: out.slice(0, match.index), err: "" };
+}
+
+test("the supervision session can inspect, steer, interrupt, and kill Pocket workers but cannot spawn them", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const branch = await branchStarted(app, fmHome);
+    const wt = worktree("worker-supervision");
+    const session = await spawnWorker(fmHome, id, "task-supervised", wt);
+    await idle(app, session);
+    const client = `node bin/fm-pi-pocket-bridge.mjs`;
+    const target = `--state state --session ${String(session)}`;
+    const branchCall = (verb: string, extra = "") => sessionCommand(app, branch, `${client} ${verb} ${target} ${extra}`);
+    const status = await branchCall("status");
+    assert.equal(status.code, 0, status.out);
+    assert.equal(JSON.parse(status.out).ok, true);
+    const state = await branchCall("state");
+    assert.equal(state.code, 0, state.out);
+    assert.deepEqual(JSON.parse(state.out), { ok: true, state: "alive", busy: "idle" });
+
+    const envFile = join(wt, "..", "branch.env");
+    writeFileSync(envFile, JSON.stringify({ BRANCH_CONFIGURED: "yes" }));
+    const configured = await branchCall("configure", `--env-file ${JSON.stringify(envFile)}`);
+    assert.equal(configured.code, 0, configured.out);
+    assert.equal(workerRecord(fmHome, "task-supervised")?.env.BRANCH_CONFIGURED, "yes");
+    const sent = await branchCall("send", `--text "show the task env"`);
+    assert.equal(sent.code, 0, sent.out);
+    await until(async () => (await toolSaid(app, session)).some((text) => text.includes("task=task-supervised")), "the branch's steer", LONG);
+    await idle(app, session);
+    const captured = await branchCall("capture");
+    assert.equal(captured.code, 0, captured.out);
+    assert.match(captured.out, /task=task-supervised/);
+
+    // A worker's real command has none of the bridge credentials, even with the main home named explicitly.
+    const workerCall = await sessionCommand(app, session, `node ${JSON.stringify(join(fmHome, "bin", "fm-pi-pocket-bridge.mjs"))} state --state ${JSON.stringify(join(fmHome, "state"))} --session ${String(session)}`);
+    assert.equal(workerCall.code, 5, workerCall.out);
+    assert.match(workerCall.out, /carries no Pi Pocket identity/);
+
+    // The restricted secret works only for a branch actor where the writer's environment can be read.
+    await say(app, branch, "show the bridge token");
+    const token = /token=(\S+)/.exec((await toolSaid(app, branch)).at(-1)!)![1]!;
+    assert.notEqual(token, "none");
+    assert.notEqual(token, bridgeToken, "the branch never receives main's unrestricted secret");
+    await app.loader.reload("firstmate.ts");
+    await say(app, branch, "show the bridge token");
+    assert.equal((await toolSaid(app, branch)).at(-1), `token=${token}`, "the restricted secret survives hot reload");
+    const reloaded = await branchCall("state");
+    assert.equal(reloaded.code, 0, reloaded.out);
+    assert.equal(JSON.parse(reloaded.out).state, "alive", "the reloaded bridge accepts the branch secret");
+    if (existsSync(`/proc/${String(process.pid)}/environ`)) {
+        const forged = await bridgeCall(fmHome, id, ["state", "--session", String(session)], token);
+        assert.equal(forged.code, 3, forged.out + forged.err);
+        assert.match(forged.err, /untrusted/);
+    }
+    const spawned = await branchCall("spawn", `--task branch-forbidden --cwd ${JSON.stringify(wt)}`);
+    assert.equal(spawned.code, 3, spawned.out);
+    assert.match(spawned.out, /only the main Firstmate session starts Pocket workers/);
+    assert.equal(workerRecord(fmHome, "branch-forbidden"), undefined);
+    assert.equal((await bridgeCall(fmHome, id, ["state", "--session", String(session)])).code, 0, "branch refusals leave the bridge serving main");
+
+    assert.equal((await branchCall("send", `--text "work for a long time"`)).code, 0);
+    await until(() => workerRecord(fmHome, "task-supervised")?.busy === true, "the worker's long run", LONG);
+    const interrupted = await branchCall("interrupt");
+    assert.equal(interrupted.code, 0, interrupted.out);
+    assert.equal(JSON.parse(interrupted.out).cancel, "confirmed");
+    await idle(app, session);
+    const killed = await branchCall("kill");
+    assert.equal(killed.code, 0, killed.out);
+    const missing = await branchCall("state");
+    assert.equal(missing.code, 0, missing.out);
+    assert.deepEqual(JSON.parse(missing.out), { ok: true, state: "missing", busy: "unknown" });
 });
 
 /** The actual tool declarations the model saw, not the conversation's stored tool configuration. */
