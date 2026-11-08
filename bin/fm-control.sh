@@ -101,7 +101,9 @@
 #              standing charter is never rewritten.
 #              Records a durable checkpoint and that note, exits the old agent,
 #              then delegates the launch to its single owner,
-#              bin/fm-spawn.sh --relaunch. A failure before publication keeps
+#              bin/fm-spawn.sh --relaunch. Pocket worker relaunch is main-only;
+#              the supervision branch refuses before stopping the old worker.
+#              A failure before publication keeps
 #              the prior durable record in place and reports the concrete
 #              state; it never leaves a half-transitioned task claiming to be
 #              running.
@@ -1212,6 +1214,9 @@ do_relaunch() {
   local exit_result state note_line
   local -a spawn_args
 
+  if [ "$BACKEND" = pi-pocket ]; then
+    fm_lease_forbid_branch "Pocket worker relaunch (only the main Firstmate session starts Pocket workers)"
+  fi
   require_state_verified_backend relaunch
   fm_control_backend_relaunch_supported "$BACKEND" \
     || die "task $ID runs on the $BACKEND backend, where a thread keeps its conversation and a new turn or provider change continues the same agent, so no fresh replacement can be launched into its endpoint; 'interrupt' ends its turn, and a fresh task needs a teardown and a new dispatch"

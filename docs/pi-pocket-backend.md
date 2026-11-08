@@ -13,7 +13,8 @@ A Pi Pocket primary that has not opted in keeps opening its workers in herdr ([`
 Select Pocket workers with local `config/backend` containing `pi-pocket`, `FM_BACKEND=pi-pocket` for one launch, or `--backend pi-pocket` for one task.
 The backend is never auto-detected and never the default: [`bin/fm-backend.sh`](../bin/fm-backend.sh) lists it as spawn-capable, but no runtime marker selects it.
 
-It works only from a command of the main Firstmate Pi Pocket conversation, the one that holds this home's session lock.
+It works only from marked commands of the main Firstmate Pi Pocket conversation, which holds this home's session lock, and its supervision session.
+Only the main session can start or relaunch workers.
 A spawn from anywhere else, or while the drop-in's bridge is not running, refuses with a reason and never falls back to another backend.
 
 ## Requirements
@@ -43,17 +44,19 @@ The drop-in answers a request only when all of the following hold, the same trus
 
 - The request is a private regular file of the server's user.
 - It names this server process and the conversation that holds the home's lock.
-- It carries this server process's bridge secret, `FM_PI_POCKET_BRIDGE_TOKEN`.
-  The drop-in generates the secret at startup, never writes it to disk, and gives it only to the marked bash commands of a Firstmate home's main session.
-  Those commands never include the supervision session or a worker.
+- It carries a bridge secret from this server process, `FM_PI_POCKET_BRIDGE_TOKEN`.
+  The drop-in generates separate secrets for main and supervision commands and never writes them to disk or gives them to a worker.
+  Main's secret permits every verb.
+  The supervision secret permits only `status`, `state`, `capture`, `send`, `interrupt`, `configure`, and `kill`, never `spawn`.
 - Its writer is alive and its parent chain reaches this server.
-  Where `/proc` shows the writer's environment, that environment must also carry the conversation's Pi Pocket marker.
+  Where `/proc` shows the writer's environment, that environment must also carry the main conversation's Pi Pocket marker and, for the supervision secret, `FM_SUPERVISION_ACTOR=branch`.
 
 A worker's own commands carry `FM_HOME` for its recorded Firstmate home, but an empty conversation marker, server pid, and bridge secret, so a worker cannot drive the bridge, even on a platform where another process's environment cannot be read.
 
 | Verb | What the drop-in does |
 | --- | --- |
-| `spawn` | Starts a linked session with `linkedSessions.start` in the task worktree, on the dispatch model and effort, with a neutral first message, and records the worker. A repeat for a live task returns the same session. |
+| `status` | Reports the serving Pi Pocket version and stop-and-archive capability. |
+| `spawn` | Main only: starts a linked session with `linkedSessions.start` in the task worktree, on the dispatch model and effort, with a neutral first message, and records the worker; a repeat for a live task returns the same session. |
 | `configure` | Records the task environment the worker's commands get. |
 | `send` | Submits text into the worker's Durable conversation with a request id: a follow-up while it is busy, or a steer when asked. |
 | `interrupt` | Aborts the worker's run. |
@@ -95,7 +98,7 @@ The drop-in gives a worker:
   `FM_HOME` always names the worker's recorded Firstmate home, including after a restart with an older registry, and a supplied task environment cannot replace it.
 - **System-prompt section.** The task-worker channel statement, plus the worker's limits.
 - **Blocked tools.** The supervisor tools `fm_watch_arm_pocket`, `fm_branch_report`, `fm_branch_outcomes`, and `fm_branch_processed` are omitted from a worker's model tool declarations, instructions, codemode prompt, and sandbox inventory (`ALL_TOOLS` and callable bindings), with the tool-call guard still refusing forced calls.
-  Main and supervision sessions keep their existing tools and permissions.
+  Main and supervision sessions keep their existing tool declarations.
   Pi Pocket's delegation tools (`subagent`, `team`, `schedule`, `watch_pr`, and every `session_*` tool) are blocked in a worker, and so is every tool in `config/crew-exclude-tools`.
 
 ## Steering and control
@@ -110,7 +113,7 @@ The drop-in gives a worker:
 | Ctrl-U, shell typing | Unsupported. |
 | `interrupt` | Abort, confirmed from the worker's busy state. |
 | `exit` | The [teardown](#teardown) below, proven by the session reading `missing`. |
-| `relaunch` | A new linked session in the same worktree; the old one is torn down first. |
+| `relaunch` | Main only: a new linked session in the same worktree after tearing down the old one; a supervision-session request refuses before stopping the old worker. |
 
 ## Busy state and restarts
 
@@ -160,5 +163,5 @@ bin/fm-test-run.sh tests/fm-backend-pi-pocket.test.sh tests/fm-pi-pocket-dropin.
 
 [`tests/fm-backend-pi-pocket.test.sh`](../tests/fm-backend-pi-pocket.test.sh) covers the adapter, the bridge client, and the `fm-spawn`, `fm-control`, and `fm-teardown` paths against a [fake bridge](../tests/pi-pocket-fake-bridge.mjs) and fake Treehouse.
 [`tests/fm-pi-pocket-dropin.test.sh`](../tests/fm-pi-pocket-dropin.test.sh) runs the drop-in's side of the bridge in a real Pi Pocket app on temporary data directories with a scripted model.
-It covers the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, hidden supervisor tools and refused forced calls without changing main or supervision sessions, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
+It covers the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, hidden supervisor tools and refused forced calls without changing main or supervision sessions, supervision commands and their restricted bridge access, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#pi-pocket-workers) records the dated results.

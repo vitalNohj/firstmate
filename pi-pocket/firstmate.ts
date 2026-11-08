@@ -45,6 +45,8 @@ const BOOT = `${process.pid}-${Math.round(performance.timeOrigin)}`;
  * where another process's environment cannot be read.
  */
 const BRIDGE_TOKEN = randomUUID();
+/** The supervision session's restricted secret, retained across drop-in reloads in this server process, never on disk. */
+const BRANCH_BRIDGE_TOKEN = ((globalThis as unknown as Record<symbol, string>)[Symbol.for("firstmate.pi-pocket.branch-bridge-token")] ??= randomUUID());
 const WATCH_KIND = "x.firstmate.watch";
 const REPAIR_TOOL = "fm_watch_arm_pocket";
 const SESSION_PREFIX = "pi-pocket:";
@@ -480,8 +482,8 @@ function branchPrompt(home: string): Promise<string> {
 function branchEnv(home: string, main: ConversationId): Record<string, string> {
     return {
         ...markerEnv(home, main),
-        // Main alone starts and steers Pocket workers.
-        FM_PI_POCKET_BRIDGE_TOKEN: "",
+        // The branch can supervise existing Pocket workers; only main can start them.
+        FM_PI_POCKET_BRIDGE_TOKEN: BRANCH_BRIDGE_TOKEN,
         FM_SUPERVISION_ACTOR: "branch",
         FM_LEASE_HOLDER_PID: SERVER_PID,
         FM_SUPERVISION_PRIMARY_HARNESS: "pi-pocket",
@@ -1344,6 +1346,8 @@ const BRIDGE_DIR = "pocket-bridge";
 const BRIDGE_POLL_MS = positive("FM_POCKET_BRIDGE_POLL_MS", 250);
 const BRIDGE_RECONCILE_MS = positive("FM_POCKET_BRIDGE_RECONCILE_MS", 15000);
 const BRIDGE_REQUEST_LIMIT = 1024 * 1024;
+/** The branch never starts a worker, including a relaunch; new bridge verbs must opt in to branch access. */
+const BRANCH_BRIDGE_VERBS = new Set(["status", "state", "capture", "send", "interrupt", "configure", "kill"]);
 /** The first message of a worker session: linkedSessions.start fences it, so it carries no task; the brief follows unfenced. */
 const WORKER_FIRST_MESSAGE =
     "Firstmate is starting a task worker in this session. Its task instructions follow as the next message; do nothing until they arrive.";
@@ -1440,12 +1444,13 @@ async function privateDir(path: string): Promise<boolean> {
  * no marker, so a worker cannot drive the bridge.
  */
 async function trustedWriter(pid: number, conversation: string, token: unknown): Promise<boolean> {
-    if (token !== BRIDGE_TOKEN) return false;
+    if (token !== BRIDGE_TOKEN && token !== BRANCH_BRIDGE_TOKEN) return false;
     if (!Number.isSafeInteger(pid) || pid <= 1 || !alive(pid)) return false;
     const environ = await readFile(`/proc/${String(pid)}/environ`, "latin1").catch(() => undefined);
     if (environ !== undefined) {
         const vars = new Set(environ.split("\0"));
         if (!vars.has(`FM_PI_POCKET_CONVERSATION=${conversation}`) || !vars.has(`FM_PI_POCKET_SERVER_PID=${SERVER_PID}`)) return false;
+        if (token === BRANCH_BRIDGE_TOKEN && !vars.has("FM_SUPERVISION_ACTOR=branch")) return false;
     }
     let current = pid;
     for (let hop = 0; hop < 32; hop += 1) {
@@ -1840,6 +1845,8 @@ function createWorkers(host: Partial<Host>) {
                     result = refuse("untrusted", "the request does not come from the Pi Pocket conversation that holds this home's lock on this server");
                 } else if (!(await trustedWriter(request.pid, request.conversation, request.token))) {
                     result = refuse("untrusted", "the request's writer is not a command of the conversation that holds this home's lock");
+                } else if (request.token === BRANCH_BRIDGE_TOKEN && !BRANCH_BRIDGE_VERBS.has(request.verb)) {
+                    result = refuse("main-only", "only the main Firstmate session starts Pocket workers");
                 } else {
                     try {
                         result = await handle(home, runtime, context, request);
