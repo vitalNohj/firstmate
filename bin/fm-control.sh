@@ -1074,7 +1074,13 @@ resolve_relaunch_profile() {
   else
     TARGET_EFFORT=default
   fi
-  if [ "$TARGET_EFFORT" = ultra ]; then
+  if [ "$BACKEND" = pi-pocket ]; then
+    # Refuse predictable Pocket launch failures before recording a replacement
+    # note or stopping the current session. Native agent catalogs/accounts do
+    # not describe the server that will actually run this worker.
+    fm_backend_pi_pocket_preflight "$TARGET_HARNESS" "$TARGET_MODEL" "$TARGET_EFFORT" \
+      "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" || return 1
+  elif [ "$TARGET_EFFORT" = ultra ]; then
     "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$TARGET_HARNESS" "$TARGET_MODEL" "$TARGET_EFFORT" || return 1
   fi
   # The launch owner applies this home's worker account pin too, but only after

@@ -7,6 +7,7 @@
 //
 // Verbs and their options:
 //   status                                    the bridge is up: {pocketVersion, stop}
+//   preflight [--model M] [--thinking E]        read-only launch eligibility: {model, thinking?}
 //   spawn --task ID --cwd DIR [--model M] [--thinking E] [--title T]
 //         [--prompt-file F] [--env-file F] [--exclude-tools a,b] [--attempt A]
 //                                             start a worker session: {session, address, model}
@@ -46,11 +47,17 @@ function die(code, message) {
 }
 
 const [verb, ...rest] = process.argv.slice(2);
-const VERBS = new Set(["status", "spawn", "configure", "send", "interrupt", "capture", "state", "kill"]);
+const VERBS = new Set(["status", "preflight", "spawn", "configure", "send", "interrupt", "capture", "state", "kill"]);
 if (!VERBS.has(verb)) die(2, `usage: fm-pi-pocket-bridge.mjs <${[...VERBS].join("|")}> --state <state-dir> [options]`);
+const preflightFlags = new Set(["--state", "--model", "--thinking", "--timeout-ms"]);
+if (verb === "preflight" && rest.includes("--help")) {
+  process.stdout.write("usage: fm-pi-pocket-bridge.mjs preflight --state DIR [--model M] [--thinking E] [--timeout-ms N]\nRead-only launch eligibility. Omitted model selects the first usable allowed model; omitted thinking inherits at start.\n");
+  process.exit(0);
+}
 const opts = {};
 for (let index = 0; index < rest.length; index += 1) {
   const flag = rest[index];
+  if (verb === "preflight" && !preflightFlags.has(flag)) die(2, `error: unknown flag ${flag}; valid preflight flags: ${[...preflightFlags, "--help"].join(", ")}`);
   if (!flag.startsWith("--") || index + 1 >= rest.length) die(2, `error: bad argument ${flag}`);
   opts[flag.slice(2)] = rest[(index += 1)];
 }
@@ -82,6 +89,12 @@ const session = () => {
   return value;
 };
 switch (verb) {
+  case "preflight":
+    Object.assign(request, {
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.thinking ? { thinking: opts.thinking } : {}),
+    });
+    break;
   case "spawn":
     if (!opts.task || !opts.cwd) die(2, "error: spawn needs --task and --cwd");
     Object.assign(request, {

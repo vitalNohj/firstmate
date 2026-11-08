@@ -10,7 +10,9 @@
 //
 // The world (every key optional):
 //   models    the owner's subagent model list (default ["faux/faux-1"])
-//   held      a spend-hold reason; spawn and every submit refuse with it
+//   held      a spend-hold reason; preflight, spawn and every submit refuse with it
+//   startHeld a spend hold that appears only at spawn, after preflight
+//   efforts   supported thinking levels (default ["off", "low", "medium", "high"])
 //   stop      true when this Pi Pocket has linkedSessions.stop and archive
 //   silent    true to take requests and never answer (the helper's timeout)
 //   silentVerbs  the verbs to take and never answer
@@ -49,14 +51,25 @@ function gate(world, worker) {
   return undefined;
 }
 
+function selection(world, request) {
+  const models = world.models ?? ["faux/faux-1"];
+  if (world.held) return refuse("held", `Pi Pocket holds this session back: ${world.held}`);
+  if (models.length === 0) return refuse("model", "the owner's subagent model list in Pi Pocket is empty");
+  if (request.model && !models.includes(request.model)) return refuse("model", `the model ${request.model} is not on the owner's subagent model list in Pi Pocket (${models.join(", ")})`);
+  const model = request.model || models[0];
+  const efforts = world.efforts ?? ["off", "low", "medium", "high"];
+  if (request.thinking && !efforts.includes(request.thinking)) return refuse("effort", `the model ${model} does not support the effort ${request.thinking} (${efforts.join(", ")})`);
+  return { ok: true, model, ...(request.thinking ? { thinking: request.thinking } : {}) };
+}
+
 function handle(world, request) {
   const workers = (world.workers ??= {});
   if (request.verb === "status") return { ok: true, pocketVersion: "0.28.0-fake", stop: world.stop === true };
+  if (request.verb === "preflight") return selection(world, request);
   if (request.verb === "spawn") {
-    const models = world.models ?? ["faux/faux-1"];
-    if (world.held) return refuse("held", `Pi Pocket holds this session back: ${world.held}`);
-    if (models.length === 0) return refuse("model", "the owner's subagent model list in Pi Pocket is empty");
-    if (request.model && !models.includes(request.model)) return refuse("model", `the model ${request.model} is not on the owner's subagent model list in Pi Pocket (${models.join(", ")})`);
+    if (world.startHeld) return refuse("held", `Pi Pocket holds this session back: ${world.startHeld}`);
+    const chosen = selection(world, request);
+    if (!chosen.ok) return chosen;
     const existing = Object.entries(workers).find(([, worker]) => worker.task === request.task && !worker.retired && !worker.archived);
     if (existing) return { ok: true, session: Number(existing[0]), address: `fake:${existing[0]}`, model: existing[1].model, reused: true };
     const session = Number(world.next ?? 100);
@@ -64,7 +77,7 @@ function handle(world, request) {
     workers[String(session)] = {
       task: request.task,
       cwd: request.cwd,
-      model: request.model || models[0],
+      model: chosen.model,
       ...(request.thinking ? { thinking: request.thinking } : {}),
       env: request.env ?? {},
       excludeTools: request.excludeTools ?? [],
@@ -129,7 +142,8 @@ function handle(world, request) {
 function tick() {
   const world = readWorld();
   if (world.down !== true) {
-    writeFileSync(join(dir, "heartbeat.json"), JSON.stringify({ server: opts.server, conversation: opts.conversation, at: Date.now(), stop: world.stop === true }));
+    writeFileSync(join(dir, ".heartbeat.tmp"), JSON.stringify({ server: opts.server, conversation: opts.conversation, at: Date.now(), stop: world.stop === true }));
+    renameSync(join(dir, ".heartbeat.tmp"), join(dir, "heartbeat.json"));
   }
   for (const name of readdirSync(join(dir, "requests")).sort()) {
     if (!name.endsWith(".json")) continue;

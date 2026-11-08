@@ -2568,6 +2568,34 @@ ok - supervision: Pocket cleanup succeeds, while spawn and relaunch refuse witho
 
 This proof used temporary app data and a scripted model, not the installed user service.
 
+### Launch eligibility before replacement
+
+Verified on 2026-11-08 with Pi Pocket 0.28.0 (commit `a8bef3d6`), Node v24.21.0, and Linux 7.0.0-38-generic.
+The affected real-app worker and supervision cases ran with this filter, alongside the portable relaunch transaction suite:
+
+```sh
+FM_PI_POCKET_DROPIN_FILTER="Pocket worker|supervision session can inspect" systemd-run --user --scope -q --expand-environment=no -p CPUQuota=200% -- bash bin/fm-test-run.sh --jobs 1 tests/fm-pi-pocket-dropin.test.sh tests/fm-control-relaunch.test.sh
+```
+
+The scripts reported:
+
+```text
+FM_TEST_END 2026-11-08T07:39:03Z tests/fm-pi-pocket-dropin.test.sh exit=0 duration_ms=93515 gate_skip=false
+FM_TEST_END 2026-11-08T07:45:26Z tests/fm-control-relaunch.test.sh exit=0 duration_ms=382566 gate_skip=false
+FM_TEST_SUMMARY total=2 failed=0 skipped_gate=0 duration_ms=476363
+```
+
+Its actual `fm-control.sh relaunch` calls refused an unsupported harness, an unlisted model, an unsupported effort, an account pin, an environment allowlist, and an expired bridge heartbeat.
+After each refusal, the original session was still busy and unarchived, and its instructions and task binding matched their original bytes.
+Direct `preflight` calls created no sessions, left the original worker record unchanged, and observed the same effort refusal as an actual start.
+They also refused an unusable model, an empty allowed-model list, and a spend hold.
+A supervision command successfully used the read-only verb without gaining spawn access.
+
+The portable [adapter suite](../../tests/fm-backend-pi-pocket.test.sh) also passed its refusal matrix before any lease, its successful relaunch case, and its post-preflight spend-hold refusal that returned the lease.
+The adapter matrix included unsupported `ultra` effort and raw launch commands.
+The real-app proof used temporary app data and a scripted model, not the installed user service.
+Its unavailable-bridge case expired the heartbeat through the client setting; the portable matrix removed the heartbeat after stopping its fake bridge.
+
 ## T3 Code
 
 ### Orchestrator V2 transport

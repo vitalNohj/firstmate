@@ -47,7 +47,7 @@ The drop-in answers a request only when all of the following hold, the same trus
 - It carries a bridge secret from this server process, `FM_PI_POCKET_BRIDGE_TOKEN`.
   The drop-in generates separate secrets for main and supervision commands and never writes them to disk or gives them to a worker.
   Main's secret permits every verb.
-  The supervision secret permits only `status`, `state`, `capture`, `send`, `interrupt`, `configure`, and `kill`, never `spawn`.
+  The supervision secret permits only `status`, `preflight`, `state`, `capture`, `send`, `interrupt`, `configure`, and `kill`, never `spawn`.
 - Its writer is alive and its parent chain reaches this server.
   Where `/proc` shows the writer's environment, that environment must also carry the main conversation's Pi Pocket marker and, for the supervision secret, `FM_SUPERVISION_ACTOR=branch`.
 
@@ -56,6 +56,7 @@ A worker's own commands carry `FM_HOME` for its recorded Firstmate home, but an 
 | Verb | What the drop-in does |
 | --- | --- |
 | `status` | Reports the serving Pi Pocket version and stop-and-archive capability. |
+| `preflight` | Read-only launch eligibility for main or supervision: returns the selected model and any explicit effort without starting or changing a worker; see [Launch preflight](#launch-preflight). |
 | `spawn` | Main only: starts a linked session with `linkedSessions.start` in the task worktree, on the dispatch model and effort, with a neutral first message, and records the worker; a repeat for a live task returns the same session. |
 | `configure` | Records the task environment the worker's commands get. |
 | `send` | Submits text into the worker's Durable conversation with a request id: a follow-up while it is busy, or a steer when asked. |
@@ -64,11 +65,21 @@ A worker's own commands carry `FM_HOME` for its recorded Firstmate home, but an 
 | `state` | `alive` with `busy`/`idle`, `missing` (archived, retired, or gone), or `dead` (its last run failed, when Pi Pocket reports that). |
 | `kill` | Tears the worker down; see [Teardown](#teardown). |
 
+## Launch preflight
+
+Before leasing a worktree for a new task, or recording a relaunch note and stopping an existing worker, Firstmate checks the resolved launch against Pocket's rules.
+It refuses a harness other than `pi`, a raw launch command, `config/launch-env-allowlist`, or a worker account pin, without consulting a native agent's catalog or login.
+The bridge's read-only `preflight` then checks linked-session support, the main session's spend hold, the model against the owner's current allowed and usable models, and any explicit effort against that model's supported levels.
+With no model named, it selects the first usable listed model.
+A missing or nonresponsive bridge also refuses.
+A refused relaunch leaves the original worker running and unarchived, with its instructions and task binding unchanged.
+The actual start repeats its admission checks because eligibility can change after preflight; a later refusal still preserves the worktree and progress note but cannot restore a stopped conversation.
+
 ## Spawn
 
 `fm-spawn --backend pi-pocket` runs these steps in order:
 
-1. It checks that the bridge answers, before any lease.
+1. It runs [launch preflight](#launch-preflight), before any lease.
 2. It leases the Treehouse worktree.
 3. It starts the linked session through the drop-in.
 4. It gives the session its task environment.
@@ -113,7 +124,7 @@ The drop-in gives a worker:
 | Ctrl-U, shell typing | Unsupported. |
 | `interrupt` | Abort, confirmed from the worker's busy state. |
 | `exit` | The [teardown](#teardown) below, proven by the session reading `missing`. |
-| `relaunch` | Main only: a new linked session in the same worktree after tearing down the old one; a supervision-session request refuses before stopping the old worker. |
+| `relaunch` | Main only: [launch preflight](#launch-preflight), then a new linked session in the same worktree after tearing down the old one; a supervision-session request refuses before stopping the old worker. |
 
 ## Busy state and restarts
 
@@ -164,5 +175,5 @@ bin/fm-test-run.sh tests/fm-backend-pi-pocket.test.sh tests/fm-pi-pocket-dropin.
 
 [`tests/fm-backend-pi-pocket.test.sh`](../tests/fm-backend-pi-pocket.test.sh) covers the adapter, the bridge client, and the `fm-spawn`, `fm-control`, and `fm-teardown` paths against a [fake bridge](../tests/pi-pocket-fake-bridge.mjs) and fake Treehouse.
 [`tests/fm-pi-pocket-dropin.test.sh`](../tests/fm-pi-pocket-dropin.test.sh) runs the drop-in's side of the bridge in a real Pi Pocket app on temporary data directories with a scripted model.
-It covers the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, hidden supervisor tools and refused forced calls without changing main or supervision sessions, supervision commands and their restricted bridge access, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
+It covers the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, hidden supervisor tools and refused forced calls without changing main or supervision sessions, supervision commands and their restricted bridge access, read-only launch preflight, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#pi-pocket-workers) records the dated results.
