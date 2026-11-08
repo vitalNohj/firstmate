@@ -2544,7 +2544,8 @@ The installed Pi Pocket user service has not yet been observed running a Pocket 
 Verified on 2026-11-08 with Pi Pocket 0.28.0 (commit `a8bef3d6`), Node v24.21.0, and Linux 7.0.0-38-generic.
 The real-app regression drove bash tool calls in the linked supervision session, rather than supplying its identity from the test process.
 It observed successful `status`, `state`, `configure`, `send`, `capture`, `interrupt`, and `kill` requests against main's worker.
-The branch received a different secret from main, its `spawn` request returned exit 3, a worker's command returned exit 5, and a writer using the branch secret without the branch actor returned `untrusted` on Linux.
+The branch received a different secret from main, kept it across a hot reload, and successfully used the reloaded bridge.
+Its `spawn` request returned exit 3, a worker's command returned exit 5, and a writer using the branch secret without the branch actor returned `untrusted` on Linux.
 The portable adapter regression also ran `fm-teardown.sh` as the branch and observed a retired session and a returned lease, while `fm-control.sh relaunch` refused without stopping or replacing the worker.
 
 Refresh these results through the affected suites, with `TMPDIR` set to an adequately sized temporary directory:
@@ -2556,7 +2557,7 @@ systemd-run --user --scope -q --expand-environment=no -p CPUQuota=200% -- bash b
 The full drop-in suite reported:
 
 ```text
-FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=135251
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=134381
 ```
 
 The portable suite's supervision case reported:

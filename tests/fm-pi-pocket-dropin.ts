@@ -295,6 +295,7 @@ const route = (request: unknown) => {
     }
     if (text.endsWith("work for a long time")) return call("bash", { command: "sleep 20" });
     if (text.endsWith("show the bridge token")) return call("bash", { command: `printf 'token=%s' "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
+    if (text.endsWith("check the worker bridge")) return call("bash", { command: `node bin/fm-pi-pocket-bridge.mjs status --state "$FM_HOME/state"` });
     if (text.endsWith("report from main")) return call("fm_branch_report", { task: "task-a", verdict: "routine", summary: "main reporting" });
     // The supervision session: a wake for a task it reports on, and one it leaves without an outcome.
     const reported = /FIRSTMATE SUPERVISION WAKE: signal: (task-report[a-z0-9-]*)\.status/.exec(text);
@@ -1068,6 +1069,45 @@ async function idle(app: App, session: number): Promise<void> {
     await (await app.harness.conversation(session, context))!.waitForIdle(context);
 }
 
+test("hot reload keeps the worker bridge trusted for marked main commands", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const token = bridgeToken;
+    await say(app, id, "check the worker bridge");
+    assert.equal(JSON.parse((await toolSaid(app, id)).at(-1)!).ok, true, "main's marked command is trusted before reload");
+
+    // The loader cache-busts the import and replaces the extension in this same server process, as on a file edit.
+    await app.loader.reload("firstmate.ts");
+    await say(app, id, "check the worker bridge");
+    const after = (await toolSaid(app, id)).at(-1)!;
+    const prepared = await bridgeCall(fmHome, id, ["status"], token);
+    assert.equal(prepared.code, 0, prepared.err || "a command prepared before reload stays trusted");
+    assert.match(after, /^\{"ok":true,/, after);
+    await readBridgeToken(app, id);
+    assert.equal(bridgeToken, token, "the per-process secret survives module evaluation");
+    const forged = await bridgeCall(fmHome, id, ["status"], "forged");
+    assert.equal(forged.code, 3, forged.out + forged.err);
+    assert.match(forged.err, /untrusted/, "reload does not weaken the secret check");
+});
+
+test("hot reload hands bridge serving to the replacement and disabling stops all old loops", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    await app.loader.reload("firstmate.ts");
+    await app.loader.reload("firstmate.ts");
+    await app.setExtensionEnabled(owner(app), "firstmate.ts", false);
+    const heartbeat = join(fmHome, "state", "pocket-bridge", "heartbeat.json");
+    // Let a request already in flight finish, then wait past more than one bridge poll interval.
+    await settle(1000);
+    const stopped = readJsonFile(heartbeat).at;
+    await settle(1000);
+    assert.equal(readJsonFile(heartbeat).at, stopped, "no disposed version keeps serving the home");
+
+    await app.setExtensionEnabled(owner(app), "firstmate.ts", true);
+    await until(() => readJsonFile(heartbeat).at > stopped, "the replacement bridge invocation", LONG);
+    await readBridgeToken(app, id);
+    const resumed = await bridgeCall(fmHome, id, ["status"]);
+    assert.equal(resumed.code, 0, resumed.err);
+});
+
 test("a Pocket worker is a linked session in its worktree whose brief arrives unfenced, with its task env, prompt, and blocked tools", { timeout: 90_000 }, async () => {
     const { app, id, fmHome } = await workerMain();
     const wt = worktree("worker-basic");
@@ -1184,6 +1224,12 @@ test("the supervision session can inspect, steer, interrupt, and kill Pocket wor
     const token = /token=(\S+)/.exec((await toolSaid(app, branch)).at(-1)!)![1]!;
     assert.notEqual(token, "none");
     assert.notEqual(token, bridgeToken, "the branch never receives main's unrestricted secret");
+    await app.loader.reload("firstmate.ts");
+    await say(app, branch, "show the bridge token");
+    assert.equal((await toolSaid(app, branch)).at(-1), `token=${token}`, "the restricted secret survives hot reload");
+    const reloaded = await branchCall("state");
+    assert.equal(reloaded.code, 0, reloaded.out);
+    assert.equal(JSON.parse(reloaded.out).state, "alive", "the reloaded bridge accepts the branch secret");
     if (existsSync(`/proc/${String(process.pid)}/environ`)) {
         const forged = await bridgeCall(fmHome, id, ["state", "--session", String(session)], token);
         assert.equal(forged.code, 3, forged.out + forged.err);
