@@ -117,6 +117,7 @@ The drop-in gives a worker:
 Pi Pocket's `run.started` and `run.ended` events feed the busy record through [`bin/fm-busy-event.sh`](../bin/fm-busy-event.sh), and each idle transition writes `state/<id>.turn-ended`.
 These events are not exactly-once: a hard close loses them, and a reload can double them.
 The drop-in therefore acts only on a change of the registry's busy flag, and it reconciles the flag against `linkedSessions.list()` busy every 15 seconds (`FM_POCKET_BRIDGE_RECONCILE_MS`).
+Restart Pi Pocket once when upgrading from a drop-in without reload-safe bridge authentication; later drop-in hot reloads need no restart.
 
 A Pi Pocket restart interrupts a worker's in-flight tool call; its turn ends by itself and the worker then waits.
 After a restart, the drop-in sends each worker the restart cut one short nudge to continue.

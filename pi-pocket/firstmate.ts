@@ -42,9 +42,10 @@ const BOOT = `${process.pid}-${Math.round(performance.timeOrigin)}`;
 /**
  * This server process's worker-bridge secret: only the marked commands of a Firstmate home's own sessions get it, never
  * a worker's, and it is never written to disk, so a bridge request carrying it came from one of those commands even
- * where another process's environment cannot be read.
+ * where another process's environment cannot be read. It survives module reloads: an in-flight command can still
+ * carry the secret from the previous module instance.
  */
-const BRIDGE_TOKEN = randomUUID();
+const BRIDGE_TOKEN = ((globalThis as Record<symbol, unknown>)[Symbol.for("firstmate.pi-pocket.bridge-token")] ??= randomUUID()) as string;
 const WATCH_KIND = "x.firstmate.watch";
 const REPAIR_TOOL = "fm_watch_arm_pocket";
 const SESSION_PREFIX = "pi-pocket:";
@@ -1477,7 +1478,9 @@ function transcriptText(messages: readonly { role: string; content: unknown }[],
  * The Pocket worker registry and the bridge that serves Firstmate's backend adapter (bin/backends/pi-pocket.sh): one
  * per server process, shared by every home this server's main sessions supervise.
  */
-function createWorkers(host: Partial<Host>) {
+function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
+    const disposed = new AbortController();
+    web?.onDispose?.(() => disposed.abort());
     const requestFor = requests(host);
     const heldBack = (id: ConversationId) => (typeof host.heldBack === "function" ? host.heldBack(id) : undefined);
     const linked = () => host.linkedSessions as unknown as LinkedApi | undefined;
@@ -1825,6 +1828,7 @@ function createWorkers(host: Partial<Host>) {
         const outbox = join(dir, "results");
         if (!(await privateDir(inbox)) || !(await privateDir(outbox))) return;
         for (const name of (await readdir(inbox).catch(() => [] as string[])).sort()) {
+            disposed.signal.throwIfAborted();
             if (!/^[A-Za-z0-9._-]{1,128}\.json$/.test(name)) continue;
             const path = join(inbox, name);
             const info = await lstat(path).catch(() => undefined);
@@ -1890,33 +1894,41 @@ function createWorkers(host: Partial<Host>) {
         phases: {
             serve: async (task, runtime, context) => {
                 const { home } = task.input;
-                const signal = signalsOf(runtime.signal, context.abortSignal);
-                await load(home);
-                let reconciled = 0;
-                for (;;) {
+                const signal = signalsOf(runtime.signal, context.abortSignal, disposed.signal);
+                try {
                     signal.throwIfAborted();
-                    const owner = await ownership(home, runtime.conversationId);
-                    if (owner === "other") break;
-                    if (owner === "owned") {
-                        const dir = bridgeDir(home);
-                        if (await privateDir(dir)) {
-                            const api = linked();
-                            await writeJson(join(dir, "heartbeat.json"), {
-                                server: SERVER_PID,
-                                boot: BOOT,
-                                conversation: String(runtime.conversationId),
-                                at: Date.now(),
-                                pocketVersion: host.pocketVersion ?? "",
-                                stop: typeof api?.stop === "function" && typeof api.archive === "function",
-                            });
-                            await serve(home, runtime, context);
-                            if (Date.now() - reconciled >= BRIDGE_RECONCILE_MS) {
-                                reconciled = Date.now();
-                                await reconcile(home, runtime, context).catch(() => undefined);
+                    await load(home);
+                    let reconciled = 0;
+                    for (;;) {
+                        signal.throwIfAborted();
+                        const owner = await ownership(home, runtime.conversationId);
+                        if (owner === "other") break;
+                        if (owner === "owned") {
+                            const dir = bridgeDir(home);
+                            if (await privateDir(dir)) {
+                                const api = linked();
+                                await writeJson(join(dir, "heartbeat.json"), {
+                                    server: SERVER_PID,
+                                    boot: BOOT,
+                                    conversation: String(runtime.conversationId),
+                                    at: Date.now(),
+                                    pocketVersion: host.pocketVersion ?? "",
+                                    stop: typeof api?.stop === "function" && typeof api.archive === "function",
+                                });
+                                await serve(home, runtime, context);
+                                if (Date.now() - reconciled >= BRIDGE_RECONCILE_MS) {
+                                    reconciled = Date.now();
+                                    await reconcile(home, runtime, context).catch(() => undefined);
+                                }
                             }
                         }
+                        await pause(BRIDGE_POLL_MS, signal);
                     }
-                    await pause(BRIDGE_POLL_MS, signal);
+                } catch (error) {
+                    if (!disposed.signal.aborted || error !== disposed.signal.reason) throw error;
+                    // Release the old invocation, not its durable task. Reload or re-enable resumes with the new code.
+                    await runtime.sleepUntil(runtime.now() + BRIDGE_POLL_MS, { phase: "serve" }, context);
+                    return;
                 }
                 await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
             },
@@ -2139,7 +2151,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
     registerClient(web);
     const supervision = createSupervision(host);
     const watch = createWatchTask(host, supervision, presented);
-    const workers = createWorkers(host);
+    const workers = createWorkers(host, web);
     registerWorkerEvents(host, web, workers);
 
     const marked = createBashTool({
