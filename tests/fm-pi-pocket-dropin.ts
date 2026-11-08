@@ -256,6 +256,9 @@ const route = (request: unknown) => {
         const args = forced[1] === "fm_branch_report" ? { task: "task-w", verdict: "routine", summary: "worker reporting" } : forced[1] === "fm_branch_processed" ? { through: 1 } : {};
         return call(forced[1]!, args);
     }
+    if (text.endsWith("list the sandbox tools")) {
+        return call("codemode", { code: `text("sandbox tools: " + JSON.stringify({ listed: ALL_TOOLS.map(({ name, description }) => ({ name, description })), bindings: Object.keys(tools) }));` });
+    }
     if (text.endsWith("process outcomes from a script")) {
         return call("codemode", { code: `return await tools.fm_branch_processed({ through: 1 });` });
     }
@@ -1142,6 +1145,15 @@ async function offeredTools(app: App, session: number): Promise<string[]> {
     return answer.slice("offered tools: ".length).split(", ");
 }
 
+/** The inventory inside the real codemode sandbox, including descriptions and callable bindings. */
+async function sandboxTools(app: App, session: number): Promise<{ listed: { name: string; description: string }[]; bindings: string[] }> {
+    await say(app, session, "list the sandbox tools");
+    const said = (await toolSaid(app, session)).findLast((text) => text.includes("sandbox tools: "));
+    assert.ok(said?.startsWith("Script completed"), said);
+
+    return JSON.parse(/sandbox tools: (.+)/.exec(said)![1]!);
+}
+
 test("Pocket workers hide all Firstmate supervisor tools and refuse forced calls while main and supervision keep their tools", { timeout: 90_000 }, async () => {
     const { app, id, fmHome } = await workerMain();
     const session = await spawnWorker(fmHome, id, "task-w", worktree("worker-supervisor-tools"));
@@ -1154,12 +1166,12 @@ test("Pocket workers hide all Firstmate supervisor tools and refuse forced calls
         assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes(name)), `${name} must be refused by the worker guard`);
     }
     await say(app, session, "process outcomes from a script");
-    assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes("fm_branch_processed")), "nested calls cannot process supervisor outcomes");
+    assert.ok((await toolSaid(app, session)).some((text) => text.includes("tools.fm_branch_processed does not exist")), "supervisor tools have no nested-call binding");
     assert.equal(outcomeRows(fmHome).length, 0, "a forced worker report records no outcome");
     assert.equal(existsSync(join(fmHome, "state", ".branch-outcomes-processed")), false, "a worker never acknowledges an outcome");
     const workerSystem = systemPrompts.findLast((prompt) => prompt.includes("Firstmate task worker for task-w"));
     assert.ok(workerSystem !== undefined);
-    for (const name of SUPERVISOR_TOOLS) assert.ok(workerSystem.includes(name), `${name} is explained in the worker's blocked list`);
+    for (const name of SUPERVISOR_TOOLS) assert.ok(!workerSystem.includes(name), `${name} must not appear in the worker's instructions`);
     const mainTools = await offeredTools(app, Number(id));
     const branch = await branchStarted(app, fmHome);
     const branchTools = await offeredTools(app, branch);
@@ -1180,13 +1192,54 @@ test("Pocket workers hide supervisor tools from codemode-only catalogs without h
     assert.ok(catalog !== undefined && catalog.includes("bash"), "codemode-only lists ordinary worker tools");
     for (const name of SUPERVISOR_TOOLS) assert.ok(!catalog.includes(name), `${name} must not appear in the worker's codemode catalog`);
     await say(app, session, "process outcomes from a script");
-    assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes("fm_branch_processed")));
+    assert.ok((await toolSaid(app, session)).some((text) => text.includes("tools.fm_branch_processed does not exist")));
     await offeredTools(app, Number(id));
     const mainSystem = systemPrompts.findLast((prompt) => prompt.includes("The Firstmate Pi Pocket drop-in is active in this session"))!;
     const mainCatalog = [...mainSystem.matchAll(/<codemode>\n([\s\S]*?)\n<\/codemode>/g)].at(-1)?.[1];
     assert.ok(mainCatalog !== undefined && mainCatalog.includes("bash"));
     for (const name of SUPERVISOR_TOOLS) assert.ok(mainCatalog.includes(name), `${name} remains in main's codemode catalog`);
 });
+
+for (const mode of ["on", "only"]) {
+    test(`Pocket worker codemode sandbox hides supervisor tools while main keeps them (mode=${mode})`, { timeout: 90_000 }, async () => {
+        const { app, id, fmHome } = await workerMain();
+        await app.setExtensionSettings(owner(app), "codemode", { mode });
+        const session = await spawnWorker(fmHome, id, "task-sandbox", worktree(`worker-sandbox-${mode}`), ["--exclude-tools", "fm_branch_report"]);
+        await idle(app, session);
+        const worker = await sandboxTools(app, session);
+        const instructions = systemPrompts.findLast((prompt) => prompt.includes("Firstmate task worker for task-sandbox"))!;
+        for (const name of SUPERVISOR_TOOLS) assert.ok(!instructions.includes(name), `${name} stays out of worker instructions even when explicitly excluded`);
+        assert.ok(worker.listed.some((tool) => tool.name === "bash"), "ordinary worker tools remain in ALL_TOOLS");
+        assert.ok(worker.bindings.includes("bash"), "ordinary worker tools remain callable from scripts");
+        for (const name of SUPERVISOR_TOOLS) {
+            assert.ok(!worker.listed.some((tool) => tool.name === name), `${name} must not appear in worker ALL_TOOLS`);
+            assert.ok(!worker.bindings.includes(name), `${name} must not have a worker sandbox binding`);
+        }
+        // Replay an older installation's catalogs followed by their current replacements, as positional system patches.
+        const currentSections = Object.fromEntries(["firstmate", "codemode"].map((key) => [
+            key,
+            [...instructions.matchAll(new RegExp(`<${key}>\\n[\\s\\S]*?\\n</${key}>`, "g"))].at(-1)![0],
+        ]));
+        await app.harness.commit(async (tx: { appendEntry: (id: number, entry: object) => Promise<unknown> }) => tx.appendEntry(session, {
+            kind: "x.firstmate-test.old-catalogs",
+            model: [
+                { role: "system", content: "", sections: { firstmate: SUPERVISOR_TOOLS.join(", "), codemode: SUPERVISOR_TOOLS.join(", ") }, timestamp: Date.now() },
+                { role: "system", content: "", sections: currentSections, timestamp: Date.now() },
+            ],
+        }), context);
+        await say(app, session, "read from a script");
+        assert.ok((await toolSaid(app, session)).some((text) => text.includes("read: script-ran")), "ordinary worker tools still execute from scripts");
+        const replayed = systemPrompts.findLast((prompt) => prompt.includes("Firstmate task worker for task-sandbox"))!;
+        for (const name of SUPERVISOR_TOOLS) assert.ok(!replayed.includes(name), `${name} must not survive in an older system patch`);
+        const main = await sandboxTools(app, Number(id));
+        for (const name of SUPERVISOR_TOOLS) {
+            const tool = main.listed.find((tool) => tool.name === name);
+            assert.ok(tool !== undefined && tool.description.length > 0, `${name} and its description remain in main ALL_TOOLS`);
+            assert.ok(main.bindings.includes(name), `${name} remains callable from main's scripts`);
+            assert.ok(!JSON.stringify(worker.listed).includes(tool.description), `${name}'s description must not reach a worker`);
+        }
+    });
+}
 
 test("Pocket worker submits refuse a model off the owner's list and a spend hold, and a spawn refuses an unlisted model, a hold, and plan mode", { timeout: 90_000 }, async () => {
     const { app, id, fmHome } = await workerMain();
@@ -1367,6 +1420,11 @@ test("after a Pi Pocket restart cut a worker's run, it gets one short nudge, rec
     assert.ok((await toolSaid(app, session)).some((text) => text.includes(`home=${fmHome} marker=none server=none token=none`)));
     const offered = await offeredTools(app, session);
     for (const name of SUPERVISOR_TOOLS) assert.ok(!offered.includes(name), `${name} stays hidden after restart`);
+    const sandbox = await sandboxTools(app, session);
+    for (const name of SUPERVISOR_TOOLS) {
+        assert.ok(!sandbox.listed.some((tool) => tool.name === name), `${name} stays out of ALL_TOOLS after restart`);
+        assert.ok(!sandbox.bindings.includes(name), `${name} has no sandbox binding after restart`);
+    }
     await say(app, session, "force supervisor tool fm_branch_processed");
     assert.ok((await toolSaid(app, session)).some((text) => text.includes("[pocket-worker]") && text.includes("fm_branch_processed")));
 });

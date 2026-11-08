@@ -94,7 +94,7 @@ The drop-in gives a worker:
 - **Task environment.** Its commands get `FM_HOME`, `FM_TASK_ID`, `FM_TASK_INBOX`, `GOTMPDIR`, the Git hook path, and the other launch facts a pane worker exports, through `host.commandEnv`.
   `FM_HOME` always names the worker's recorded Firstmate home, including after a restart with an older registry, and a supplied task environment cannot replace it.
 - **System-prompt section.** The task-worker channel statement, plus the worker's limits.
-- **Blocked tools.** The supervisor tools `fm_watch_arm_pocket`, `fm_branch_report`, `fm_branch_outcomes`, and `fm_branch_processed` are omitted from a worker's model tool declarations and codemode prompt, listed as blocked in its worker instructions, and refused if called anyway, including from a script.
+- **Blocked tools.** The supervisor tools `fm_watch_arm_pocket`, `fm_branch_report`, `fm_branch_outcomes`, and `fm_branch_processed` are omitted from a worker's model tool declarations, instructions, codemode prompt, and sandbox inventory (`ALL_TOOLS` and callable bindings), with the tool-call guard still refusing forced calls.
   Main and supervision sessions keep their existing tools and permissions.
   Pi Pocket's delegation tools (`subagent`, `team`, `schedule`, `watch_pr`, and every `session_*` tool) are blocked in a worker, and so is every tool in `config/crew-exclude-tools`.
 

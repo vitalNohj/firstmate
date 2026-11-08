@@ -28,7 +28,7 @@ import {
     wrapTool,
 } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import type { ConversationHandle, ConversationId, HookApi, ToolExecutionApi, TaskRuntime, Tx } from "@earendil-works/pi-durable";
+import type { ConversationHandle, ConversationId, HookApi, ToolExecutionApi, ToolRegistration, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import type { Host } from "./_pocket.d.ts";
 
@@ -1931,7 +1931,7 @@ type Workers = ReturnType<typeof createWorkers>;
 
 /** A worker's system-prompt section: the channel statement fm-spawn gives every task worker, and its Pocket limits. */
 function workerPrompt(record: WorkerRecord): string {
-    const blocked = [...SUPERVISOR_TOOLS, ...POCKET_DELEGATION, ...record.excludeTools].sort().join(", ");
+    const blocked = [...POCKET_DELEGATION, ...record.excludeTools].filter((name) => !SUPERVISOR_TOOLS.has(name)).sort().join(", ");
 
     return `${record.prompt.trim() === "" ? "You are a task worker launched by Firstmate." : record.prompt.trim()}\n\nThis Pi Pocket session is the Firstmate task worker for ${record.task}. Firstmate starts and steers it; work in ${record.cwd}. Do not supervise the fleet or start or message other sessions or subagents: these tools are blocked here: ${blocked}.`;
 }
@@ -2329,6 +2329,22 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             }),
         ],
         wraps: [
+            // Codemode builds its sandbox and ALL_TOOLS from api.agent(), not from the rendered section.
+            wrapTool({ name: "codemode" } as ToolRegistration, (codemode) => ({
+                ...codemode,
+                execute: async (args, api, context) => {
+                    if ((await workers.worker(api.conversationId)) === undefined) return codemode.execute(args, api, context);
+
+                    return codemode.execute(args, {
+                        ...api,
+                        agent: async (context) => {
+                            const agent = await api.agent(context);
+
+                            return { ...agent, callable: agent.callable.filter((tool) => !SUPERVISOR_TOOLS.has(tool.name)) };
+                        },
+                    }, context);
+                },
+            })),
             // Codemode renders callable tools separately from the model's tool declarations.
             wrapSection("codemode", (inner) => ({
                 ...inner,
@@ -2415,14 +2431,27 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 // gone from context: either way the hook runs it once and gives the model the whole digest.
                 beforeRequest: async ({ messages }, api, context) => {
                     if ((await workers.worker(api.conversationId)) !== undefined) {
-                        // Tool declarations are system-message patches. Filter every addition, including old ones
-                        // after a restart or compaction; the ToolTask guard still refuses forced and nested calls.
+                        // System messages are patches. Keep only the latest worker instructions and codemode
+                        // catalog, so older catalogs cannot expose supervisor tools after registration or a reload.
+                        const latest = new Map(["firstmate", "codemode"].map((key) => [
+                            key,
+                            messages.findLastIndex((message) => message.role === "system" && Object.hasOwn(message.sections ?? {}, key)),
+                        ]));
+
                         return {
-                            messages: messages.map((message) =>
-                                message.role === "system" && message.toolsAdded !== undefined
-                                    ? { ...message, toolsAdded: message.toolsAdded.filter((tool) => !SUPERVISOR_TOOLS.has(tool.name)) }
-                                    : message,
-                            ),
+                            messages: messages.map((message, index) => {
+                                if (message.role !== "system") return message;
+
+                                return {
+                                    ...message,
+                                    ...(message.sections === undefined ? {} : {
+                                        sections: Object.fromEntries(Object.entries(message.sections).filter(([key]) => !latest.has(key) || latest.get(key) === index)),
+                                    }),
+                                    ...(message.toolsAdded === undefined ? {} : {
+                                        toolsAdded: message.toolsAdded.filter((tool) => !SUPERVISOR_TOOLS.has(tool.name)),
+                                    }),
+                                };
+                            }),
                         };
                     }
                     const summary = messages.findLastIndex((message) => userText(message as never).startsWith(COMPACTED));
