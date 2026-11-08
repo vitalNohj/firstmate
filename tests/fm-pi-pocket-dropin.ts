@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { after, mock, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
+import { LiveDoc } from "@earendil-works/pi-durable";
 
 const checkout = process.env.FM_PI_POCKET_CHECKOUT!;
 const bin = process.env.FM_PI_POCKET_BIN!;
@@ -40,8 +41,10 @@ type App = Awaited<ReturnType<typeof openApp>>;
 const WAKE = "FIRSTMATE WATCHER WAKE: ";
 const BRANCH_WAKE = "FIRSTMATE SUPERVISION WAKE: ";
 const PROCESSING = "supervision processing request";
+const AUTO_REPORT_BODY = "RAW_LINKED_REPORT_MUST_NOT_REACH_THE_MODEL";
+let rawReportBodies = 0;
 const LONG = 30_000;
-const SUPERVISOR_TOOLS = ["fm_watch_arm_pocket", "fm_branch_report", "fm_branch_outcomes", "fm_branch_processed"];
+const SUPERVISOR_TOOLS = ["fm_watch_arm_pocket", "fm_branch_report", "fm_branch_outcomes", "fm_branch_processed", "fm_posture_pocket"];
 
 // ---------------------------------------------------------------------------------------------------------------
 // Fixtures
@@ -76,6 +79,10 @@ while kill -0 "$server" 2>/dev/null; do
   sleep 0.1
 done
 exit 1
+`,
+    "fm-afk-launch.sh": `#!/usr/bin/env bash
+echo "terminal launcher was called: $*" >> "$FM_HOME/stub/afk-launch.log"
+exit 61
 `,
     "fm-turnend-guard.sh": `#!/usr/bin/env bash
 cat >/dev/null
@@ -233,7 +240,6 @@ const call = (name: string, args: Record<string, unknown>) =>
 
 /** Every system prompt the model was sent, its sections joined: Pi Durable sends them as system messages. */
 const systemPrompts: string[] = [];
-
 const route = (request: unknown) => {
     const sections = (request as { messages: { role: string; sections?: Record<string, string> }[] }).messages
         .filter((message) => message.role === "system")
@@ -241,14 +247,27 @@ const route = (request: unknown) => {
     systemPrompts.push(sections.join("\n"));
     // A fresh conversation's digest follows the captain's opening input; the route answers that input.
     const all = (request as { messages: { role: string; content: unknown }[] }).messages;
-    const tail = all.findLastIndex((message) => !(message.role === "user" && lastText({ messages: [message] }).text.startsWith("\u2063FIRSTMATE_OP: v1 session-start: ")));
-    const { role, text } = lastText({ messages: all.slice(0, tail + 1) });
+    const postured = sections.some((text) => /^(?:QUIET POSTURE|AUTOMATIC INPUT WHILE AWAY):/.test(text));
+    if (postured && all.some((message) => message.role === "user" && JSON.stringify(message.content).includes(AUTO_REPORT_BODY))) rawReportBodies += 1;
+    // A linked-session report can land beside the human input in the same real app run. It is not that input.
+    const tail = all.findLastIndex((message) => {
+        if (message.role === "system") return false;
+        if (message.role !== "user") return true;
+        const text = lastText({ messages: [message] }).text;
+
+        return !text.startsWith("\u2063FIRSTMATE_OP: v1 session-start: ") && !/^(?:\[from: [^\]\n]+\]\s*)?\[via linked session(?:\s|\])/.test(text);
+    });
+    // A new linked session can have no input except its linked-message carrier.
+    const { role, text } = tail < 0 ? { role: "user", text: "" } : lastText({ messages: all.slice(0, tail + 1) });
     // A branch turn that reports and then hangs past its deadline.
     const whole = (request as { messages: { role: string; content: unknown }[] }).messages;
     if (role === "toolResult" && text.startsWith("recorded seq") && whole.some((message) => JSON.stringify(message.content).includes("task-report-stall"))) {
         return call("bash", { command: "sleep 60" });
     }
     if (role === "toolResult") return fauxAssistantMessage([fauxText("noted the tool result")]);
+    if (text.startsWith("/afk")) return call("fm_posture_pocket", { mode: "away", words: text.slice(4).trim() });
+    if (text === "/quiet") return call("fm_posture_pocket", { mode: "quiet" });
+    if (text.includes("FIRSTMATE RETURN BRIEF") && !text.includes(PROCESSING)) return fauxAssistantMessage([fauxText(text)]);
     if (text.startsWith("run fixture command:\n")) {
         return call("bash", { command: `${text.slice("run fixture command:\n".length)}\nrc=$?\nprintf '\\nfixture-exit=%s\\n' "$rc"` });
     }
@@ -257,7 +276,7 @@ const route = (request: unknown) => {
     }
     const forced = /force supervisor tool (fm_[a-z_]+)$/.exec(text);
     if (forced) {
-        const args = forced[1] === "fm_branch_report" ? { task: "task-w", verdict: "routine", summary: "worker reporting" } : forced[1] === "fm_branch_processed" ? { through: 1 } : {};
+        const args = forced[1] === "fm_branch_report" ? { task: "task-w", verdict: "routine", summary: "worker reporting" } : forced[1] === "fm_branch_processed" ? { through: 1 } : forced[1] === "fm_posture_pocket" ? { mode: "away" } : {};
         return call(forced[1]!, args);
     }
     if (text.endsWith("list the sandbox tools")) {
@@ -299,6 +318,12 @@ const route = (request: unknown) => {
     if (text.endsWith("check the worker bridge")) return call("bash", { command: `node bin/fm-pi-pocket-bridge.mjs status --state "$FM_HOME/state"` });
     if (text.endsWith("report from main")) return call("fm_branch_report", { task: "task-a", verdict: "routine", summary: "main reporting" });
     // The supervision session: a wake for a task it reports on, and one it leaves without an outcome.
+    if (text.includes("FIRSTMATE SUPERVISION WAKE: signal: task-routine.status")) {
+        return call("fm_branch_report", { task: "task-routine", verdict: "routine", summary: "Routine work continued." });
+    }
+    if (text.includes("FIRSTMATE SUPERVISION WAKE: check: away-decision")) {
+        return call("fm_branch_report", { task: "fleet", verdict: "captain", summary: "A design decision waits for your return." });
+    }
     const reported = /FIRSTMATE SUPERVISION WAKE: signal: (task-report[a-z0-9-]*)\.status/.exec(text);
     if (reported) {
         return call("fm_branch_report", { task: reported[1]!, verdict: "captain", summary: `${reported[1]!} needs the captain's merge call`, wake: `signal: ${reported[1]!}.status` });
@@ -428,6 +453,10 @@ if (process.argv.includes("--branch-child")) {
     const id = await newSession(app, fmHome);
     await say(app, id, "start firstmate");
     const branch = await branchStarted(app, fmHome);
+    if (process.env.FM_POCKET_TEST_POSTURE) {
+        await say(app, id, process.env.FM_POCKET_TEST_POSTURE === "quiet" ? "/quiet" : "/afk Keep working within the existing authority.");
+        assert.ok(existsSync(join(fmHome, "state", ".afk-contract")), "the child entered its posture");
+    }
     process.stdout.write(`branch ${String(id)} ${String(branch)}\n`);
     await new Promise(() => {});
 }
@@ -670,6 +699,11 @@ test("an arm that keeps reporting ready and then failing still exhausts the retr
 test("the turn-end guard continues a turn that would end blind exactly once", async () => {
     const { app, id, fmHome } = await started();
 
+    // The branch's startup report is its own run; finish it before testing one guarded human turn.
+    await say(app, id, "start firstmate");
+    await branchStarted(app, fmHome);
+    await until(async () => (await userTexts(app, id)).some((text) => text.startsWith("[via linked session")), "the branch startup report", LONG);
+    await idle(app, id);
     writeFileSync(join(fmHome, "stub", "guard-code"), "2");
     await say(app, id, "hello");
     await until(async () => (await userTexts(app, id)).some((text) => text.includes("STUB GUARD")), "the guard continuation", LONG);
@@ -825,6 +859,103 @@ test("a branch turn that records nothing, or reports outside its wake, hands the
     assert.equal(existsSync(join(fmHome, "state", ".branch-eligible-rows")), false, "the grant is released for main's drain");
 });
 
+test("Pocket away mode parks main, keeps automatic inputs away, and a real human return gets the return brief", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await started();
+    await say(app, id, "start firstmate");
+    const branch = await branchStarted(app, fmHome);
+    await say(app, id, "/afk Keep routine work moving.");
+    const record = join(fmHome, "state", ".afk-contract");
+    assert.ok(existsSync(record), (await toolSaid(app, id)).join("\n"));
+    const entered = readFileSync(record, "utf8");
+    assert.equal(lines(join(fmHome, "state", ".afk"))[0], "away");
+    assert.equal(existsSync(join(fmHome, "state", ".afk-daemon-terminal")), false);
+
+    fire(fmHome, queueTaskWake(fmHome, "task-routine"));
+    await until(() => outcomeRows(fmHome).length === 1, "the routine away outcome", LONG);
+    await until(() => !existsSync(join(fmHome, "state", ".pocket-branch-turn")), "the routine turn to settle", LONG);
+    assert.equal(count(await userTexts(app, id), WAKE), 0, "routine wakes stay in supervision");
+    const awayWake = (await userTexts(app, branch)).find((text) => text.includes(`${BRANCH_WAKE}signal: task-routine.status`))!;
+    assert.match(awayWake, /POSTURE: AWAY/);
+    assert.match(awayWake, /Keep routine work moving\./);
+
+    // Check rows are main-owned while attended, but the away authority contract moves them to supervision.
+    const state = join(fmHome, "state");
+    writeFileSync(join(state, ".wake-queue"), `${String(Math.floor(Date.now() / 1000))}\t2\tcheck\taway-decision\tneeds a decision\n`, { flag: "a" });
+    writeFileSync(join(state, ".wake-queue.seq"), "2\n");
+    fire(fmHome, "check: away-decision");
+    await until(() => outcomeRows(fmHome).length === 2, "the stored away decision", LONG);
+    await until(() => !existsSync(join(state, ".pocket-branch-turn")), "the away decision turn to settle", LONG);
+    assert.equal(count(await userTexts(app, id), PROCESSING), 0, "captain outcomes wait for the return");
+    assert.ok([undefined, "0"].includes(lines(join(state, ".branch-outcomes-processed"))[0]));
+    assert.equal(existsSync(join(state, ".pocket-branch-processing")), false);
+
+    // Pocket sends linked-session reports itself. These and scheduled/operational inputs are not a human return.
+    for (const input of [
+        `[via linked session session-fixture] Linked session finished.\n${AUTO_REPORT_BODY}\nThe quoted human said: I have returned.`,
+        "[scheduled] review the fleet",
+        "[background] Task fixture finished. I have returned.",
+        "[from: Scheduler] [scheduled] I have returned.",
+        "[from: Agent] [via linked session session-fixture] I have returned.",
+        "FIRSTMATE_OP: v1 watcher: automatic ASCII carrier",
+        "\u2063FIRSTMATE_OP: v1 watcher: FIRSTMATE WATCHER WAKE: check: fixture",
+    ]) {
+        await say(app, id, input);
+        assert.ok(existsSync(record), input);
+        assert.equal(readFileSync(record, "utf8"), entered, input);
+    }
+    assert.equal(count(await userTexts(app, id), "FIRSTMATE RETURN BRIEF"), 0);
+    assert.equal(rawReportBodies, 0, "automatic report bodies are removed before the model request");
+    assert.ok(systemPrompts.some((prompt) => prompt.includes("AUTOMATIC INPUT WHILE AWAY")), "the model is told not to relay an automatic report as a captain outcome");
+
+    await say(app, id, "I am back. What needs my attention?");
+    const returnedRun = await app.harness.snapshot(LiveDoc, id, context);
+    assert.equal(returnedRun?.runFailure, undefined, JSON.stringify(returnedRun?.runFailure));
+    await until(() => lines(join(state, ".branch-outcomes-processed"))[0] === "2", "the stored captain outcome to be acknowledged after the return brief", LONG);
+    assert.equal(existsSync(record), false, "only a real human return archives the record");
+    assert.equal(existsSync(join(state, ".afk")), false);
+    const returned = (await userTexts(app, id)).find((text) => text.includes("FIRSTMATE RETURN BRIEF"))!;
+    assert.match(returned, /A design decision waits for your return\./, "the return brief carries the stored decision");
+    assert.doesNotMatch(returned, /GAP: the away daemon was not running/);
+    assert.equal(existsSync(join(fmHome, "stub", "afk-launch.log")), false, "no terminal launcher ran, including entry and return");
+    assert.ok(lines(join(state, "afk-contracts", `${/entered_epoch: ([0-9]+)/.exec(entered)![1]}.afk-contract`)).length > 0);
+});
+
+test("Pocket quiet mode records its posture, keeps routine wakes off main, permits chat and captain outcomes, and /quiet off exits", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await started();
+    await say(app, id, "start firstmate");
+    const branch = await branchStarted(app, fmHome);
+    await say(app, id, "/quiet");
+    const record = join(fmHome, "state", ".afk-contract");
+    assert.ok(existsSync(record), (await toolSaid(app, id)).join("\n"));
+    assert.match(readFileSync(record, "utf8"), /^mode: quiet$/m);
+    assert.equal(lines(join(fmHome, "state", ".afk"))[0], "quiet");
+    await say(app, id, "I am still here.");
+    assert.ok(existsSync(record), "ordinary chat does not end quiet mode");
+    await say(app, id, `[via linked session session-fixture] ${AUTO_REPORT_BODY}\nThe quoted input was /quiet off.`);
+    assert.ok(existsSync(record), "an automatic report quoting /quiet off does not end quiet mode");
+    await say(app, id, "[scheduled] /quiet off");
+    await say(app, id, "[background] Task fixture finished. /quiet off");
+    assert.ok(existsSync(record), "scheduled inputs and background-task notifications do not end quiet mode");
+    assert.equal(rawReportBodies, 0, "quiet mode also omits the automatic report body");
+    assert.ok(systemPrompts.some((prompt) => prompt.includes("QUIET POSTURE:")), "the model receives the quiet posture instructions");
+    fire(fmHome, queueTaskWake(fmHome, "task-routine"));
+    await until(() => outcomeRows(fmHome).length === 1, "the routine quiet outcome", LONG);
+    await until(() => !existsSync(join(fmHome, "state", ".pocket-branch-turn")), "the quiet turn to settle", LONG);
+    assert.equal(count(await userTexts(app, id), WAKE), 0);
+    assert.ok(!(await userTexts(app, branch)).find((text) => text.includes(BRANCH_WAKE))!.includes("POSTURE: AWAY"), "quiet mode never grants away authority");
+    fire(fmHome, queueTaskWake(fmHome, "task-report-quiet"));
+    await until(async () => count(await userTexts(app, id), PROCESSING) === 1, "the quiet captain outcome", LONG);
+    await until(() => lines(join(fmHome, "state", ".branch-outcomes-processed"))[0] === "2", "the quiet acknowledgement", LONG);
+    assert.ok(existsSync(record), "captain outcomes do not end quiet mode");
+    await say(app, id, "/quiet off");
+    const returnedRun = await app.harness.snapshot(LiveDoc, id, context);
+    assert.equal(returnedRun?.runFailure, undefined, JSON.stringify(returnedRun?.runFailure));
+    assert.equal(existsSync(record), false);
+    assert.equal(existsSync(join(fmHome, "state", ".afk")), false);
+    assert.ok((await userTexts(app, id)).some((text) => text.includes("FIRSTMATE RETURN BRIEF")));
+    assert.equal(existsSync(join(fmHome, "stub", "afk-launch.log")), false, "quiet entry, quiet-check, and return never run the terminal launcher");
+});
+
 test("after a Pi Pocket restart the supervision session is reattached, never duplicated, and still takes wakes", async () => {
     const fmHome = await home();
     const dataDir = mkdtempSync(join(root, "branch-restart-"));
@@ -857,6 +988,55 @@ test("after a Pi Pocket restart the supervision session is reattached, never dup
     assert.equal(count(await userTexts(app, id), `${WAKE}signal: task-report-after.status`), 0);
     assert.equal(supervisionSessions(app).length, 1);
 });
+
+for (const posture of ["away", "quiet"]) {
+    test(`Pocket ${posture} posture survives a server restart without a daemon`, { timeout: 90_000 }, async (t) => {
+        const fmHome = await home();
+        const dataDir = mkdtempSync(join(root, `posture-${posture}-restart-`));
+        const child = spawn(process.execPath, [process.argv[1]!, "--branch-child", dataDir, fmHome], {
+            env: { ...process.env, TMPDIR: mkdtempSync(join(tmpdir(), "fm-child-")), FM_POCKET_TEST_POSTURE: posture },
+            stdio: ["ignore", "pipe", "inherit"],
+        });
+        t.after(() => child.kill("SIGKILL"));
+        const [id, branch] = await new Promise<[number, number]>((resolve, reject) => {
+            let out = "";
+            child.stdout!.on("data", (chunk: Buffer) => {
+                out += chunk.toString();
+                const ready = /^branch (\S+) (\S+)$/m.exec(out);
+                if (ready) resolve([Number(ready[1]), Number(ready[2])]);
+            });
+            child.on("close", (code) => reject(new Error(`the posture server ended first (${String(code)}): ${out}`)));
+        });
+        const record = join(fmHome, "state", ".afk-contract");
+        const entered = readFileSync(record, "utf8");
+        child.kill("SIGKILL");
+        await new Promise((resolve) => child.once("close", resolve));
+        const app = await open(dataDir, false);
+        apps.push(app);
+        await until(() => lines(join(fmHome, "stub", "starts.log")).length === 2, "the posture restart's session start", LONG);
+        await until(() => lines(join(fmHome, "stub", "arms.log")).length === 2, "the posture restart's arm", LONG);
+        fire(fmHome, queueTaskWake(fmHome, "task-report-restart"));
+        await until(() => outcomeRows(fmHome).length === 1, "the restart's posture outcome", LONG);
+        await until(() => !existsSync(join(fmHome, "state", ".pocket-branch-turn")), "the restart's posture turn to settle", LONG);
+        assert.equal(readFileSync(record, "utf8"), entered, "automatic restart/report inputs never archive the posture");
+        assert.equal(lines(join(fmHome, "state", ".afk"))[0], posture);
+        assert.equal(existsSync(join(fmHome, "state", ".afk-daemon-terminal")), false);
+        assert.equal(existsSync(join(fmHome, "stub", "afk-launch.log")), false);
+        assert.deepEqual(branchRecord(fmHome), { main: id, branch, start: 0 });
+        assert.equal(count(await userTexts(app, id), WAKE), 0);
+        if (posture === "away") {
+            assert.equal(count(await userTexts(app, id), PROCESSING), 0);
+            assert.match((await userTexts(app, branch)).find((text) => text.includes(BRANCH_WAKE))!, /POSTURE: AWAY/);
+        } else {
+            await until(async () => count(await userTexts(app, id), PROCESSING) === 1, "the restarted quiet captain outcome", LONG);
+        }
+        await say(app, id, posture === "quiet" ? "/quiet off" : "I have returned.");
+        const returnedRun = await app.harness.snapshot(LiveDoc, id, context);
+        assert.equal(returnedRun?.runFailure, undefined, JSON.stringify(returnedRun?.runFailure));
+        assert.equal(existsSync(record), false);
+        assert.ok((await userTexts(app, id)).some((text) => text.includes("FIRSTMATE RETURN BRIEF")));
+    });
+}
 
 test("a branch turn that runs past its deadline hands its wake to main even after it recorded an outcome", async () => {
     const fmHome = await home();

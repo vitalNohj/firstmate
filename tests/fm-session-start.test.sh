@@ -2966,7 +2966,7 @@ EOF
 # ancestry, so this case runs session start as a bash call of the real
 # Pi Pocket-shaped fixture server instead of behind the fake ps.
 test_pi_pocket_primary_renders_its_protocol_without_pi_diagnostics() {
-  local rec root home fakebin fix cmd
+  local rec root home fakebin fix cmd mode record
   rec=$(new_world pi-pocket-supervision-block)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -2990,13 +2990,20 @@ EOF
   assert_not_contains "$CALL_OUT" "PI_WATCH_EXTENSION" "a Pi Pocket primary got the Pi extension diagnostic"
   assert_not_contains "$CALL_OUT" "OMP_WATCH_EXTENSION" "a Pi Pocket primary got the omp extension diagnostic"
 
-  : > "$home/state/.afk"
-  call "$fix" conv-a self "$cmd"
-  expect_code 0 "$CALL_RC" "Pi Pocket session start with an away record failed: $CALL_OUT"
-  assert_contains "$CALL_OUT" "no daemon runs under Pi Pocket" "next step did not say no daemon runs under Pi Pocket"
-  assert_contains "$CALL_OUT" "- Away/quiet mode: recorded, but away and quiet modes do not run under Pi Pocket" "supervision block did not flag the ownerless record"
-  assert_not_contains "$CALL_OUT" "ensure the daemon is running" "a Pi Pocket primary was told to run the away daemon"
-  pass "session start renders the Pi Pocket protocol for a Pi Pocket primary, with no Pi extension diagnostic and no away daemon"
+  for mode in away quiet; do
+    FM_AFK_MODE="$mode" FM_HOME="$home" "$ROOT/bin/fm-afk-contract.sh" enter >/dev/null 2>&1 || fail "Pocket $mode entry failed"
+    record=$(cat "$home/state/.afk-contract")
+    printf '%s\n%s\n' "$mode" "$(date '+%s')" > "$home/state/.afk"
+    call "$fix" conv-a self "$cmd"
+    expect_code 0 "$CALL_RC" "Pi Pocket session start with a $mode record failed: $CALL_OUT"
+    assert_contains "$CALL_OUT" "Away/quiet mode remains active under Pi Pocket" "next step did not preserve the Pocket $mode posture"
+    assert_contains "$CALL_OUT" "ordinary supervision session continues" "Pocket $mode digest did not name its existing supervision session"
+    assert_not_contains "$CALL_OUT" "close the leftover" "a Pocket restart told main to end its posture"
+    assert_not_contains "$CALL_OUT" "daemon owns the watcher" "a Pocket $mode digest assigned the watcher to a daemon"
+    assert_not_contains "$CALL_OUT" "ensure the daemon is running" "a Pi Pocket primary was told to run the away daemon"
+    [ "$(cat "$home/state/.afk-contract")" = "$record" ] || fail "Pocket $mode startup changed the posture record"
+  done
+  pass "session start preserves both Pi Pocket postures and renders their supervision-session instructions without a daemon"
 }
 
 test_omp_supervision_block_and_diagnostic() {

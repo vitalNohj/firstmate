@@ -642,7 +642,7 @@ The generated prompt includes the [scout-completion](../.agents/skills/scout-com
 ## Pi Pocket
 
 A Pi Pocket primary runs the same branch contract through the Firstmate Pi Pocket drop-in ([`pi-pocket/firstmate.ts`](../pi-pocket/firstmate.ts)), which owns everything in this section.
-Only the attended posture applies there, because away and quiet modes do not run under Pi Pocket ([`docs/supervision-protocols/pi-pocket.md`](supervision-protocols/pi-pocket.md)).
+Attended, away, and quiet postures all use that same session and watcher ([`docs/supervision-protocols/pi-pocket.md`](supervision-protocols/pi-pocket.md)); no posture starts a terminal daemon.
 
 ### A visible linked session
 
@@ -675,6 +675,7 @@ The drop-in recognizes the branch by that record and gives it the Pi branch's co
 
 The watcher task offers each actionable wake to the branch through `bin/fm-branch-dispatch.mjs offer`, which applies [Wake dispatch](#wake-dispatch)'s eligibility rules.
 For an eligible wake it activates the wake grant for the server, publishes the claimed rows, and submits the `wake-prompt` text to the branch as one input keyed on that wake.
+When the shared posture record is away, it offers with `--afk` and builds the prompt with `--away` and the record owner's full read-back, so the same away eligibility and mandate rules apply.
 The turn is recorded in `state/.pocket-branch-turn`, so a server restart resumes the same turn under the same input instead of starting another.
 
 `fm_branch_report` refuses a task the wake does not name, as on Pi, and appends to the outcome store.
@@ -691,10 +692,30 @@ Its cursor (`state/.pocket-branch-mirror`) advances only after a turn records an
 
 ### Outcomes on main
 
-After each handled wake, and once per server start, the drop-in marks the store's unread rows read and, when captain rows are unprocessed, sends main the Pi branch's processing request.
+In attended and quiet postures, after each handled wake and once per server start, the drop-in marks the store's unread rows read and, when captain rows are unprocessed, sends main the Pi branch's processing request.
+Away mode leaves those rows stored and unprocessed until the human returns; `fm_branch_processed` also refuses acknowledgements while away.
 Main acknowledges it with `fm_branch_processed`, which accepts only a sequence the active request (`state/.pocket-branch-processing`) listed.
 Main reads the store on request with `fm_branch_outcomes`.
 Routine outcomes stay in the store and in the branch's own visible transcript; no note is posted into main, because the branch is a session the captain can open.
+
+### Away, quiet, and a human return
+
+Main enters or refreshes with `fm_posture_pocket` (`mode: "away"` or `mode: "quiet"`).
+The tool invokes `bin/fm-afk-contract.sh enter`, preserving the exact words, expected return, spend cap, refresh, and superseded-mandate semantics of other harnesses.
+It writes `state/.afk` in the same mode/epoch layout; `fm_afk_mode` and the shared record retain their ordinary meanings.
+Never run `bin/fm-afk-launch.sh` in Pocket, even at entry or return.
+
+The [`afk` skill](../.agents/skills/afk/SKILL.md) owns the away authority and parked-main rules, and the [`quiet` skill](../.agents/skills/quiet/SKILL.md) owns the attended-authority quiet posture; the routing and outcome rules above implement both.
+
+The drop-in checks this run's committed main inputs, not the last human message in the whole transcript.
+Its input cursor (`state/.pocket-posture-input`) prevents a tool round or resumed run from returning on the same input that just entered the posture.
+The [`afk` return contract](../.agents/skills/afk/SKILL.md#how-to-exit-the-return) owns the automatic-input exclusions, shared with quiet mode.
+The drop-in also omits automatic linked-session report bodies from the posture's model context and directs main to the durable outcome store instead.
+
+Before a human return request reaches the model, the drop-in runs `bin/fm-afk-return.sh`, then persists and supplies its return brief followed by any stored-outcome processing request as operational model context.
+The return owner's header owns Pocket's lock-verified archive and its refusal of a contradictory terminal-daemon record.
+Main relays the brief in its emitted order, resolves its return-catch-up blockers before ordinary fleet work, and processes stored captain outcomes through the normal acknowledgement path.
+A server restart restores the posture from the shared record and reattaches the same supervision session; neither a restart nudge nor its automatic run report is a human return.
 
 ### Calm
 
@@ -735,6 +756,7 @@ A Pi Pocket without that presentation leaves wakes as ordinary messages, and `/f
 - The away relocation: only under a valid live record, never for local-only landing, queued-only branch dispatch rather than orphaned in-flight recovery, the spend cap for both actors and its lock-held recheck, and the attended guarded-action behavior restored by archive or an invalid record.
 
 `tests/fm-pi-pocket-dropin.test.sh` runs the Pi Pocket drop-in in a real Pi Pocket app and covers the branch started once as a visible linked session under main, its branch prompt and tools, its bash identity, a task wake handled there with main's dialog mirrored, the captain outcome's processing request and acknowledgement on main, `fm_branch_outcomes`, a no-report, off-scope, or past-deadline turn handing its wake to main with the grant released, and a server restart that reattaches the same session and keeps routing to it.
+It also covers record-backed away and quiet entry without a daemon, routine wake routing, away-scoped check routing and the full mandate, held captain outcomes, automatic linked-session/operational/scheduled inputs that do not return, human return with the stored-decision brief, ordinary chat in quiet mode, `/quiet off`, and both postures across a real test-server restart.
 It also covers a supervision start refused unless it names an allowed model, the drop-in naming one from the owner's list (a pin when it is listed, otherwise the first usable model, with effort only when that model supports it), and the cooling-off that stops a refused start from being retried on every wake.
 `tests/fm-pi-watch-extension.test.sh` covers a Pi primary whose ancestor is the lock-holding Pi Pocket server staying passive: it does not arm, and the turn-end guard does not run.
 

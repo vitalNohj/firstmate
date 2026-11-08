@@ -990,7 +990,7 @@ if [ -f "$STATE/.afk-contract" ]; then
     printf 'present - away posture recorded at %s (hold-for-return only; bin/fm-afk-contract.sh readback for the mandate)' \
       "$("$SCRIPT_DIR/fm-afk-contract.sh" field entered 2>/dev/null || printf unknown)"
   fi
-  if [ -e "$STATE/.afk" ]; then
+  if [ -e "$STATE/.afk" ] && [ "$PRIMARY_HARNESS" != pi-pocket ]; then
     if [ "$AFK_MODE" = quiet ]; then
       printf '; the quiet daemon owns the watcher.\n'
     else
@@ -1000,7 +1000,9 @@ if [ -f "$STATE/.afk-contract" ]; then
     printf '; no daemon runs, the ordinary supervision session continues.\n'
   fi
 elif [ -e "$STATE/.afk" ]; then
-  if [ "$AFK_MODE" = quiet ]; then
+  if [ "$PRIMARY_HARNESS" = pi-pocket ]; then
+    printf 'present - %s-mode supervision is active; no daemon runs, the ordinary supervision session continues (legacy flag with no posture record).\n' "$AFK_MODE"
+  elif [ "$AFK_MODE" = quiet ]; then
     printf 'present - quiet-mode supervision is active; the daemon owns the watcher, only an explicit /quiet off exits it (legacy flag with no posture record).\n'
   else
     printf 'present - away-mode supervision is active; the daemon owns the watcher (legacy flag with no posture record).\n'
@@ -1071,9 +1073,11 @@ with verified fleet-lock ownership may perform mutable follow-up.
 EOF
 elif [ "$AFK_PRESENT" -eq 1 ] && [ "$PRIMARY_HARNESS" = pi-pocket ]; then
   cat <<'EOF'
-An away or quiet record is present, but no daemon runs under Pi Pocket.
-Follow the supervision operating instructions block above: close the leftover
-record and keep supervising attended through the Pi Pocket drop-in.
+Away/quiet mode remains active under Pi Pocket.
+Follow the supervision operating instructions block above and load /afk or
+/quiet for the recorded mode. The ordinary supervision session continues;
+main stays parked while away, and quiet mode keeps ordinary chat attended.
+Do not close the record on restart or launch a terminal daemon.
 
 EOF
 elif [ "$AFK_PRESENT" -eq 1 ] && [ "$AFK_MODE" = quiet ]; then
