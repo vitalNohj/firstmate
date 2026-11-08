@@ -10,8 +10,9 @@
 # "{<harness>,...} " render only for the listed harnesses), and Grok's arm
 # command becomes the host; on a home that does not run it the output is
 # unchanged. A Pi Pocket primary (pi-pocket, docs/supervision-protocols/pi-pocket.md)
-# never runs the host, the supervision branch, or the away daemon, so its away
-# and quiet stanza and repair line say that neither mode runs there.
+# runs its visible supervision session through the drop-in in attended, away,
+# and quiet postures, never through the host or a terminal daemon. Records
+# survive restarts and repair preserves them until a genuine human return.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -108,9 +109,6 @@ case "$HARNESS" in
   *) HARNESS=unknown; SNIPPET="$DOC_DIR/unknown.md" ;;
 esac
 [ -f "$SNIPPET" ] || SNIPPET="$DOC_DIR/unknown.md"
-# Pi Pocket runs no away daemon, so a leftover away or quiet record has no owner
-# there and the drop-in's attended supervision must continue.
-PI_POCKET_AFK_LINE='away and quiet modes do not run under Pi Pocket and no daemon owns the watcher; run bin/fm-afk-return.sh to close the leftover record, then keep supervising attended through the Pi Pocket drop-in.'
 HOST_SNIPPET=
 grok_arm='bin/fm-watch-arm.sh'
 case "$HARNESS" in
@@ -187,11 +185,7 @@ repair_line() {
     printf '%s\n' 'Watcher repair belongs to the session holding the fleet lock; do not drain, arm, or repair from this read-only session.'
     return 0
   fi
-  if [ "$AFK" -eq 1 ] && [ "$HARNESS" = pi-pocket ]; then
-    printf '%s\n' "$PI_POCKET_AFK_LINE"
-    return 0
-  fi
-  if [ "$AFK" -eq 1 ]; then
+  if [ "$AFK" -eq 1 ] && [ "$HARNESS" != pi-pocket ]; then
     if [ "$AFK_MODE" = quiet ]; then
       printf '%s\n' 'Quiet mode owns watcher supervision; load /quiet and ensure the daemon is running instead of starting normal supervision directly.'
     else
@@ -236,7 +230,11 @@ repair_line() {
       printf '%s%s\n' "$prefix" 'watcher supervision is owned by the stop-hook park; inspect the hook registration and watcher startup path before ending the turn.'
       ;;
     pi-pocket)
-      printf '%s%s\n' "$prefix" 'repair a missing or failed watcher cycle with the Pi Pocket drop-in tool fm_watch_arm_pocket; if that tool is unavailable, the Firstmate Pi Pocket drop-in is not enabled for this conversation, so report that instead of running bin/fm-watch-arm.sh through bash.'
+      pocket_posture=
+      if [ "$AFK" -eq 1 ]; then
+        pocket_posture=' The recorded away/quiet posture remains active on the existing supervision session; never run bin/fm-afk-launch.sh.'
+      fi
+      printf '%s%s%s\n' "$prefix" 'repair a missing or failed watcher cycle with the Pi Pocket drop-in tool fm_watch_arm_pocket; if that tool is unavailable, the Firstmate Pi Pocket drop-in is not enabled for this conversation, so report that instead of running bin/fm-watch-arm.sh through bash.' "$pocket_posture"
       ;;
     *)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision according to the session-start block for this harness; do not use shell &.'
@@ -292,7 +290,11 @@ else
   printf '%s\n' '- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.'
 fi
 if [ "$AFK" -eq 1 ] && [ "$HARNESS" = pi-pocket ]; then
-  printf '%s\n' "- Away/quiet mode: recorded, but $PI_POCKET_AFK_LINE"
+  if [ "$AFK_MODE" = quiet ]; then
+    printf '%s\n' '- Quiet mode: active; load /quiet. The existing supervision session keeps routine wakes off main and sends captain outcomes through main; ordinary chat does NOT exit it - only an explicit /quiet off does. Never launch a terminal daemon.'
+  else
+    printf '%s\n' '- Away mode: active; load /afk. The existing supervision session handles eligible wakes under the recorded mandate; main stays parked and captain outcomes wait for the human return. Automatic reports and scheduled inputs are not a return. Never launch a terminal daemon.'
+  fi
 elif [ "$AFK" -eq 1 ]; then
   if [ "$AFK_MODE" = quiet ]; then
     printf '%s\n' '- Quiet mode: active; load /quiet and keep normal harness supervision paused while the daemon owns the watcher. Ordinary captain chat does NOT exit it - only an explicit /quiet off does.'

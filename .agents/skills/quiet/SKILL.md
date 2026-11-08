@@ -11,7 +11,7 @@ metadata:
 # quiet
 
 Quiet supervision mode (kunchenguid/firstmate#2356): the same token-saving
-daemon tradeoff as `/afk`, made explicit for a captain who is staying,
+supervision posture as `/afk`, made explicit for a captain who is staying,
 watching the session, and does not want to exit the mode just by chatting.
 
 Where a daemon runs, this skill is a thin wrapper.
@@ -21,6 +21,10 @@ For captain-held rechecks under quiet, see [architecture](../../../docs/architec
 ## What it does
 
 0. **First check whether quiet mode needs anything here.**
+   On Pi Pocket, call `fm_posture_pocket` with `mode: "quiet"`, then go to step 2.
+   It writes the shared posture record and the `quiet` flag and keeps the existing supervision session running; never run `bin/fm-afk-launch.sh` there, including `quiet-check`.
+   A real human request to switch from away first runs the `afk` return procedure and clears its catch-up gate.
+   If the tool is missing, report that the Firstmate Pi Pocket drop-in is required; do not substitute a terminal launch.
    On Pi or pi-signed, enter nothing: the attended branch already keeps routine wakes out of this conversation (the `afk` skill's step 2); tell the captain so.
    Everywhere else run `bin/fm-afk-launch.sh quiet-check`; its header's QUIET MODE owns what each result means.
    - Exit 0: enter nothing - no record, no flag, no daemon, and `/quiet off` then needs nothing either.
@@ -29,7 +33,7 @@ For captain-held rechecks under quiet, see [architecture](../../../docs/architec
    - Exit 2: an away record is live, so the captain has returned: run the `afk` skill's return and clear its catch-up gate, then run `quiet-check` again and follow its new result.
    - Exit 1: go on to step 1; if it printed a line, first tell the captain plainly what keeps supervision from already being quiet here.
 
-1. **Enter the lifecycle through `bin/fm-afk-launch.sh`, exactly as `/afk`
+1. **On a harness that still needs the daemon, enter the lifecycle through `bin/fm-afk-launch.sh`, exactly as `/afk`
    does, with `FM_AFK_MODE=quiet` set first.**
    Follow the `afk` skill's record entry, daemon launch, and announcement steps,
    except that on a home that runs the supervision host its `/afk` no-daemon rule does not apply
@@ -58,13 +62,16 @@ point of this mode (AGENTS.md section 8's away-mode stub, quiet branch).
   documents for its own return path (correct-ordered daemon shutdown,
   durable wake presentation and acknowledgement, escalation/wedge evidence,
   and the return-catch-up gate).
-  That script does not read or care about the flag's mode, so it needs no
-  quiet-specific variant.
+  That script needs no quiet-specific variant.
+  In Pi Pocket the drop-in runs this procedure automatically for a real human `/quiet off`, supplies its return brief, and archives the record without the terminal launcher; relay that brief rather than running a second return.
+- A Pi Pocket input beginning `[via linked session`, a `FIRSTMATE_OP` operational input, a `[scheduled]` input, or a `[background]` task notification is automatic and never exits quiet mode, even if it quotes `/quiet off`.
 - A marked daemon escalation, or a message beginning `/quiet` while already
   in quiet mode (refresh, not exit) -> stay in quiet mode and process it, the
   same two carve-outs `/afk` documents for away mode.
 - Every other message while in quiet mode is simply answered as ordinary
-  work; the flag and daemon are left untouched.
+  work; the flag and its supervision owner are left untouched.
+  Pi Pocket keeps routine wakes in the supervision session and still sends decisions, failures, credentials, and review-ready work to main; it grants no away authority.
+  A Pi Pocket server restart preserves the quiet record and reattaches that same session.
 
 ## Orthogonal to approval authority
 

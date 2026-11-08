@@ -4,8 +4,9 @@
  * once the session holds the home's lock, delivers each watcher wake as a follow-up, guards turn ends and tool calls
  * the way Firstmate's Pi extensions do, and offers the fm_watch_arm_pocket repair tool. Once the session holds the
  * lock it also starts the supervision branch: one linked Pi Pocket session per home, titled "Firstmate supervision",
- * that takes the routine wakes it may handle and records their outcomes in the durable store, which reach the main
- * session as processing requests (docs/pi-supervision-branch.md "Pi Pocket"). Every other session is untouched.
+ * that takes eligible wakes and records their outcomes in the durable store. Away and quiet postures reuse that
+ * session; away captain outcomes wait for the human return (docs/pi-supervision-branch.md "Pi Pocket"). Every other
+ * session is untouched.
  * Install it with Firstmate's bin/fm-pi-pocket-install.sh, then turn it on in Menu → Extensions.
  * Where Pi Pocket can present an extension's own inputs, /calm folds this session's operational inputs; the model still
  * reads each one in full, and the supervision session's own prompts stay ordinary messages.
@@ -21,6 +22,7 @@ import {
     defineTask,
     defineTool,
     GenerationTask,
+    LiveDoc,
     hook,
     section,
     ToolTask,
@@ -28,7 +30,7 @@ import {
     wrapTool,
 } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
-import type { ConversationHandle, ConversationId, HookApi, ToolExecutionApi, ToolRegistration, TaskRuntime, Tx } from "@earendil-works/pi-durable";
+import type { ConversationHandle, ConversationId, GenerationHooks, HookApi, ToolExecutionApi, ToolRegistration, TaskRuntime, Tx } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import type { Host } from "./_pocket.d.ts";
 
@@ -87,8 +89,9 @@ const BRANCH_TITLE = "Firstmate supervision";
 const REPORT_TOOL = "fm_branch_report";
 const OUTCOMES_TOOL = "fm_branch_outcomes";
 const PROCESSED_TOOL = "fm_branch_processed";
+const POSTURE_TOOL = "fm_posture_pocket";
 /** Supervisor-only tools: never offered to a task worker, and refused even when a call arrives anyway. */
-const SUPERVISOR_TOOLS = new Set([REPAIR_TOOL, REPORT_TOOL, OUTCOMES_TOOL, PROCESSED_TOOL]);
+const SUPERVISOR_TOOLS = new Set([REPAIR_TOOL, REPORT_TOOL, OUTCOMES_TOOL, PROCESSED_TOOL, POSTURE_TOOL]);
 /**
  * Context tools from the billion-context Pi Pocket extension. They only manage this session's own context and never
  * touch fleet state, so the branch may use them; every other tool stays blocked.
@@ -104,6 +107,8 @@ const BRANCH_TURN = ".pocket-branch-turn";
 const BRANCH_PROCESSING = ".pocket-branch-processing";
 const MIRROR_CURSOR = ".pocket-branch-mirror";
 const MIRROR_FEED = ".pocket-branch-mirror-feed";
+/** Last main input examined for a human return, so a tool round or a resumed run cannot return on the same input. */
+const POSTURE_INPUT = ".pocket-posture-input";
 /** The dialog mirror's bounds: per entry, per wake, and for a branch that has seen nothing of this main session yet. */
 const MIRROR_ENTRY_CHARS = 4000;
 const MIRROR_ITEMS = 40;
@@ -365,6 +370,33 @@ async function seatbelt(home: string, script: string, args: string[], fallback: 
     return ran.code === 2 ? denyReason(ran.stderr, fallback) : undefined;
 }
 
+function inputBody(text: string): string {
+    return text.trimStart().replace(/^\[from: [^\]\n]+\]\s*/, "");
+}
+
+/** Pocket's carriers are automatic input, even though their model role is user. Never parse their report bodies. */
+function automaticInput(text: string): boolean {
+    const body = inputBody(text);
+
+    return /^(?:\[via linked session(?:\s|\])|\[via PiP\]|\[scheduled\]|\[background\]|\u2063?(?:FIRSTMATE_OP:|FM_INJECT_MARK))/.test(body) ||
+        body.startsWith("\u2063") || body.startsWith(COMPACTED) || body.startsWith(GUARD_HEADER);
+}
+
+/** The record owns posture; the legacy flag uses fm_afk_mode's exact-first-line quiet rule. Damage retains away holds. */
+async function postureMode(home: string): Promise<"away" | "quiet" | undefined> {
+    const state = stateOf(home);
+    if (await isFile(join(state, ".afk-contract"))) {
+        const mode = await script(home, "fm-afk-contract.sh", ["mode"]);
+
+        return mode.code === 0 && mode.stdout.trim() === "quiet" ? "quiet" : "away";
+    }
+    const flag = await readFile(join(state, ".afk"), "utf8").catch(() => undefined);
+
+    if (flag !== undefined) return flag.split("\n")[0] === "quiet" ? "quiet" : "away";
+
+    return (await lstat(join(state, ".afk")).catch(() => undefined)) === undefined ? undefined : "away";
+}
+
 function userText(message: { role: string; content: unknown } | undefined): string {
     if (message?.role !== "user") return "";
     if (typeof message.content === "string") return message.content;
@@ -525,7 +557,7 @@ function capped(text: string): string {
 function mirrorItem(message: { role: string; content: unknown }): string | undefined {
     if (message.role === "user") {
         const text = userText(message).trim();
-        if (text === "" || text.startsWith(OPERATIONAL_PREFIX) || text.startsWith(COMPACTED) || text.startsWith(GUARD_HEADER)) return undefined;
+        if (text === "" || automaticInput(text)) return undefined;
 
         return `[captain] ${capped(text)}`;
     }
@@ -808,14 +840,26 @@ function createSupervision(host: Partial<Host>) {
             const branch = await ensure(runtime, context, home);
             if (branch === undefined || heldBack(main) !== undefined) return toMain;
             if (!(await activate(home))) return failed(home, pending, "its wake grant could not be activated");
-            const offer = fields((await dispatch(home, ["offer"], `${pending.text.split("\n")[0] ?? ""}\n`)).stdout);
+            const away = (await postureMode(home)) === "away";
+            const offer = fields((await dispatch(home, ["offer", ...(away ? ["--afk"] : [])], `${pending.text.split("\n")[0] ?? ""}\n`)).stdout);
             const rows = words(offer.get("rows"));
             if (offer.get("eligible") !== "1" || offer.get("corrupted") !== "0" || rows.length === 0) return toMain;
             const { feed, cursor } = await mirror(runtime, context, home);
             const feedPath = join(state, MIRROR_FEED);
             await writeFile(feedPath, feed, { mode: 0o600 });
-            const prompted = await dispatch(home, ["wake-prompt", "--report", REPORT_TOOL, "--mirror-file", feedPath], pending.text);
-            await rm(feedPath, { force: true });
+            const readbackPath = `${feedPath}-readback`;
+            let prompted: Ran;
+            try {
+                if (away) {
+                    const readback = await script(home, "fm-afk-contract.sh", ["readback"]);
+                    if (readback.code !== 0) return failed(home, pending, "its away record could not be read");
+                    await writeFile(readbackPath, readback.stdout, { mode: 0o600 });
+                }
+                prompted = await dispatch(home, ["wake-prompt", "--report", REPORT_TOOL, "--mirror-file", feedPath, ...(away ? ["--away", "--readback-file", readbackPath] : [])], pending.text);
+            } finally {
+                await rm(feedPath, { force: true });
+                await rm(readbackPath, { force: true });
+            }
             if (prompted.code !== 0 || prompted.stdout.trim() === "") return failed(home, pending, "its wake prompt could not be built");
             current = {
                 wake: pending.requestId,
@@ -873,6 +917,11 @@ function createSupervision(host: Partial<Host>) {
      * as the Pi branch presents them. Routine outcomes stay in the store and the supervision session's own transcript.
      */
     async function present(home: string, main: ConversationId): Promise<Pending | undefined> {
+        // Hold-for-return: keep captain rows durable and unprocessed, including a request prepared before entry.
+        if ((await postureMode(home)) === "away") {
+            await rm(join(stateOf(home), BRANCH_PROCESSING), { force: true });
+            return undefined;
+        }
         if (!initialized.has(home)) {
             const ran = await outcomes(home, ["processed-init"]);
             if (ran.code !== 0) {
@@ -1086,10 +1135,11 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision, presente
      * Deliver `content` as one follow-up keyed on `requestId`: a re-driven delivery finds the submission it already
      * made. While the session is past a spend limit it waits rather than start a turn nobody may pay for.
      */
-    const deliver = async (runtime: WatchRuntime, context: Context, content: string, requestId: string, summary: string, stop?: AbortSignal) => {
+    const deliver = async (runtime: WatchRuntime, context: Context, content: string, requestId: string, summary: string, stop?: AbortSignal, outcomeHome?: string) => {
         const signal = signalsOf(runtime.signal, context.abortSignal, stop);
         let told = false;
         for (;;) {
+            if (outcomeHome !== undefined && (await postureMode(outcomeHome)) === "away") return;
             const reason = heldBack(runtime.conversationId);
             if (reason === undefined) break;
             if (!told) {
@@ -1122,7 +1172,8 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision, presente
         // Every wake goes to main from here on: no branch turn may keep rows from main's drain.
         await supervision.reconcile(home, []).catch(() => {});
         for (const pending of checkpoint.pending ?? []) {
-            await deliver(runtime, context, await contentOf(home, pending), pending.requestId, pendingSummary(pending));
+            if (pending.kind === "outcomes" && (await postureMode(home)) === "away") continue;
+            await deliver(runtime, context, await contentOf(home, pending), pending.requestId, pendingSummary(pending), undefined, pending.kind === "outcomes" ? home : undefined);
         }
         const requestId = requestFor(runtime.conversationId, `fm-watch-failed-${String(runtime.taskId)}-${checkpoint.seq}`);
         await deliver(runtime, context, await encode(home, "watcher", wakeText(failure)), requestId, failureSummary(failure));
@@ -1219,7 +1270,9 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision, presente
                             if (routed.handled) return { delivered: first.requestId, ...(routed.follow === undefined ? {} : { then: routed.follow }) };
                             return { delivered: first.requestId, then: { ...first, text: routed.text, main: true } };
                         }
-                        await deliver(runtime, context, await contentOf(home, first), first.requestId, pendingSummary(first), halt.signal);
+                        if (first.kind !== "outcomes" || (await postureMode(home)) !== "away") {
+                            await deliver(runtime, context, await contentOf(home, first), first.requestId, pendingSummary(first), halt.signal, first.kind === "outcomes" ? home : undefined);
+                        }
 
                         return { delivered: first.requestId };
                     };
@@ -2193,6 +2246,51 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             },
         });
 
+    const posture = defineTool({
+        name: POSTURE_TOOL,
+        description:
+            "Enter or refresh /afk (away) or /quiet in the main Firstmate Pocket conversation, without a terminal daemon. Records the exact away words and returns the announcement and read-back. Only real human input ends away mode; /quiet off ends quiet mode through the return procedure.",
+        parameters: Type.Object({
+            mode: Type.Union([Type.Literal("away"), Type.Literal("quiet")]),
+            words: Type.Optional(Type.String({ description: "The human's complete away words, verbatim; never infer or parse a mandate" })),
+            expectedReturn: Type.Optional(Type.String({ description: "Expected return in UTC ISO 8601, when the human supplied one" })),
+            spend: Type.Optional(Type.Integer({ minimum: 1, description: "Maximum ordinary tasks, only when the human supplied a cap" })),
+        }),
+        replay: "safe",
+        execute: async (args, api, context) => {
+            const home = await homeOf(api.env?.cwd);
+            if (home === undefined || (await branchOf(home, api.conversationId)) !== undefined || (await ownership(home, api.conversationId)) !== "owned") {
+                return say("posture unchanged: only the main Firstmate conversation that owns the fleet lock enters a posture", true);
+            }
+            const state = stateOf(home);
+            if (await isFile(join(state, ".afk-return-catchup"))) return say("posture unchanged: run bin/fm-afk-return.sh check and finish return catch-up before entering again", true);
+            if (args.mode === "quiet" && (await postureMode(home)) === "away") return say("posture unchanged: finish the /afk return before entering quiet mode", true);
+            const entryArgs = ["enter"];
+            if (args.words !== undefined) entryArgs.push("--words", args.words);
+            if (args.expectedReturn !== undefined) entryArgs.push("--expected-return", args.expectedReturn);
+            if (args.spend !== undefined) entryArgs.push("--spend", String(args.spend));
+            // The record owner is the only writer of .afk-contract. The flag keeps the same mode/epoch layout as the
+            // daemon's flag, but no launcher or daemon is involved in Pocket's supervision-session posture.
+            const entered = await api.memo<{ code: number | null; stdout: string; stderr: string }>("x.firstmate.posture-enter", context) ??
+                await api.memo("x.firstmate.posture-enter", await script(home, "fm-afk-contract.sh", entryArgs, { ...markerEnv(home, api.conversationId), FM_AFK_MODE: args.mode }), context);
+            if (entered.code !== 0) return say(`posture unchanged: ${entered.stderr.trim() || entered.stdout.trim()}`, true);
+            const epoch = await script(home, "fm-afk-contract.sh", ["field", "entered_epoch"]);
+            if (epoch.code !== 0 || !/^[0-9]+$/.test(epoch.stdout.trim())) return say("the posture record stands, but its entry time could not be read; inspect bin/fm-afk-contract.sh readback", true);
+            const flag = join(state, ".afk");
+            const staged = `${flag}.${randomUUID()}.tmp`;
+            try {
+                await writeFile(staged, `${args.mode}\n${epoch.stdout.trim()}\n`, { mode: 0o600 });
+                await rename(staged, flag);
+            } finally {
+                await rm(staged, { force: true });
+            }
+            // Cancels an outcome request prepared just before entry. It never acknowledges the stored outcomes.
+            if (args.mode === "away") await rm(join(state, BRANCH_PROCESSING), { force: true });
+
+            return say(`${entered.stdout.trim()}\nThe existing supervision session continues; no terminal daemon was started.`);
+        },
+    });
+
     const report = defineTool({
         name: REPORT_TOOL,
         description:
@@ -2273,6 +2371,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             if (home === undefined || (await ownership(home, api.conversationId)) !== "owned") {
                 return say("acknowledgement refused: this session does not own the fleet lock", true);
             }
+            if ((await postureMode(home)) === "away") return say("acknowledgement refused: captain outcomes wait for the human return while away", true);
             const active = await readJson<Processing>(join(stateOf(home), BRANCH_PROCESSING));
             if (active?.main !== Number(api.conversationId) || through > active.through) {
                 return say(`acknowledgement refused: seq ${String(through)} was not listed in the active processing request`, true);
@@ -2349,9 +2448,108 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         return { messages: [...messages, message] as never };
     };
 
+    /**
+     * Use this run's committed inputs, not the newest historical human message. In particular, a linked-session
+     * report is a user-role input but is not a return. The cursor also prevents a tool round from returning on the
+     * same human input that just entered a posture, including a natural-language /afk request.
+     */
+    const postureRequest = async (messages: Parameters<GenerationHooks["beforeRequest"]>[0]["messages"], api: HookApi, context: Context) => {
+        const home = await homeOf(await hookCwd(api, api.conversationId, context));
+        if (home === undefined || (await branchOf(home, api.conversationId)) !== undefined || (await ownership(home, api.conversationId)) !== "owned") return undefined;
+        const mode = await postureMode(home);
+        const live = await api.snapshot(LiveDoc, api.conversationId, context);
+        const first = live?.run?.first;
+        const cursorPath = join(stateOf(home), POSTURE_INPUT);
+        const cursor = await readJson<MirrorCursor>(cursorPath);
+        const after = cursor?.main === Number(api.conversationId) ? cursor.entry : 0;
+        let newest = after;
+        let humanReturn = false;
+        if (first !== undefined) {
+            let page = await api.entries({ minEntryId: first }, 200, undefined, context);
+            for (;;) {
+                for (const entry of page.items) {
+                    if (Number(entry.id) <= after || entry.kind === START_KIND || (entry.data as { summary?: string } | undefined)?.summary === "away-return") continue;
+                    for (const message of entry.model ?? []) {
+                        if (message.role !== "user") continue;
+                        newest = Math.max(newest, Number(entry.id));
+                        const text = userText(message);
+                        if (automaticInput(text)) continue;
+                        const body = inputBody(text);
+                        if (mode === "away" && !/^\/afk(?:\s|$)/.test(body)) humanReturn = true;
+                        if (mode === "quiet" && /^\/quiet\s+off\s*$/.test(body)) humanReturn = true;
+                    }
+                }
+                if (page.next === undefined) break;
+                page = await api.entries({ minEntryId: first }, 200, page.next, context);
+            }
+        }
+        // Intent precedes the side effect: a crash after archive but before memoizing its output still re-renders
+        // this same return, through the return owner's durable catch-up record rather than treating it as attended.
+        const key = "x.firstmate.human-return";
+        const returning = await api.memo<boolean>(key, context) ?? await api.memo(key, humanReturn, context);
+        let returned: { text: string } | undefined;
+        if (returning) {
+            returned = await api.memo<{ text: string }>(`${key}.brief`, context);
+            if (returned === undefined) {
+                const ran = await script(home, "fm-afk-return.sh", [], markerEnv(home, api.conversationId));
+                const body = `FIRSTMATE RETURN BRIEF\nThe human has returned. The return procedure ran before their message. Relay every section below in its emitted order, in captain outcome language. ${ran.code === 0 ? "Return catch-up is clear; then answer their message." : "Return catch-up is not clear: handle the listed blockers and run bin/fm-afk-return.sh check before ordinary fleet work."}\n\n${ran.stdout}\n${ran.stderr}`;
+                const brief = await encode(home, "away-supervisor", body);
+                const pending = await supervision.present(home, api.conversationId);
+                returned = await api.memo(`${key}.brief`, { text: pending === undefined ? brief : `${brief}\n\n${pending.text}` }, context);
+            }
+            // Persist the brief exactly once as model context, as well as supplying it to this prepared request.
+            const runtime = api as HookApi & Pick<WatchRuntime, "commit">;
+            await runtime.commit(async (tx) => {
+                const page = await tx.scanEntries({ conversationId: api.conversationId, ...(first === undefined ? {} : { minEntryId: first }) }, 200);
+                if (!page.items.some((entry) => (entry.data as { returnInput?: number } | undefined)?.returnInput === newest)) {
+                    await tx.appendEntry(api.conversationId, {
+                        kind: presented ? OPERATIONAL_KIND : "pi.user",
+                        data: { summary: "away-return", returnInput: newest },
+                        model: [{ role: "user", content: [{ type: "text", text: returned!.text }], timestamp: Date.now() }],
+                    });
+                }
+                return undefined;
+            }, context);
+        }
+        if (newest > after) await writeJson(cursorPath, { main: Number(api.conversationId), entry: newest } satisfies MirrorCursor);
+        if (returned !== undefined) {
+            if (messages.some((message) => userText(message) === returned.text)) return undefined;
+
+            return { messages: [...messages, { role: "user" as const, content: [{ type: "text" as const, text: returned.text }], timestamp: Date.now() }] };
+        }
+        if (mode === undefined) return undefined;
+        const parkedMessages = messages.map((message) => {
+            if (message.role !== "user") return message;
+            const text = userText(message);
+            if (/^\[via linked session(?:\s|\])/.test(inputBody(text))) {
+                return { ...message, content: [{ type: "text" as const, text: "[via linked session] AUTOMATIC LINKED-SESSION REPORT: this is not human input. The durable supervision outcome store owns captain outcomes; do not relay this automatic report or end the posture." }] };
+            }
+            if (mode === "away" && text.startsWith(`${OPERATIONAL_PREFIX}branch-outcome:`)) {
+                return { ...message, content: [{ type: "text" as const, text: "AUTOMATIC INPUT WHILE AWAY: captain outcomes remain stored for the human return. Do not acknowledge or present them now." }] };
+            }
+            return message;
+        });
+
+        const instruction = {
+            role: "system" as const,
+            content: "",
+            timestamp: Date.now(),
+            sections: {
+                firstmate_posture: mode === "quiet" ?
+                    "QUIET POSTURE: the quiet record still stands. Ordinary human chat does not end it; only a real human /quiet off does. Automatic linked-session reports, FIRSTMATE_OP inputs, scheduled inputs, and background-task notifications never exit it. Keep routine wakes in the existing supervision session and surface captain outcomes through the normal durable-outcome processing request, never by relaying an automatic linked-session report. Quiet mode grants no away authority. Never run bin/fm-afk-launch.sh or launch a terminal daemon." :
+                    "AUTOMATIC INPUT WHILE AWAY: the away record still stands. A [via linked session ...] report, a FIRSTMATE_OP input, a [scheduled] input, or a [background] notification is not a human return. Do not run the return procedure or present a linked-session report as a captain outcome. Main remains parked: leave captain outcomes in the durable outcome store for the return brief. Handle a declined supervision wake or a watcher failure under the existing away authority contract; those safety fallbacks still require action. Load the afk and away-quiet-supervision skills. Do not launch a terminal daemon or run bin/fm-afk-launch.sh under Pi Pocket.",
+            },
+        };
+        const system = parkedMessages.findIndex((message) => message.role === "system");
+
+        return { messages: system < 0 ? [instruction, ...parkedMessages] : parkedMessages.map((message, index) =>
+            index === system && message.role === "system" ? { ...message, sections: { ...message.sections, ...instruction.sections } } : message,
+        ) };
+    };
+
     return defineExtension({
         name: "firstmate",
-        tools: [repair, report, outcomesTool, processed],
+        tools: [repair, report, outcomesTool, processed, posture],
         tasks: [watch, workers.bridge],
         sections: [
             section("firstmate", async (input) => {
@@ -2361,7 +2559,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 if (home === undefined) return undefined;
                 if ((await branchOf(home, input.conversationId)) !== undefined) return branchPrompt(home);
 
-                return `The Firstmate Pi Pocket drop-in is active in this session. It marks every bash call with this session's Pi Pocket identity, runs the Firstmate watcher as a durable background task once this session holds the home's session lock, delivers each watcher wake as a follow-up input, and runs the session start itself, giving this session its digest, on the first request, after a server restart, and after a compaction. ${SHELL_MODEL} Repair a missing or failed watcher only with the ${REPAIR_TOOL} tool. The linked session "${BRANCH_TITLE}" is this home's supervision branch: it handles the routine wakes it may take, and its captain outcomes reach this session as processing requests to acknowledge with ${PROCESSED_TOOL}.`;
+                return `The Firstmate Pi Pocket drop-in is active in this session. It marks every bash call with this session's Pi Pocket identity, runs the Firstmate watcher as a durable background task once this session holds the home's session lock, delivers each watcher wake as a follow-up input, and runs the session start itself, giving this session its digest, on the first request, after a server restart, and after a compaction. ${SHELL_MODEL} Repair a missing or failed watcher only with the ${REPAIR_TOOL} tool. The linked session "${BRANCH_TITLE}" is this home's supervision branch: it handles eligible wakes, and its captain outcomes reach this session as processing requests to acknowledge with ${PROCESSED_TOOL}. Away and quiet modes reuse that session through ${POSTURE_TOOL}; load their skills and never run bin/fm-afk-launch.sh under Pi Pocket.`;
             }),
         ],
         wraps: [
@@ -2454,7 +2652,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                             block: `[subagent-dispatch] the firstmate primary delegates fleet work only through bin/fm-spawn.sh; Pi Pocket's ${call.name} tool starts work with no fleet record and no supervision.`,
                         };
                     }
-                    if (CODING_TOOLS.has(call.name) || [REPAIR_TOOL, REPORT_TOOL, OUTCOMES_TOOL, PROCESSED_TOOL].includes(call.name) || call.name.startsWith("mcp__")) {
+                    if (CODING_TOOLS.has(call.name) || SUPERVISOR_TOOLS.has(call.name) || call.name.startsWith("mcp__")) {
                         return undefined;
                     }
                     const block = await seatbelt(home, "fm-subagent-pretool-check.sh", ["--tool", call.name], "denied by the subagent-dispatch PreToolUse seatbelt");
@@ -2491,10 +2689,14 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                         };
                     }
                     const summary = messages.findLastIndex((message) => userText(message as never).startsWith(COMPACTED));
-                    if (summary < 0) return firstStart(messages, api, context);
+                    if (summary < 0) {
+                        const started = await firstStart(messages, api, context);
+
+                        return await postureRequest(started?.messages ?? messages, api, context) ?? started;
+                    }
                     const compaction = hash(userText(messages[summary] as never));
                     const after = messages.slice(summary + 1).some((message) => userText(message as never).startsWith(`${OPERATIONAL_PREFIX}session-start:`));
-                    if (after) return undefined;
+                    if (after) return postureRequest(messages, api, context);
                     const home = await homeOf(await hookCwd(api, api.conversationId, context));
                     // The supervision session never owns the lock, so it never gets the digest.
                     if (home === undefined || (await ownership(home, api.conversationId)) !== "owned") return undefined;
@@ -2514,7 +2716,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                         context,
                     );
 
-                    return undefined;
+                    return postureRequest(messages, api, context);
                 },
                 // A turn that would end with supervision off continues once with the guard's text.
                 onYield: async (_answer, api, context) => {

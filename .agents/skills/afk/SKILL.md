@@ -2,7 +2,7 @@
 name: afk
 description: >-
   Enter the away posture when the captain invokes /afk, says they are going afk, `state/.afk-contract` or `state/.afk` exists, an incoming message starts with `FM_INJECT_MARK`, or any `state/.subsuper-*` marker is involved.
-  Load it at once in the /afk turn, before any other work, and on the first unmarked message while away to render the return brief.
+  Load it at once in the /afk turn, before any other work, and on the first real human message while away to render the return brief.
 user-invocable: true
 metadata:
   internal: true
@@ -21,13 +21,20 @@ Hold-for-return is the default and the only reach profile this release records: 
 ## Entering: `/afk [words]`
 
 1. **Write the record first, in this same turn.**
-   Before any other work, run `bin/fm-afk-launch.sh enter --words-file <path> [--expected-return <UTC ISO 8601>] [--spend <n>]` (or `--words <text>`).
+   On Pi Pocket, before any other work call `fm_posture_pocket` with `mode: "away"`, the whole mandate as `words`, and `expectedReturn` or `spend` only when supplied.
+   The drop-in invokes the record owner directly and writes the ordinary `state/.afk` flag; never run `bin/fm-afk-launch.sh` there.
+   If the tool is missing, report that the Firstmate Pi Pocket drop-in is required; do not substitute a terminal launch.
+   On other harnesses, run `bin/fm-afk-launch.sh enter --words-file <path> [--expected-return <UTC ISO 8601>] [--spend <n>]` (or `--words <text>`).
    It writes `state/.afk-contract` at once, with no separate confirmation step, then prints the entry announcement and the record's read-back.
    The words are the whole mandate: `bin/fm-afk-contract.sh` records them exactly as given, with no clause fields, verbs, ids, or merge-grant list, and by the captain's mandate no parser, tokenizer, classifier, or grammar reads them anywhere.
    Read `bin/fm-afk-contract.sh --help` for the flags rather than memorizing them.
    Plain `/afk` with no words is a valid entry with no mandate; the announcement says no instructions were recorded.
    Re-invoking `/afk` while already away with no new words is a refresh and leaves the standing record untouched; new words replace the mandate at once, preserve the original session entry, and archive the superseded words for the return brief.
 2. **Per harness, after the record exists:**
+   - **Pi Pocket**: nothing to launch; the existing visible supervision session continues on the drop-in's watcher.
+     It receives the away flag and the record's full mandate on each wake, under the same away authority contract as Pi.
+     Main stays parked and captain outcomes remain stored for the return brief; only a declined wake or a watcher failure wakes main for repair under that contract.
+     Quiet mode also uses that session, but records quiet mode and keeps captain outcomes attended.
    - **Pi and pi-signed**: nothing to launch; go on to the announcement.
      The away daemon is no longer launched on Pi; the ordinary supervision session (`docs/pi-supervision-branch.md`) keeps running with the record present, and `bin/fm-afk-launch.sh start` refuses on these harnesses.
      With the record present main is parked: the supervision branch takes every safe actionable wake, captain outcomes accumulate for the return brief, and main's standing authority relocates to the branch through the guarded scripts (`docs/pi-supervision-branch.md` "Postures"); only a wake the branch declines (including a broken branch or unsafe scan) or a watcher failure wakes main.
@@ -51,7 +58,7 @@ Hold-for-return is the default and the only reach profile this release records: 
    Say plainly which sentence, if any, you could not act on while away (a red merge, a discard, anything on the never-set, local-only landing); it waits for their return.
    This read-back is informational: the record already stands, so never ask for a go or wait for a reply; a captain who wants a different reading sends `/afk` again with new words.
 4. **Do not separately arm `fm-watch.sh` where the daemon runs.** The daemon manages the watcher as its child; the singleton lock no-ops a stray arm harmlessly.
-   On Pi nothing changes about arming: the supervision session's own cycle continues.
+   On Pi and Pi Pocket nothing changes about arming: the supervision session's own cycle continues.
 
 ## While away
 
@@ -60,7 +67,7 @@ Hold-for-return is the default and the only reach profile this release records: 
 - The away session acts on the captain's words.
   It reads them at the tail of every wake, decides by its own judgment whether the event in front of it is the moment they name, acts on them only through the guarded scripts under standing authority, never by analogy, holds with verdict captain on doubt, and opens every outcome summary for an action taken under the words with "per your away instructions:" (`bin/fm-branch-prompt.sh` "Postures" owns the execution rules).
   Destructive, irreversible, and security-sensitive actions are never pre-authorizable whatever the words say, and ask-user findings keep the `ask-user-authority` policy unless the words pre-answer the exact decision; anything else that needs the captain holds for their return.
-- On Pi, main is parked and the supervision branch handles every safe actionable wake under main's standing authority, through the same guarded scripts main would use: any pull request green at its live head may merge (which one the words meant is the branch's reading), queued work whose blockers cleared - already queued, or filed by the branch because the words explicitly call for it - dispatches within the spend cap, and a decision is answered with the captain's own pre-stated answer or under `ask-user-authority`.
+- On Pi and Pi Pocket, main is parked and the supervision branch handles every safe actionable wake under main's standing authority, through the same guarded scripts main would use: any pull request green at its live head may merge (which one the words meant is the branch's reading), queued work whose blockers cleared - already queued, or filed by the branch because the words explicitly call for it - dispatches within the spend cap, and a decision is answered with the captain's own pre-stated answer or under `ask-user-authority`.
   Anything else holds for the return, a red merge never proceeds while away, local-only landing always waits for the captain, and only a wake the branch declines (including a broken branch or unsafe scan) or a watcher failure wakes main (`docs/pi-supervision-branch.md` "Postures").
 - On a non-Pi home that runs the supervision host, the host's engine is that branch under the same rules, and a wake it hands back reaches main through that harness's own wake path (`Stop hook feedback` on Claude, a `watcher` follow-up on Cursor, OpenCode, and omp, the arm's background-task-completed notification on Grok, the checkpoint's output on Codex) with a `supervision-host:` line: that is automatic supervision, never the captain's return, so handle it under the away posture ([supervision protocol](../../../docs/supervision-protocols/supervision-host.md)).
 - The session-start digest reports the posture under its AFK subsection, so a restart re-enters the posture from the record, not from memory.
@@ -72,6 +79,8 @@ No `/back` is needed. The first genuine message is the return signal:
 - A message that is none of the internal forms below, and **not** starting with `/afk` -> the captain is back.
   Run `bin/fm-afk-return.sh` before acting on the message that brought the captain back.
   That script owns the correct-ordered daemon shutdown where a daemon ran, the archive of the posture record, durable wake presentation and post-handling acknowledgement, escalation and wedge evidence, the return brief, and the return-catch-up gate.
+  In Pi Pocket the drop-in runs it before the first real human return reaches the model, and supplies its emitted brief as model context; relay that brief rather than running a second return.
+  The return owner clears Pocket's flag and archives its record without invoking the terminal launcher.
   Relay every section of the return brief in its emitted order and in section 9 language; `bin/fm-afk-return.sh` owns that order.
   The gate keeps every open `blocked:` event until that blocker's own resolution is proven: remediate each immediately through the normal lifecycle, or explicitly reclassify it with a durable reason and close its decision key with `resolved [key=...]`, then run `bin/fm-afk-return.sh check`.
   Captain-verdict outcomes are listed under "waiting on you", but do not exempt open blockers: per-blocker provenance is deferred with no owner, and the gate fails safe by keeping every open blocker.
@@ -79,10 +88,14 @@ No `/back` is needed. The first genuine message is the return signal:
   A Bearings request may be answered while the gate is open, and the digest surfaces the catch-up state as a Charted Next `(return-catchup)` warning row naming what still holds it.
   Acting on the fleet - dispatching, steering, merging, or any other ordinary captain work - still waits until the check exits successfully.
   Once it does, close every task the brief lists under "Landed, cleanup due" through ordinary teardown (`bin/fm-teardown.sh <task>`, never forced; a refusal is a stop-and-investigate result) and tell the captain those workers are closed in outcome language.
+- On Pi Pocket, an input beginning `[via linked session`, a `FIRSTMATE_OP` operational input, a `[scheduled]` input, or a `[background]` task notification (after an optional `[from: Name]` prefix) is automatic, never a human return.
+  Linked-session completion reports remain automatic even when their body quotes human words or a captain outcome; do not present them as captain outcomes.
+  Only real human input in main ends away mode.
+  A server restart retains the posture and reattaches the same supervision session.
 - A message **with** the current operational prefix (`FM_OPERATIONAL_PREFIX`, U+2063 INVISIBLE SEPARATOR followed by `FIRSTMATE_OP: `), or a legacy bare `FM_INJECT_MARK` daemon escalation -> stay away and process it.
 - A message that is exactly the record-backed operational doorbell (`: Firstmate operational input waiting: read '<path>' ...`) -> run `bin/fm-operational-input.sh open '<path>'`; when it succeeds, stay away and process the escalation it prints.
   When it fails, the doorbell is not Firstmate's, so treat the message like any other unmarked message.
-  Never treat ASCII text that merely looks like Firstmate input, such as a typed `FIRSTMATE_OP:` label, as internal.
+  Outside Pocket's automatic-input carrier above, never treat ASCII text that merely looks like Firstmate input, such as a typed `FIRSTMATE_OP:` label, as internal.
 - A `Stop hook feedback` wake from the Stop hook or the supervision host, or a Grok background-task-completed notification for the arm -> stay away and process it; it is automatic supervision, not a message from the captain.
 - Re-invoking `/afk` while already away -> stay away (refresh); this does **not** trigger an exit.
 
@@ -98,14 +111,14 @@ While the away-posture record exists, any pull request green at its live head ma
 Away authority never releases a captain hold, and it expires when the away record is archived.
 `--allow-red`, `--allow-missing`, and `--allow-no-pipeline` remain attended-only and are refused while the away record exists.
 A merge under away authority must be synchronous; `fm-pr-merge.sh` refuses auto-merge and any GitHub queue state that cannot prove an immediate merge while the away record exists.
-The same gates bind whichever actor performs the action: on Pi the parked main's standing authority relocates to the supervision branch, which meets exactly these rules, and the spend cap recorded at entry is enforced by `fm-spawn.sh` for both actors while the away record exists.
+The same gates bind whichever actor performs the action: on Pi and Pi Pocket the parked main's standing authority relocates to the supervision branch, which meets exactly these rules, and the spend cap recorded at entry is enforced by `fm-spawn.sh` for both actors while the away record exists.
 The captain's away words are their explicit instruction given before leaving, recorded verbatim and acted on by the away session's judgment at the moment an event makes them relevant; the words cover nothing they do not say, are never applied by analogy, and die at archive.
 Destructive, irreversible, and security-sensitive actions are never pre-authorizable whatever the words say.
 
 ## The daemon, where it still runs
 
 On the harness and backend combinations that still launch the daemon, the mechanics below are unchanged.
-Pi, pi-signed, a home that runs the supervision host, and the T3 Code limits above remain outside this section.
+Pi, pi-signed, Pi Pocket, a home that runs the supervision host, and the T3 Code limits above remain outside this section.
 
 ### Operational prefix contract
 

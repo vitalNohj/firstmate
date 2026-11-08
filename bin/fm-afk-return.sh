@@ -44,6 +44,10 @@
 # records carry the original entry boundary and superseded mandates are
 # included so the brief shows every instruction the window ran under.
 #
+# A lock-owning Pi Pocket conversation has no terminal daemon: return clears its
+# flag and archives its record directly, never through bin/fm-afk-launch.sh.
+# A recorded daemon on that home is a lifecycle contradiction, preserved for repair.
+# Other harnesses retain the launch owner's ordered shutdown.
 # The durable state/.afk-return-catchup file is written BEFORE daemon shutdown,
 # so a crash between stopping, wake presentation, and blocker handling fails
 # closed. It retains the presented wake, buffered-escalation, wedge-marker,
@@ -74,6 +78,8 @@ CONTRACT="$SCRIPT_DIR/fm-afk-contract.sh"
 # Functions only: decodes the stored hold reasons the catch-up listing shows.
 # shellcheck source=bin/fm-hold-reason-lib.sh
 . "$SCRIPT_DIR/fm-hold-reason-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 usage() {
   sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -345,7 +351,7 @@ health_snapshot() {  # <evidence-file>
       lines="GAP: watcher downtime was detected during the away window (recovery marker present)"
     fi
   fi
-  if [ -e "$STATE/.afk" ] && ! fm_afk_daemon_owns_supervision "$STATE"; then
+  if [ -e "$STATE/.afk" ] && ! fm_session_lock_recorded_pi_pocket "$STATE" && ! fm_afk_daemon_owns_supervision "$STATE"; then
     lines="$lines
 GAP: the away daemon was not running at return (the away flag stood with no live daemon)"
   fi
@@ -698,6 +704,25 @@ EOF
     "$((routine + captain))" "$routine" "$captain" "$live"
 }
 
+stop_posture() {
+  if ! fm_session_lock_recorded_pi_pocket "$STATE"; then
+    "$SCRIPT_DIR/fm-afk-launch.sh" stop
+    return
+  fi
+  fm_session_lock_owned_by_self "$STATE" || {
+    printf 'fm-afk-return: only the lock-owning Pi Pocket conversation can end this posture\n' >&2
+    return 1
+  }
+  if [ -e "$STATE/.afk-daemon-terminal" ] || [ -e "$STATE/.supervise-daemon.lock" ]; then
+    printf 'fm-afk-return: Pi Pocket has a recorded terminal daemon; lifecycle state preserved for repair\n' >&2
+    return 1
+  fi
+  rm -f "$STATE/.afk" || return 1
+  if fm_afk_contract_present "$STATE"; then
+    "$CONTRACT" archive || return
+  fi
+}
+
 return_reconcile() {
   local evidence blockers drain_err drained drain_ok=1 wake_ack_line wake_ack_through wake_ack_generation wedge escalations lifecycle_ok=1 since contract_since superseded_record retained_record
   local archived_contract tag kind text retained_live restored_epoch
@@ -754,7 +779,7 @@ $(cat "$evidence")
 EOF
 
   if [ -e "$STATE/.afk" ] || [ -e "$STATE/.afk-daemon-terminal" ] || fm_afk_contract_present "$STATE"; then
-    if ! "$SCRIPT_DIR/fm-afk-launch.sh" stop; then
+    if ! stop_posture; then
       lifecycle_ok=0
       append_evidence lifecycle 'away-mode shutdown failed; lifecycle state preserved for retry' "$evidence"
     fi
