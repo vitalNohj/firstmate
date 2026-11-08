@@ -107,7 +107,7 @@ fs.renameSync(file + ".tmp", file);
 pp_verbs() {  # the mutating verbs the fake took, in order (reads omitted)
   node -e '
 const lines = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean);
-const reads = new Set(["status", "state", "capture"]);
+const reads = new Set(["status", "preflight", "state", "capture"]);
 process.stdout.write(lines.map((l) => JSON.parse(l).verb).filter((v) => !reads.has(v)).join(" "));
 ' "$LOG"
 }
@@ -141,6 +141,17 @@ test_runtime_check_needs_bridge_and_identity() {
   [ "$rc" -ne 0 ] || fail "runtime check must refuse when the drop-in's bridge is not running"
   assert_contains "$out" "worker bridge is not running" "the refusal must name the missing bridge"
   pass "runtime check: needs the main session's identity and a live drop-in bridge"
+}
+
+test_preflight_client_options() {
+  local out rc
+  out=$(node "$ROOT/bin/fm-pi-pocket-bridge.mjs" preflight --help 2>&1); rc=$?
+  expect_code 0 "$rc" "preflight help must need no bridge"
+  assert_contains "$out" "--thinking E" "help must name the effort option"
+  out=$(node "$ROOT/bin/fm-pi-pocket-bridge.mjs" preflight --tool pi 2>&1); rc=$?
+  expect_code 2 "$rc" "an unknown preflight flag must be a usage error"
+  assert_contains "$out" "unknown flag --tool; valid preflight flags:" "the error must name supported flags"
+  pass "client: preflight help and unknown-flag errors need no bridge"
 }
 
 test_worker_lifecycle_without_stop() {
@@ -287,6 +298,76 @@ pp_spawn() {  # <id> [fm-spawn args...]
     "$ROOT/bin/fm-spawn.sh" "$id" "$PROJ" pi "$@" 2>&1
 }
 
+pp_control() {  # <id> <verb> [fm-control args...]
+  HOME="$CASE_DIR/user-home" PATH="$FB:$PATH" FM_PP_TREEHOUSE_LOG="$CASE_DIR/treehouse.log" FM_PP_WT="$WT" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+    FM_PROJECTS_OVERRIDE="$CASE_DIR/unused-projects" FM_SPAWN_NO_GUARD=1 "$ROOT/bin/fm-control.sh" "$@" 2>&1
+}
+
+test_relaunch_preflight_preserves_current_worker() {
+  local scenario id out rc before reason
+  local -a args
+  for scenario in harness model effort ultra account launch-env bridge; do
+    id=$(uid "ppsafe$scenario")
+    pp_case "relaunch-$scenario" '{"stop":true}'
+    pp_spawn_setup "$id"
+    out=$(pp_spawn "$id" --scout --model faux/faux-1 --effort low --backend pi-pocket); rc=$?
+    expect_code 0 "$rc" "the original worker must start"$'\n'"$out"
+    pp_set 'w.workers["100"].busy = true'
+    cp "$STATE/$id.meta" "$CASE_DIR/prior.meta"
+    cp "$DATA/$id/brief.md" "$CASE_DIR/prior.brief"
+    before=$(pp_verbs)
+    args=()
+    case "$scenario" in
+      harness) args=(--harness codex); reason="runs only Pi Pocket's own agent" ;;
+      model) args=(--model other/model); reason="not on the owner's subagent model list" ;;
+      effort) args=(--effort xhigh); reason="does not support the effort xhigh" ;;
+      ultra) args=(--effort ultra); reason="does not support the effort ultra" ;;
+      account) printf 'not a valid pin\n' > "$CONFIG/pi-account"; reason="cannot apply the pi worker account pin" ;;
+      launch-env) : > "$CONFIG/launch-env-allowlist"; reason="cannot apply config/launch-env-allowlist" ;;
+      bridge) fake_stop; rm -f "$STATE/pocket-bridge/heartbeat.json"; reason="worker bridge is not running" ;;
+    esac
+    out=$(pp_control "$id" relaunch --note "a replacement that must refuse" "${args[@]}"); rc=$?
+    [ "$rc" -ne 0 ] || fail "$scenario must refuse before stopping the original worker"$'\n'"$out"
+    assert_contains "$out" "$reason" "$scenario must explain the refusal"
+    [ "$(pp_verbs)" = "$before" ] || fail "$scenario must not mutate any Pocket worker"$'\n'"$out"
+    [ "$(pp_world 'w.workers["100"].busy')" = true ] || fail "$scenario must leave the original run active"
+    [ "$(pp_world 'w.workers["100"].archived')" = undefined ] || fail "$scenario must not archive the original worker"
+    [ "$(pp_world 'w.workers["100"].retired')" = undefined ] || fail "$scenario must not retire the original worker"
+    cmp -s "$CASE_DIR/prior.meta" "$STATE/$id.meta" || fail "$scenario must preserve the original task binding"
+    cmp -s "$CASE_DIR/prior.brief" "$DATA/$id/brief.md" || fail "$scenario must not record a replacement note"
+    [ -z "$(find "$STATE" -name '*.note' -print)" ] || fail "$scenario must refuse before recording a progress note"
+    pass "Pocket relaunch preflight: $scenario refusal leaves the original worker running and unarchived"
+  done
+}
+
+test_spawn_preflight_refuses_before_lease() {
+  local scenario id out rc reason
+  local -a args
+  for scenario in harness model effort held account launch-env raw; do
+    id=$(uid "ppintake$scenario")
+    pp_case "intake-$scenario"
+    pp_spawn_setup "$id"
+    args=()
+    case "$scenario" in
+      harness) args=(--harness pi-signed); reason="runs only Pi Pocket's own agent" ;;
+      model) args=(--model other/model); reason="not on the owner's subagent model list" ;;
+      effort) args=(--effort xhigh); reason="does not support the effort xhigh" ;;
+      held) pp_set 'w.held = "the session budget is spent"'; reason="Pi Pocket holds this session back" ;;
+      account) printf 'not a valid pin\n' > "$CONFIG/pi-account"; reason="cannot apply the pi worker account pin" ;;
+      launch-env) : > "$CONFIG/launch-env-allowlist"; reason="cannot apply config/launch-env-allowlist" ;;
+      raw) args=(--harness "pi --no-extensions"); reason="cannot run a raw launch command" ;;
+    esac
+    out=$(pp_spawn "$id" --scout --backend pi-pocket "${args[@]}"); rc=$?
+    [ "$rc" -ne 0 ] || fail "$scenario intake must refuse"$'\n'"$out"
+    assert_contains "$out" "$reason" "$scenario intake must explain the refusal"
+    assert_absent "$STATE/$id.meta" "$scenario intake must not publish a task"
+    [ ! -s "$CASE_DIR/treehouse.log" ] || fail "$scenario intake must not lease or create a worktree"
+    [ -z "$(pp_verbs)" ] || fail "$scenario intake must not start a session"
+    pass "Pocket intake preflight: $scenario refusal happens before a worktree lease or session start"
+  done
+}
+
 test_spawn_starts_session_and_submits_brief() {
   local id out rc
   id=$(uid ppspawn)
@@ -397,7 +478,7 @@ test_spawn_refuses_without_bridge_and_never_falls_back() {
 test_spawn_refused_start_returns_lease() {
   local id out rc
   id=$(uid ppheld)
-  pp_case spawn-held '{"held":"the session budget is spent"}'
+  pp_case spawn-held '{"startHeld":"the session budget is spent"}'
   pp_spawn_setup "$id"
   out=$(pp_spawn "$id" --scout --model faux/faux-1 --backend pi-pocket); rc=$?
   [ "$rc" -ne 0 ] || fail "a held spawn must refuse"$'\n'"$out"
@@ -440,8 +521,11 @@ test_spawn_refuses_secondmate_and_other_harness() {
   pass "fm-spawn --backend pi-pocket: refuses a harness other than pi"
 }
 
+test_relaunch_preflight_preserves_current_worker
+test_spawn_preflight_refuses_before_lease
 test_registered_explicit_only
 test_runtime_check_needs_bridge_and_identity
+test_preflight_client_options
 test_worker_lifecycle_without_stop
 test_kill_with_stop_archives
 test_model_and_spend_refusals

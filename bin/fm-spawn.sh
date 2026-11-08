@@ -2973,6 +2973,12 @@ case "$ARG3" in
   ;;
 esac
 
+# Pocket must reject incompatible profiles before native runtime discovery,
+# account checks, or provisioning. Its server is the model/effort authority.
+if [ "$BACKEND" = pi-pocket ]; then
+  fm_backend_pi_pocket_preflight "$HARNESS" "$MODEL" "$EFFORT" "$CONFIG" "$RAW_LAUNCH" || exit 1
+fi
+
 # muse, gemini, agy, devin, commandcode, polytoken, and cortex are verified as CREWMATE/SCOUT adapters only. A secondmate is
 # a firstmate instance, so it needs a primary supervision protocol.
 # gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
@@ -3143,7 +3149,7 @@ fi
 fm_backend_validate_harness "$BACKEND" "$HARNESS" || exit 1
 # Ultra is an explicit native capability, never a Pi thinking-level alias.
 # Validate the fully resolved profile before worktree or endpoint provisioning.
-if [ "$EFFORT" = ultra ]; then
+if [ "$EFFORT" = ultra ] && [ "$BACKEND" != pi-pocket ]; then
   "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$HARNESS" "$MODEL" "$EFFORT" || exit 1
   [ "$RAW_LAUNCH" = 0 ] || {
     echo "error: --effort ultra requires the canonical --harness pi or pi-signed launch so its native flag cannot be omitted" >&2
@@ -3215,21 +3221,10 @@ if [ "$BACKEND" = t3code ]; then
     exit 1
   fi
 fi
-# Pi Pocket starts the worker itself, on the owner's own accounts and its own
-# environment, so the same launch settings refuse here too.
+# Recheck local launch settings after account resolution as well: a pin that
+# appeared since Pocket preflight must not be silently ignored.
 if [ "$BACKEND" = pi-pocket ]; then
-  if [ "$RAW_LAUNCH" = 1 ]; then
-    echo "error: backend=pi-pocket cannot run a raw launch command because Pi Pocket starts the agent itself; pass the pi harness or choose another backend" >&2
-    exit 1
-  fi
-  if [ "$LAUNCH_ENV_ENABLED" = 1 ]; then
-    echo "error: backend=pi-pocket cannot apply config/launch-env-allowlist because Pi Pocket starts the agent with its own server's environment; remove that file or choose another backend" >&2
-    exit 1
-  fi
-  if [ -n "$WORKER_ACCOUNT" ]; then
-    echo "error: backend=pi-pocket cannot apply the $HARNESS worker account pin because Pi Pocket's owner accounts run the worker; remove the pin or choose another backend" >&2
-    exit 1
-  fi
+  fm_backend_pi_pocket_launch_settings_check "$HARNESS" "$CONFIG" "$RAW_LAUNCH" || exit 1
 fi
 if [ -n "$WORKER_ACCOUNT" ] && [ "$HARNESS" = claude ]; then
   if [ -n "$WORKER_ACCOUNT_ROOT" ]; then

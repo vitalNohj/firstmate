@@ -1348,7 +1348,7 @@ const BRIDGE_POLL_MS = positive("FM_POCKET_BRIDGE_POLL_MS", 250);
 const BRIDGE_RECONCILE_MS = positive("FM_POCKET_BRIDGE_RECONCILE_MS", 15000);
 const BRIDGE_REQUEST_LIMIT = 1024 * 1024;
 /** The branch never starts a worker, including a relaunch; new bridge verbs must opt in to branch access. */
-const BRANCH_BRIDGE_VERBS = new Set(["status", "state", "capture", "send", "interrupt", "configure", "kill"]);
+const BRANCH_BRIDGE_VERBS = new Set(["status", "preflight", "state", "capture", "send", "interrupt", "configure", "kill"]);
 /** The first message of a worker session: linkedSessions.start fences it, so it carries no task; the brief follows unfenced. */
 const WORKER_FIRST_MESSAGE =
     "Firstmate is starting a task worker in this session. Its task instructions follow as the next message; do nothing until they arrive.";
@@ -1393,7 +1393,7 @@ type WorkerRecord = {
 type BridgeRequest = {
     v: 1;
     id: string;
-    verb: "spawn" | "configure" | "send" | "interrupt" | "capture" | "state" | "kill" | "status";
+    verb: "spawn" | "preflight" | "configure" | "send" | "interrupt" | "capture" | "state" | "kill" | "status";
     server: string;
     conversation: string;
     pid: number;
@@ -1684,15 +1684,31 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         return (await api.list(record.main as unknown as ConversationId)).find((row) => row.address === record.address);
     }
 
-    async function spawnWorker(home: string, main: ConversationId, request: BridgeRequest): Promise<BridgeResult> {
+    /** Read-only admission checks shared by preflight and the actual start. */
+    function startApi(main: ConversationId): LinkedApi | BridgeResult {
         const api = linked();
         if (typeof api?.start !== "function") return refuse("unsupported", "this Pi Pocket has no linked sessions, which Pocket workers need");
+        const held = heldBack(main);
+        if (held !== undefined) return refuse("held", `Pi Pocket holds this session back: ${held}`);
+
+        return api;
+    }
+
+    async function preflight(main: ConversationId, request: BridgeRequest): Promise<BridgeResult> {
+        const api = startApi(main);
+        if ("ok" in api) return api;
+        const chosen = await selection(request.model, request.thinking);
+
+        return "ok" in chosen ? chosen : { ok: true, ...chosen };
+    }
+
+    async function spawnWorker(home: string, main: ConversationId, request: BridgeRequest): Promise<BridgeResult> {
+        const api = startApi(main);
+        if ("ok" in api) return api;
         const task = request.task;
         if (!validTask(task)) return refuse("invalid", "spawn needs a valid task id");
         const cwd = typeof request.cwd === "string" ? request.cwd : "";
         if (!cwd.startsWith("/") || !(await stat(cwd).catch(() => undefined))?.isDirectory()) return refuse("invalid", `the worker folder ${cwd} is not a directory`);
-        const held = heldBack(main);
-        if (held !== undefined) return refuse("held", `Pi Pocket holds this session back: ${held}`);
         const env = workerEnv(request.env, home);
         const excludeTools = Array.isArray(request.excludeTools) ? request.excludeTools.filter((name): name is string => typeof name === "string" && name !== "") : [];
         const existing = await byTask(home, task);
@@ -1771,6 +1787,7 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
             const api = linked();
             return { ok: true, pocketVersion: host.pocketVersion ?? "", stop: typeof api?.stop === "function" && typeof api.archive === "function" };
         }
+        if (request.verb === "preflight") return preflight(main, request);
         if (request.verb === "spawn") return spawnWorker(home, main, request);
         const record = await bySessionIn(home, request.session);
         if (record === undefined) {

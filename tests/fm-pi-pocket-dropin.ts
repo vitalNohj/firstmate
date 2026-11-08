@@ -6,7 +6,7 @@
 //   FM_PI_POCKET_DROPIN    the drop-in file under test
 // Run with `--child <dataDir> <home>`, the file is instead the server that experiment (b) kills mid-delivery.
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import {
     chmodSync,
@@ -17,6 +17,7 @@ import {
     mkdtempSync,
     readFileSync,
     renameSync,
+    rmSync,
     statSync,
     writeFileSync,
 } from "node:fs";
@@ -1197,6 +1198,9 @@ test("the supervision session can inspect, steer, interrupt, and kill Pocket wor
     const status = await branchCall("status");
     assert.equal(status.code, 0, status.out);
     assert.equal(JSON.parse(status.out).ok, true);
+    const preflight = await sessionCommand(app, branch, `${client} preflight --state state --model faux/faux-1`);
+    assert.equal(preflight.code, 0, preflight.out);
+    assert.equal(JSON.parse(preflight.out).model, "faux/faux-1");
     const state = await branchCall("state");
     assert.equal(state.code, 0, state.out);
     assert.deepEqual(JSON.parse(state.out), { ok: true, state: "alive", busy: "idle" });
@@ -1362,6 +1366,110 @@ for (const mode of ["on", "only"]) {
         }
     });
 }
+
+test("Pocket worker relaunch preflight refuses before stopping or archiving the original session", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const task = "task-safe-relaunch";
+    const wt = worktree("worker-safe-relaunch");
+    const session = await spawnWorker(fmHome, id, task, wt);
+    await idle(app, session);
+    const meta = join(fmHome, "state", `${task}.meta`);
+    const brief = join(fmHome, "data", task, "brief.md");
+    mkdirSync(dirname(brief), { recursive: true });
+    writeFileSync(brief, "# Task\nPreserve this running worker.\n");
+    writeFileSync(meta, `project=fixture\nkind=scout\nwindow=fm-${task}\nendpoint_task_id=${task}\nbackend=pi-pocket\npocket_session=${String(session)}\nharness=pi\nmodel=faux/faux-1\neffort=default\nworktree=${wt}\n`);
+    const beforeMeta = readFileSync(meta, "utf8");
+    const beforeBrief = readFileSync(brief, "utf8");
+    assert.equal((await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "run fixture command:\nsleep 60"])).code, 0);
+    await until(() => workerRecord(fmHome, task)?.busy === true, "the original worker's long run", LONG);
+    const cases = [
+        { name: "harness", args: ["--harness", "codex"], reason: /runs only Pi Pocket's own agent/ },
+        { name: "model", args: ["--model", "faux/faux-2"], reason: /not on the owner's subagent model list/ },
+        { name: "effort", args: ["--effort", "xhigh"], reason: /does not support the effort xhigh/ },
+        { name: "account", args: [], reason: /cannot apply the pi worker account pin/ },
+        { name: "launch-env", args: [], reason: /cannot apply config\/launch-env-allowlist/ },
+        { name: "bridge", args: [], reason: /worker bridge is not running/ },
+    ];
+    for (const scenario of cases) {
+        if (scenario.name === "account") pin(fmHome, "pi-account", "not a valid pin");
+        if (scenario.name === "launch-env") pin(fmHome, "launch-env-allowlist", "");
+        const result = await new Promise<Called>((resolve) => {
+            execFile("bash", [join(fmHome, "bin", "fm-control.sh"), task, "relaunch", "--note", "must not be recorded", ...scenario.args], {
+                env: {
+                    ...process.env,
+                    FM_HOME: fmHome,
+                    FM_ROOT_OVERRIDE: fmHome,
+                    FM_STATE_OVERRIDE: join(fmHome, "state"),
+                    FM_DATA_OVERRIDE: join(fmHome, "data"),
+                    FM_CONFIG_OVERRIDE: join(fmHome, "config"),
+                    FM_PI_POCKET_CONVERSATION: String(id),
+                    FM_PI_POCKET_SERVER_PID: String(process.pid),
+                    FM_PI_POCKET_BRIDGE_TOKEN: bridgeToken,
+                    ...(scenario.name === "bridge" ? { FM_POCKET_BRIDGE_HEARTBEAT_MAX_MS: "0" } : {}),
+                },
+            }, (error, out, err) => resolve({ code: error === null ? 0 : typeof error.code === "number" ? error.code : -1, out, err }));
+        });
+        assert.notEqual(result.code, 0, `${scenario.name}: ${result.out}${result.err}`);
+        assert.match(result.err, scenario.reason, scenario.name);
+        assert.equal(workerRecord(fmHome, task)?.busy, true, `${scenario.name} leaves the original worker running`);
+        assert.notEqual(workerRecord(fmHome, task)?.archived, true, `${scenario.name} never archives the original worker`);
+        assert.notEqual(workerRecord(fmHome, task)?.retired, true, `${scenario.name} never retires the original worker`);
+        assert.notEqual(app.sessions().find((row: { id: unknown }) => row.id === session)?.archived, true, `${scenario.name} leaves the actual Pocket session unarchived`);
+        assert.equal(readFileSync(meta, "utf8"), beforeMeta, `${scenario.name} preserves the task binding`);
+        assert.equal(readFileSync(brief, "utf8"), beforeBrief, `${scenario.name} preserves the original instructions`);
+        rmSync(join(fmHome, "config", "pi-account"), { force: true });
+        rmSync(join(fmHome, "config", "launch-env-allowlist"), { force: true });
+    }
+});
+
+test("Pocket worker preflight is read-only and shares model, availability, and effort refusals with start", { timeout: 90_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const wt = worktree("worker-preflight");
+    const session = await spawnWorker(fmHome, id, "task-preflight", wt);
+    await idle(app, session);
+    assert.equal((await bridgeCall(fmHome, id, ["send", "--session", String(session), "--text", "work for a long time"])).code, 0);
+    await until(() => workerRecord(fmHome, "task-preflight")?.busy === true, "the original worker's run", LONG);
+    const before = readFileSync(join(fmHome, "state", "pocket-bridge", "workers", "task-preflight.json"), "utf8");
+    const sessions = app.sessions().length;
+    const valid = await bridgeCall(fmHome, id, ["preflight", "--model", "faux/faux-1"]);
+    assert.equal(valid.code, 0, valid.err);
+    assert.deepEqual(JSON.parse(valid.out), { ok: true, model: "faux/faux-1" });
+    const inherited = await bridgeCall(fmHome, id, ["preflight"]);
+    assert.equal(inherited.code, 0, inherited.err);
+    assert.equal(JSON.parse(inherited.out).model, "faux/faux-1");
+
+    const unlisted = await bridgeCall(fmHome, id, ["preflight", "--model", "faux/faux-2"]);
+    assert.equal(unlisted.code, 3, unlisted.err);
+    assert.match(unlisted.err, /model: the model faux\/faux-2 is not on the owner's subagent model list/);
+    const effort = await bridgeCall(fmHome, id, ["preflight", "--model", "faux/faux-1", "--thinking", "xhigh"]);
+    assert.equal(effort.code, 3, effort.err);
+    assert.match(effort.err, /effort: the model faux\/faux-1 does not support the effort xhigh/);
+    const startEffort = await bridgeCall(fmHome, id, ["spawn", "--task", "task-effort", "--cwd", wt, "--model", "faux/faux-1", "--thinking", "xhigh"]);
+    assert.equal(startEffort.code, 3, startEffort.err);
+    assert.equal(startEffort.err, effort.err, "start rechecks the same effort rule");
+
+    assert.equal(readFileSync(join(fmHome, "state", "pocket-bridge", "workers", "task-preflight.json"), "utf8"), before, "preflight never rewrites the original worker record");
+    assert.equal(workerRecord(fmHome, "task-preflight")?.busy, true, "the original run stays active");
+    const unavailable = mock.method(app.providers, "problem", async () => "its sign-in expired");
+    const unusable = await bridgeCall(fmHome, id, ["preflight", "--model", "faux/faux-1"]);
+    assert.equal(unusable.code, 3, unusable.err);
+    assert.match(unusable.err, /model: Pi Pocket cannot use the model faux\/faux-1 now/);
+    unavailable.mock.restore();
+    await app.setSubagentModels(owner(app), []);
+    const empty = await bridgeCall(fmHome, id, ["preflight"]);
+    assert.equal(empty.code, 3, empty.err);
+    assert.match(empty.err, /subagent model list in Pi Pocket is empty/);
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await recordCost(app, id, 2);
+    await app.spend.setSessionBudget(owner(app), id, 1);
+    const held = await bridgeCall(fmHome, id, ["preflight"]);
+    assert.equal(held.code, 3, held.err);
+    assert.match(held.err, /held: Pi Pocket holds this session back:/);
+
+    assert.equal(app.sessions().length, sessions, "preflight and refused starts create no sessions");
+    const original = app.sessions().find((row: { id: unknown }) => row.id === session)!;
+    assert.notEqual(original.archived, true, "the original worker stays unarchived");
+});
 
 test("Pocket worker submits refuse a model off the owner's list and a spend hold, and a spawn refuses an unlisted model, a hold, and plan mode", { timeout: 90_000 }, async () => {
     const { app, id, fmHome } = await workerMain();

@@ -66,6 +66,47 @@ fm_backend_pi_pocket_runtime_check() {
   fm_backend_pi_pocket_bridge status >/dev/null
 }
 
+# Local-only launch settings Pocket cannot apply. Presence alone refuses a
+# pin, including a malformed one, without consulting native credentials.
+fm_backend_pi_pocket_launch_settings_check() {  # <harness> <config-dir> [raw-launch 0|1]
+  local harness=$1 config=$2 raw=${3:-0} setting
+  if [ "$raw" != 0 ]; then
+    echo "error: backend=pi-pocket cannot run a raw launch command because Pi Pocket starts the agent itself; pass the pi harness or choose another backend" >&2
+    return 1
+  fi
+  fm_backend_pi_pocket_validate_harness "$harness" || return 1
+  setting=$(perl -MErrno=ENOENT -e '
+    for my $name ("launch-env-allowlist", "pi-account") {
+      my $file = "$ARGV[0]/$name";
+      if (lstat $file) { print $name; last }
+      die "error: cannot inspect configuration source at $file: $!\n" if $! != ENOENT;
+    }
+  ' -- "$config") || return 1
+  case "$setting" in
+    launch-env-allowlist)
+      echo "error: backend=pi-pocket cannot apply config/launch-env-allowlist because Pi Pocket starts the agent with its own server's environment; remove that file or choose another backend" >&2
+      return 1
+      ;;
+    pi-account)
+      echo "error: backend=pi-pocket cannot apply the pi worker account pin because Pi Pocket's owner accounts run the worker; remove the pin or choose another backend" >&2
+      return 1
+      ;;
+  esac
+}
+
+# fm_backend_pi_pocket_preflight <harness> <model> <effort> <config-dir>
+# [raw-launch 0|1]: read-only launch eligibility, before leasing a worktree or
+# stopping a worker. Pocket owns the model/effort checks; the real start
+# rechecks them because eligibility can change.
+fm_backend_pi_pocket_preflight() {
+  local harness=$1 model=$2 effort=$3 config=$4 raw=${5:-0}
+  fm_backend_pi_pocket_launch_settings_check "$harness" "$config" "$raw" || return 1
+  local -a args=(preflight)
+  [ -z "$model" ] || [ "$model" = default ] || args+=(--model "$model")
+  [ -z "$effort" ] || [ "$effort" = default ] || args+=(--thinking "$effort")
+  fm_backend_pi_pocket_bridge "${args[@]}" >/dev/null
+}
+
 # fm_backend_pi_pocket_session_start <task> <cwd> <model> <effort> <prompt>
 # [exclude-tools]: start the worker's linked session in <cwd> on <model> and
 # <effort> (default: the first usable model on the owner's subagent list),
