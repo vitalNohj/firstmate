@@ -16,7 +16,7 @@ When this conversation owns supervision:
 
 The turn-end guard is passive here: when `bin/fm-turnend-guard.sh` returns 2, the drop-in continues the turn once with the guard text, and it bounds that to one forced continuation per turn.
 
-Once this conversation holds the lock, the drop-in starts the supervision branch: a linked Pi Pocket session titled "Firstmate supervision" in this home's folder, listed under this conversation, which the captain can open to watch it work.
+On the first watcher cycle after this conversation takes the lock, the drop-in starts the supervision branch: a linked Pi Pocket session titled "Firstmate supervision" in this home's folder, listed under this conversation, which the captain can open to watch it work.
 The drop-in offers it each actionable wake first, and a wake it takes never reaches this conversation; wakes it may not take, and wakes it could not handle, arrive here as usual, with the reason when it failed.
 The lease and outcome-store contracts of `docs/pi-supervision-branch.md` apply: before this conversation steers, controls lifecycle, or cleans up a task, claim its lease with `bin/fm-lease.sh claim <task>` and release it afterwards; a refused claim means the branch is acting on that task right now.
 In attended and quiet modes, the branch's captain outcomes arrive here as a supervision processing request; process it, then call `fm_branch_processed` with the `through` it names exactly once, because an outcome that is not acknowledged is presented again.

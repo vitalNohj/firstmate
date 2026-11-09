@@ -2410,7 +2410,7 @@ if [ "$RELAUNCH" -eq 0 ]; then
     exit 1
   fi
   if [ "$BACKEND" = pi-pocket ] && [ "$KIND" = secondmate ]; then
-    echo "error: backend=pi-pocket runs ship and scout workers only; a secondmate needs a top-level session, which Pi Pocket does not start for an extension" >&2
+    echo "error: backend=pi-pocket runs ship and scout workers only; Pocket secondmate home, lock, parent-channel, and lifecycle integration is not implemented" >&2
     exit 1
   fi
   if [ "$BACKEND" = hc ] && [ "$KIND" = secondmate ]; then

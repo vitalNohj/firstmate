@@ -597,7 +597,7 @@ A Pi Pocket primary still defaults to herdr: Pocket workers are an opt-in (`conf
 
 Any value other than `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `rex`, `t3code`, `tern`, `hc`, or `pi-pocket` is rejected until another adapter is implemented and verified.
 `fm-spawn.sh` accepts `tmux`, `herdr`, `zellij`, `orca`, `cmux`, `paseo`, `rex`, `t3code`, `tern`, `hc`, and `pi-pocket` for ship and scout tasks; `backend=orca`, `backend=cmux`, `backend=paseo`, `backend=tern`, and `backend=hc` all still refuse `--secondmate` until secondmate launch semantics are designed for each, while `backend=t3code` supports secondmates and runs only the `claude` and `codex` harnesses.
-`backend=pi-pocket` refuses `--secondmate` (a secondmate needs a top-level session, which Pi Pocket does not start for an extension) and runs only the `pi` harness, Pi Pocket's own agent.
+`backend=pi-pocket` refuses `--secondmate` because Firstmate's Pocket secondmate home, lock, parent-channel, and lifecycle integration is not implemented, and runs only the `pi` harness, Pi Pocket's own agent.
 
 `codex-app` is not an accepted runtime backend yet; [`docs/codex-app-backend.md`](codex-app-backend.md) owns the Codex App boundary.
 

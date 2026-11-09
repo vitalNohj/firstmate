@@ -719,12 +719,13 @@ retire_busy_incarnation() {
 }
 
 # pi_pocket_exit: tear the worker session down through the drop-in and prove
-# it reads missing. Prints `already-stopped` or `stopped`.
+# it reads missing. Even an archived session needs a kill: archive can leave
+# repeating schedules running. Prints `already-stopped` or `stopped`.
 pi_pocket_exit() {
-  local state
+  local state result=stopped
   state=$(agent_state)
   case "$state" in
-    missing) printf 'already-stopped'; return 0 ;;
+    missing) result=already-stopped ;;
     alive|dead) ;;
     *) die "task $ID's Pi Pocket session reads '$state' rather than a positively classified state; refusing to tear it down blind" ;;
   esac
@@ -732,7 +733,7 @@ pi_pocket_exit() {
   state=$(agent_state)
   [ "$state" = missing ] || die "task $ID's Pi Pocket session still reads '$state' after its stop"
   retire_busy_incarnation
-  printf 'stopped'
+  printf '%s' "$result"
 }
 
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints

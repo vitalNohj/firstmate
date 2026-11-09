@@ -26,7 +26,7 @@ A spawn from anywhere else, or while the drop-in's bridge is not running, refuse
 - The `pi` harness.
   The worker is Pi Pocket's own agent, so `fm-spawn` refuses every other harness, a raw launch command, `config/launch-env-allowlist`, and a worker account pin: Pi Pocket runs the worker with its own environment and the owner's accounts.
 
-Secondmates are not supported: a secondmate needs a top-level session, and Pi Pocket does not start one for an extension.
+Secondmates are not supported: Pi Pocket can start top-level sessions, but Firstmate has not implemented their isolated home, lock, parent-channel, and lifecycle integration.
 
 ## The worker bridge
 
@@ -35,7 +35,7 @@ Its files live under `state/pocket-bridge/`, owner-only:
 
 | Path | Meaning |
 | --- | --- |
-| `heartbeat.json` | The serving server process, conversation, Pi Pocket version, and whether linked-session stop and archive exist; the client treats a stale one as "not running". |
+| `heartbeat.json` | The serving server process, conversation, Pi Pocket version, and whether linked-session stop and archive exist; refreshed independently while the invocation owns the home, so slow requests do not cause a false "not running" result. |
 | `requests/<id>.json` | One request the client wrote; the drop-in answers it once and removes it. |
 | `results/<id>.json` | The answer, which the client reads and removes. |
 | `workers/<task>.json` | The worker registry: one durable record per task, which a restarted server re-attaches from. |
@@ -108,13 +108,14 @@ The drop-in gives a worker:
 - **Task environment.** Its commands get `FM_HOME`, `FM_TASK_ID`, `FM_TASK_INBOX`, `GOTMPDIR`, the Git hook path, and the other launch facts a pane worker exports, through `host.commandEnv`.
   `FM_HOME` always names the worker's recorded Firstmate home, including after a restart with an older registry, and a supplied task environment cannot replace it.
 - **System-prompt section.** The task-worker channel statement, plus the worker's limits.
-- **Blocked tools.** The supervisor tools `fm_watch_arm_pocket`, `fm_branch_report`, `fm_branch_outcomes`, and `fm_branch_processed` are omitted from a worker's model tool declarations, instructions, codemode prompt, and sandbox inventory (`ALL_TOOLS` and callable bindings), with the tool-call guard still refusing forced calls.
+- **Blocked tools.** The supervisor tools `fm_watch_arm_pocket`, `fm_branch_report`, `fm_branch_outcomes`, `fm_branch_processed`, and `fm_posture_pocket` are omitted from a worker's model tool declarations, instructions, codemode prompt, and sandbox inventory (`ALL_TOOLS` and callable bindings), with the tool-call guard still refusing forced calls.
   Main and supervision sessions keep their existing tool declarations.
-  Pi Pocket's delegation tools (`subagent`, `team`, `schedule`, `watch_pr`, and every `session_*` tool) are blocked in a worker, and so is every tool in `config/crew-exclude-tools`.
+  The same inventory filters and forced-call guard also apply to Pi Pocket's delegation tools and every tool in `config/crew-exclude-tools` (the delegation list is maintained in [`subagent-guard.md`](subagent-guard.md#pi-pocket-wired-in-the-drop-in)).
 
 ## Steering and control
 
 `fm-send` works as for every worker: the message lands in the task inbox, and the doorbell is a submit.
+Pocket doorbell retries use the inbox record identity, so a lost bridge reply does not enqueue a second copy.
 `fm-control.sh` maps the lifecycle verbs as follows:
 
 | Action | Pocket worker |
@@ -140,13 +141,20 @@ The nudge is recorded in the registry so it is sent once, and it goes through th
 
 ## Teardown
 
-When Pi Pocket has `linkedSessions.stop` and `archive`, a kill stops the run, archives the session, and succeeds only when the list reads it back archived and not busy.
+When Pi Pocket has `linkedSessions.stop` and `archive`, a kill stops the run, archives the session, and succeeds only when the list reads it back archived and not busy and archive reports no surviving repeating schedules.
+If repeating schedules remain, the kill refuses success and requires their cancellation in Pi Pocket before retrying exit or relaunch.
+Each later kill rechecks instead of reusing the earlier archive result.
 The transcript stays visible in Pi Pocket.
 
 Without them, a kill aborts the run and marks the worker retired in the registry.
 The session stays listed in Pi Pocket, but the drop-in refuses every later Firstmate send, interrupt, and environment change to it, and `state` reads it `missing`.
 
 `fm-teardown.sh` runs the kill before it returns the worktree.
+
+Neither agent stop nor archive proves that independent background commands have stopped.
+Pi Pocket 0.28.0 has no public session-job list/stop/quiesce API, and its `host.background` and `host.schedules` services are internal-only.
+Firstmate cannot yet verify complete job shutdown before replacement; an old build or dev server can overlap a replacement in the same folder.
+Until a public capability exists, stop those jobs in Pi Pocket before relaunching; the existing cwd-based process cleanup in full teardown remains a partial protection, not proof of session-wide quiescence.
 
 ## Version detection
 
@@ -157,7 +165,7 @@ The drop-in detects each capability by the presence of its API on `host` rather 
 - Without that signal, a failed run reads idle.
 
 The `status` verb and the heartbeat report `host.pocketVersion`.
-Stop, archive, and the run-failed signal are proposed upstream in TannerMidd/pi-pocket pull requests 247 and 248.
+Stop, archive, and the run-failed signal shipped in Pi Pocket 0.28.0.
 
 ## Active limits
 
@@ -166,6 +174,7 @@ Stop, archive, and the run-failed signal are proposed upstream in TannerMidd/pi-
 - Only the `pi` harness, on models from the owner's subagent list.
 - A request waiting for a person's approval inside the worker is not reported to Firstmate.
 - Teardown without stop and archive leaves the session listed in Pi Pocket.
+- Independent background-command and schedule cancellation needs a public upstream session-job API; see [Teardown](#teardown).
 
 ## Regression entry points
 
@@ -175,5 +184,5 @@ bin/fm-test-run.sh tests/fm-backend-pi-pocket.test.sh tests/fm-pi-pocket-dropin.
 
 [`tests/fm-backend-pi-pocket.test.sh`](../tests/fm-backend-pi-pocket.test.sh) covers the adapter, the bridge client, and the `fm-spawn`, `fm-control`, and `fm-teardown` paths against a [fake bridge](../tests/pi-pocket-fake-bridge.mjs) and fake Treehouse.
 [`tests/fm-pi-pocket-dropin.test.sh`](../tests/fm-pi-pocket-dropin.test.sh) runs the drop-in's side of the bridge in a real Pi Pocket app on temporary data directories with a scripted model.
-It covers the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, hidden supervisor tools and refused forced calls without changing main or supervision sessions, supervision commands and their restricted bridge access, read-only launch preflight, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
+It covers wake-delivery faults on both sides of an arm close, resumed-grant refusal, parallel reports, concurrent home discovery, slow-request heartbeats, surviving-schedule refusal, the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, worker tool inventories and forced-call refusals without changing main or supervision sessions, supervision commands and their restricted bridge access, read-only launch preflight, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#pi-pocket-workers) records the dated results.
