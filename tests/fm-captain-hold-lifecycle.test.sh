@@ -3637,7 +3637,7 @@ TOMLEOF
   if run_captain "$home" verify "$id" > "$home/malformed-config.out" 2> "$home/malformed-config.err"; then
     fail "verify passed with a malformed markdown.archive config, silently disabling the archive guards"
   fi
-  assert_grep "markdown.archive has an invalid value" "$home/malformed-config.err" \
+  assert_grep "tasks-axi markdown.archive must be one unescaped quoted path" "$home/malformed-config.err" \
     "a malformed archive config must fail verify with the backend's validation error"
   pass "an absent archive key derives the backend default while a malformed one fails verify"
 }
