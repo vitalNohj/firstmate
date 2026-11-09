@@ -23,6 +23,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { after, mock, test } from "node:test";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
@@ -264,6 +266,9 @@ const route = (request: unknown) => {
     if (role === "toolResult" && text.startsWith("recorded seq") && whole.some((message) => JSON.stringify(message.content).includes("task-report-stall"))) {
         return call("bash", { command: "sleep 60" });
     }
+    if (role === "toolResult" && text.startsWith("recorded seq") && whole.some((message) => JSON.stringify(message.content).includes("task-report-concurrent"))) {
+        return call("read", { path: "state/.pocket-branch-turn" });
+    }
     if (role === "toolResult") return fauxAssistantMessage([fauxText("noted the tool result")]);
     if (text.startsWith("/afk")) return call("fm_posture_pocket", { mode: "away", words: text.slice(4).trim() });
     if (text === "/quiet") return call("fm_posture_pocket", { mode: "quiet" });
@@ -318,6 +323,12 @@ const route = (request: unknown) => {
     if (text.endsWith("check the worker bridge")) return call("bash", { command: `node bin/fm-pi-pocket-bridge.mjs status --state "$FM_HOME/state"` });
     if (text.endsWith("report from main")) return call("fm_branch_report", { task: "task-a", verdict: "routine", summary: "main reporting" });
     // The supervision session: a wake for a task it reports on, and one it leaves without an outcome.
+    if (text.includes(`${BRANCH_WAKE}signal: task-report-concurrent.status`)) {
+        return fauxAssistantMessage([
+            fauxToolCall("fm_branch_report", { task: "task-report-concurrent", verdict: "routine", summary: "First report." }),
+            fauxToolCall("fm_branch_report", { task: "task-report-concurrent", verdict: "routine", summary: "Second report." }),
+        ], { stopReason: "toolUse" });
+    }
     if (text.includes("FIRSTMATE SUPERVISION WAKE: signal: task-routine.status")) {
         return call("fm_branch_report", { task: "task-routine", verdict: "routine", summary: "Routine work continued." });
     }
@@ -670,6 +681,71 @@ test("wakes wait while the session is held back by a spend limit, the watcher ke
     );
     await until(async () => (await watchTask(app, id))?.state.checkpoint?.pending === undefined, "an empty queue", LONG);
     assert.equal(lines(join(fmHome, "stub", "arms.log")).length, 3, "delivery started no extra arm");
+});
+
+for (const afterClose of [false, true]) {
+    test(`a delivery error ${afterClose ? "after" : "before"} the arm closes retains and retries the wake with its original request id`, { timeout: 60_000 }, async (t) => {
+        const { app, id, fmHome } = await started();
+        await say(app, id, "start firstmate");
+        await until(() => lines(join(fmHome, "stub", "arms.log")).length === 1, "the first arm", LONG);
+        // Inject at Durable's admission seam: invocation-bound task handles do not use the public handle prototype.
+        const { Submissions } = await import(join(checkout, "node_modules/@earendil-works/pi-durable/dist/harness/submissions.js"));
+        const original = Submissions.prototype.submit;
+        const attempts: string[] = [];
+        t.after(() => {
+            if (attempts.length === 1) fire(fmHome, "heartbeat: release the failed test's arm");
+        });
+        t.mock.method(Submissions.prototype, "submit", async function (target: unknown, draft: any, ctx: any) {
+            if (target === id && typeof draft.content === "string" && draft.content.includes(`${WAKE}signal: delivery-error`)) {
+                attempts.push(draft.requestId);
+                if (attempts.length === 1) {
+                    if (afterClose) {
+                        fire(fmHome, "check: concurrent close");
+                        await settle(400);
+                    }
+                    throw new Error("fixture delivery failed");
+                }
+            }
+            return original.call(this, target, draft, ctx);
+        });
+        fire(fmHome, "signal: delivery-error");
+        await until(async () => count(await userTexts(app, id), `${WAKE}signal: delivery-error`) === 1, "the retried delivery", LONG);
+        assert.equal(attempts.length, 2, "one failure and one successful retry");
+        assert.equal(attempts[0], attempts[1], "the retry has the same durable submission identity");
+        if (afterClose) await until(async () => count(await userTexts(app, id), `${WAKE}check: concurrent close`) === 1, "the second wake", LONG);
+        await until(async () => (await watchTask(app, id))?.state.checkpoint?.pending === undefined, "the queue to empty after delivery", LONG);
+    });
+}
+
+test("a resumed branch turn with an unpublished grant goes to main without prompting the branch", { timeout: 60_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const branch = await branchStarted(app, fmHome);
+    await recordCost(app, id, 2);
+    await app.spend.setSessionBudget(owner(app), id, 1);
+    fire(fmHome, queueTaskWake(fmHome, "task-resumed"));
+    await until(async () => (await watchTask(app, id))?.state.checkpoint?.pending?.length === 1, "the held wake", LONG);
+    const pending = (await watchTask(app, id)).state.checkpoint.pending[0];
+    const prompt = "RESUMED TURN WITHOUT A GRANT MUST NOT RUN";
+    writeFileSync(join(fmHome, "state", ".pocket-branch-turn"), JSON.stringify({
+        wake: pending.requestId, branch, request: "fixture-resumed", rows: ["999999"], tasks: ["task-resumed"],
+        unscoped: false, prompt, mirror: { main: Number(id), entry: 0 }, started: Date.now(), reports: [],
+    }));
+    await app.spend.setSessionBudget(owner(app), id, null);
+    await until(async () => count(await userTexts(app, id), `${WAKE}signal: task-resumed.status`) === 1, "the wake on main", LONG);
+    assert.equal(count(await userTexts(app, branch), prompt), 0, "no branch prompt without a grant");
+    assert.equal(existsSync(join(fmHome, "state", ".pocket-branch-turn")), false);
+    assert.equal(existsSync(join(fmHome, "state", ".branch-eligible-rows")), false);
+});
+
+test("parallel reports in one branch turn retain both outcome sequences", { timeout: 60_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const branch = await branchStarted(app, fmHome);
+    fire(fmHome, queueTaskWake(fmHome, "task-report-concurrent"));
+    await until(async () => (await toolSaid(app, branch)).some((text) => text.includes('"reports":')), "the branch's turn readback", LONG);
+    const readback = (await toolSaid(app, branch)).findLast((text) => text.includes('"reports":'))!;
+    const reports = /"reports":(\[[^\]]*\])/.exec(readback)!;
+    assert.deepEqual(JSON.parse(reports[1]!).sort((a: number, b: number) => a - b), outcomeRows(fmHome).map((row) => row.seq), "every stored outcome belongs to the handled turn");
+    assert.equal(outcomeRows(fmHome).length, 2);
 });
 
 test("an arm that keeps reporting ready and then failing still exhausts the retry limit and ends visibly", async () => {
@@ -1510,14 +1586,14 @@ for (const mode of ["on", "only"]) {
     test(`Pocket worker codemode sandbox hides supervisor tools while main keeps them (mode=${mode})`, { timeout: 90_000 }, async () => {
         const { app, id, fmHome } = await workerMain();
         await app.setExtensionSettings(owner(app), "codemode", { mode });
-        const session = await spawnWorker(fmHome, id, "task-sandbox", worktree(`worker-sandbox-${mode}`), ["--exclude-tools", "fm_branch_report"]);
+        const session = await spawnWorker(fmHome, id, "task-sandbox", worktree(`worker-sandbox-${mode}`), ["--exclude-tools", "fm_branch_report,edit"]);
         await idle(app, session);
         const worker = await sandboxTools(app, session);
         const instructions = systemPrompts.findLast((prompt) => prompt.includes("Firstmate task worker for task-sandbox"))!;
         for (const name of SUPERVISOR_TOOLS) assert.ok(!instructions.includes(name), `${name} stays out of worker instructions even when explicitly excluded`);
         assert.ok(worker.listed.some((tool) => tool.name === "bash"), "ordinary worker tools remain in ALL_TOOLS");
         assert.ok(worker.bindings.includes("bash"), "ordinary worker tools remain callable from scripts");
-        for (const name of SUPERVISOR_TOOLS) {
+        for (const name of [...SUPERVISOR_TOOLS, "subagent", "team", "schedule", "session_start", "session_send", "session_schedule", "session_watch_pr", "watch_pr", "repo_watch", "edit"]) {
             assert.ok(!worker.listed.some((tool) => tool.name === name), `${name} must not appear in worker ALL_TOOLS`);
             assert.ok(!worker.bindings.includes(name), `${name} must not have a worker sandbox binding`);
         }
@@ -1760,6 +1836,89 @@ test("a Pocket worker interrupt aborts its run, a kill without linked-session st
     assert.equal(workerRecord(fmHome, "task-k")?.session, replacement);
     assert.equal(workerRecord(fmHome, "task-k")?.retired, undefined, "a stale kill leaves the replacement running");
     assert.equal(count(await userTexts(app, replacement), "stale steer"), 0);
+});
+
+test("a slow bridge request keeps the heartbeat live for other clients", { timeout: 60_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const start = app.linkedSessions.start.bind(app.linkedSessions);
+    let entered = false;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    const slow = mock.method(app.linkedSessions, "start", async (...args: any[]) => {
+        entered = true;
+        await waiting;
+        return start(...args);
+    });
+    const spawning = spawnWorker(fmHome, id, "task-slow", worktree("worker-slow"));
+    try {
+        await until(() => entered, "the slow start", LONG);
+        await settle(10_500);
+        const status = bridgeCall(fmHome, id, ["status"]);
+        await settle(200);
+        release();
+        const checked = await status;
+        assert.equal(checked.code, 0, checked.err);
+        await spawning;
+    } finally {
+        release();
+        slow.mock.restore();
+        await spawning.catch(() => {});
+    }
+});
+
+test("a worker kill refuses surviving repeating schedules, then can recheck after their cancellation", { timeout: 60_000 }, async () => {
+    const { app, id, fmHome } = await workerMain();
+    const session = await spawnWorker(fmHome, id, "task-scheduled", worktree("worker-scheduled"));
+    let repeating = 1;
+    const stop = mock.method(app.linkedSessions, "stop", async () => ({ busy: false }));
+    const archive = mock.method(app.linkedSessions, "archive", async () => ({ archived: true, repeating }));
+    const list = mock.method(app.linkedSessions, "list", async () => [{ address: workerRecord(fmHome, "task-scheduled").address, archived: true, busy: false }]);
+    try {
+        const refused = await bridgeCall(fmHome, id, ["kill", "--session", String(session)]);
+        assert.equal(refused.code, 3, refused.err);
+        assert.match(refused.err, /repeating schedule/);
+        assert.notEqual(workerRecord(fmHome, "task-scheduled").archived, true, "a refused stop does not authorize replacement");
+        const firstKey = archive.mock.calls[0]!.arguments[2];
+        repeating = 0;
+        const killed = await bridgeCall(fmHome, id, ["kill", "--session", String(session)]);
+        assert.equal(killed.code, 0, killed.err);
+        assert.equal(workerRecord(fmHome, "task-scheduled").archived, true);
+        assert.notEqual(archive.mock.calls[1]!.arguments[2], firstKey, "a later kill must not reuse a stale archive result");
+    } finally {
+        stop.mock.restore();
+        archive.mock.restore();
+        list.mock.restore();
+    }
+});
+
+test("concurrent home discovery preserves every worker home across reload", { timeout: 60_000 }, async () => {
+    const fmHome = await home();
+    const otherHome = await home();
+    const dataDir = mkdtempSync(join(root, "worker-homes-"));
+    const app = await open(dataDir, true);
+    apps.push(app);
+    const first = await newSession(app, fmHome);
+    const second = await newSession(app, otherHome);
+    const original = fs.writeFile;
+    let writes = 0;
+    const delayed = mock.method(fs, "writeFile", async (...args: any[]) => {
+        if (String(args[0]).includes("firstmate-pocket-workers.json.tmp")) {
+            writes += 1;
+            if (writes === 1) await settle(400);
+        }
+        return original(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+        await Promise.all([say(app, first, "hello"), say(app, second, "hello")]);
+        await Promise.all([bridgeUp(fmHome, first), bridgeUp(otherHome, second)]);
+        await until(() => readJsonFile(join(dataDir, "firstmate-pocket-workers.json"))?.homes?.length === 2, "both homes in the durable index", 3000);
+        await app.loader.reload("firstmate.ts");
+        assert.deepEqual(readJsonFile(join(dataDir, "firstmate-pocket-workers.json")).homes.sort(), [fmHome, otherHome].sort());
+    } finally {
+        delayed.mock.restore();
+        syncBuiltinESMExports();
+    }
 });
 
 test("a Pocket worker kill stops and archives it, reading the archive back, when Pi Pocket has linked-session stop and archive", { timeout: 90_000 }, async () => {

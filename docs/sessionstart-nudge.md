@@ -26,7 +26,7 @@ The tier is a property of the harness surface, not of the home.
 
 | Tier | What the adapter does | Used by |
 | --- | --- | --- |
-| Run | Executes `bin/fm-session-start.sh` through the native session-open adapter and gates its ordered digest into model context before the first turn. | Claude, `codex exec`, verified native Codex TUI, Pi / pi-signed, omp, Cursor, Antigravity (agy) |
+| Run | Executes `bin/fm-session-start.sh` through the native session-open adapter and gates its ordered digest into model context before the first turn. | Claude, `codex exec`, verified native Codex TUI, Pi / pi-signed, Pi Pocket, omp, Cursor, Antigravity (agy) |
 | Nudge | Asks the agent to run the digest through the native adapter or the tracked session-start instruction. | Grok, OpenCode, and run-tier sources routed to the nudge |
 
 Codex's interactive TUI has verified session-open delivery only on the native version selected by `bin/fm-codex-stop-park.sh`; its compaction and re-emit surfaces remain unverified.
@@ -43,7 +43,7 @@ Codex's interactive TUI has verified session-open delivery only on the native ve
 | Grok | Nudge | [Grok](#grok) |
 | Cursor | Run | [Cursor](#cursor) |
 | omp | Run | [omp](#omp) |
-| Pi Pocket | Nudge at first open, run after a server restart or compaction | [Pi Pocket](#pi-pocket) |
+| Pi Pocket | Run on the first request, after a server restart, and after compaction | [Pi Pocket](#pi-pocket) |
 | Antigravity (agy) | Run | [Antigravity (agy)](#antigravity-agy) |
 | Cursor compaction | Uncovered | [Cursor compaction](#cursor-compaction) |
 
@@ -375,10 +375,12 @@ A later in-process `clear` re-emits only when this lock owner completed a full s
 ### Pi Pocket
 
 The transport is the Firstmate Pi Pocket drop-in, `pi-pocket/firstmate.ts`, copied with its browser module `pi-pocket/firstmate.js` into Pi Pocket's extensions folder by `bin/fm-pi-pocket-install.sh`.
-Pi Pocket has no session-open event, so the first open is a nudge: in a session whose folder is a Firstmate home the drop-in adds a prompt section that asks for `bin/fm-session-start.sh` when the session has no digest yet.
-That first run takes the session lock for the session through the bash marker, and the drop-in then starts its watcher task.
-After a Pi Pocket server restart the watcher task runs `bin/fm-sessionstart-run.sh --source startup` itself before it arms again, so the restarted server takes the lock back for the same session.
-After a compaction its `beforeRequest` hook runs `--source compact` and sends the re-emitted digest as a steering input.
+Pi Pocket has no session-open event, so the drop-in runs session start on the first model request in a Firstmate home and places the whole digest in context before the first answer.
+Its `sessionStart` helper calls `bin/fm-sessionstart-run.sh --source startup` with the conversation marker to take the session lock.
+The drop-in then starts its watcher task.
+After a Pi Pocket server restart the watcher calls that helper before it arms again, so the restarted server takes the lock back for the same session.
+After a compaction its `beforeRequest` hook calls the helper with source `compact` and sends the re-emitted digest as a steering input.
+Only an empty or failed digest falls back to a nudge asking the agent to run `bin/fm-session-start.sh` by hand.
 Each run is kept behind Pi Durable's `api.memo` and delivered with a request id, so a replayed task or hook delivers it once.
 The delivery size limit and truncation note match Pi's.
 
@@ -443,6 +445,11 @@ Through the extension's public event surface, the same portable suite proves:
 - Truncation.
 - Ineligible stand-down.
 - Compaction cancellation.
+
+### Pi Pocket drop-in suite
+
+[`tests/fm-pi-pocket-dropin.test.sh`](../tests/fm-pi-pocket-dropin.test.sh) runs [`tests/fm-pi-pocket-dropin.ts`](../tests/fm-pi-pocket-dropin.ts) in a real Pi Pocket app on temporary data with a scripted model.
+It proves first-request delivery of the whole digest exactly once, lock binding, restart redelivery, and compaction re-emission.
 
 ### Runtime bound test
 

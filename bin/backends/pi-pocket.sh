@@ -221,9 +221,9 @@ fm_backend_pi_pocket_submit() {  # <session> <text> [request-id]
 # empty: Pi Pocket accepted the message; unconfirmed: it may have landed (no
 # answer in time; a retry with the same request id is deduplicated);
 # send-failed: refused or proven not delivered.
-fm_backend_pi_pocket_send_text_submit() {  # <session> <text> <retries> <enter-sleep> <settle>
+fm_backend_pi_pocket_send_text_submit() {  # <session> <text> <retries> <enter-sleep> <settle> [expected-label] [request-id]
   local rc=0
-  fm_backend_pi_pocket_submit "$1" "$2" || rc=$?
+  fm_backend_pi_pocket_submit "$1" "$2" "${7:-}" || rc=$?
   case "$rc" in
     0) printf 'empty' ;;
     7) printf 'unconfirmed' ;;

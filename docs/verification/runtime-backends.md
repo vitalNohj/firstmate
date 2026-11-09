@@ -2746,6 +2746,38 @@ The adapter matrix included unsupported `ultra` effort and raw launch commands.
 The real-app proof used temporary app data and a scripted model, not the installed user service.
 Its unavailable-bridge case expired the heartbeat through the client setting; the portable matrix removed the heartbeat after stopping its fake bridge.
 
+### Delivery and worker bridge regressions
+
+Verified on 2026-11-09 with Pi Pocket 0.28.0, Node v24.21.0, and Linux 7.0.0-38-generic.
+The real-app suite used temporary app data and a scripted model, not the installed user service.
+Its delivery tests injected one admission error before and after an arm close and observed exactly one delivered wake with the original request id.
+The resumed-grant test observed a wake on main and no branch prompt when grant publication failed.
+Parallel report calls retained both outcome sequences, and concurrent home discovery retained both homes after a drop-in reload.
+A bridge start delayed for 10.5 seconds did not make another client's status request report a dead bridge.
+The schedule test supplied archive responses with a surviving schedule, then none; kill refused the first and used a new archive key for the second.
+The portable adapter suite observed one doorbell submission after a re-ring, a different submission for a new inbox record, and a kill request even when the session already read archived.
+The inbox suite also passed its non-Pocket steering cases.
+
+Refresh with `TMPDIR` set to an adequately sized temporary directory:
+
+```sh
+systemd-run --user --scope -q --expand-environment=no -p CPUQuota=200% -p MemoryMax=4G -- bash bin/fm-test-run.sh --jobs 1 tests/fm-pi-pocket-dropin.test.sh tests/fm-backend-pi-pocket.test.sh tests/fm-send-inbox.test.sh
+```
+
+The observed results were:
+
+```text
+ℹ tests 45
+ℹ pass 45
+ℹ fail 0
+FM_TEST_END 2026-11-09T11:27:32Z tests/fm-pi-pocket-dropin.test.sh exit=0 duration_ms=308964 gate_skip=false
+FM_TEST_END 2026-11-09T11:30:05Z tests/fm-send-inbox.test.sh exit=0 duration_ms=78410 gate_skip=false
+FM_TEST_END 2026-11-09T11:34:44Z tests/fm-backend-pi-pocket.test.sh exit=0 duration_ms=109357 gate_skip=false
+```
+
+These checks prove Firstmate's handling of the public API results, not cancellation of independent Pocket jobs.
+The remaining public job-lifecycle limitation is documented in [Teardown](../pi-pocket-backend.md#teardown).
+
 ## T3 Code
 
 ### Orchestrator V2 transport

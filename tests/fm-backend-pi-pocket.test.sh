@@ -251,6 +251,21 @@ test_unanswered_send_is_unconfirmed_and_retry_safe() {
   pass "client: an unanswered send exits 7, and a retry with the same request id submits once"
 }
 
+test_doorbell_retry_uses_the_inbox_record_identity() {
+  local rec other
+  pp_case doorbell
+  mkdir -p "$CASE_DIR/wt"
+  pp_run 'fm_backend_pi_pocket_session_start ppring "$1" "" "" "" ""' "$CASE_DIR/wt" >/dev/null || fail "start must succeed"
+  rec=$(pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$1" ppring "first instruction"' "$STATE") || fail "inbox write must succeed"
+  pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_ring pi-pocket 100 "$1"' "$rec" || fail "first doorbell must succeed"
+  pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_ring pi-pocket 100 "$1"' "$rec" || fail "the same doorbell retry must succeed"
+  [ "$(pp_world 'w.workers["100"].submissions.length')" = 1 ] || fail "a repeated ring for one inbox record must submit only once"
+  other=$(pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$1" ppring "second instruction"' "$STATE") || fail "second inbox write must succeed"
+  pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_ring pi-pocket 100 "$1"' "$other" || fail "the next doorbell must succeed"
+  [ "$(pp_world 'w.workers["100"].submissions.length')" = 2 ] || fail "different inbox records must have different submission identities"
+  pass "doorbell: re-rings share a stable request id, and a new inbox record gets a new id"
+}
+
 # --- fm-spawn, fm-control, fm-teardown ----------------------------------------
 
 make_treehouse_fakebin() {  # <dir> -> fakebin that leases $FM_PP_WT and logs
@@ -402,8 +417,14 @@ test_spawn_starts_session_and_submits_brief() {
     "$ROOT/bin/fm-control.sh" "$id" interrupt 2>&1) || fail "fm-control interrupt must succeed"$'\n'"$out"
   [ "$(pp_world 'w.workers["100"].aborts')" = 1 ] || fail "fm-control interrupt must abort the run"$'\n'"$out"
 
+  # Archive alone is not job quiescence: even a missing/archived session must reach kill.
+  pp_set 'w.workers["100"].archived = true; w.workers["100"].busy = false'
+  out=$(FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_CONFIG_OVERRIDE="$CONFIG" FM_DATA_OVERRIDE="$DATA" \
+    "$ROOT/bin/fm-control.sh" "$id" exit 2>&1) || fail "exit of an archived session must recheck kill"$'\n'"$out"
+  [ "$(pp_verbs)" = "spawn configure send interrupt kill" ] || fail "exit must not skip kill just because archive reads missing, got '$(pp_verbs)'"
+
   # fm-control relaunch: the old session is torn down and a new one starts in the same worktree with the brief.
-  pp_set 'w.workers["100"].busy = false'
+  pp_set 'w.workers["100"].archived = false; w.workers["100"].retired = false'
   out=$(HOME="$CASE_DIR/user-home" PATH="$FB:$PATH" FM_PP_TREEHOUSE_LOG="$CASE_DIR/treehouse.log" FM_PP_WT="$WT" \
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$CASE_DIR/home" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
     FM_PROJECTS_OVERRIDE="$CASE_DIR/unused-projects" FM_SPAWN_NO_GUARD=1 "$ROOT/bin/fm-control.sh" "$id" relaunch --note "the earlier session stopped" 2>&1); rc=$?
@@ -530,6 +551,7 @@ test_worker_lifecycle_without_stop
 test_kill_with_stop_archives
 test_model_and_spend_refusals
 test_unanswered_send_is_unconfirmed_and_retry_safe
+test_doorbell_retry_uses_the_inbox_record_identity
 test_spawn_starts_session_and_submits_brief
 test_supervision_can_teardown_but_not_relaunch_pocket_workers
 test_spawn_refuses_without_bridge_and_never_falls_back

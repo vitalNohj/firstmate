@@ -235,9 +235,9 @@ Codex is therefore not applicable today, and this table row is the tripwire: if 
 ### Pi Pocket, wired in the drop-in
 
 The Firstmate Pi Pocket drop-in's Pi Durable `beforeTool` hook blocks, only in a session whose folder is a Firstmate home, each Pi Pocket tool in the table row above, because each starts or steers work outside the fleet.
-The names come from Pi Pocket's built-in tool list (`docs/extensions/names.md` in its checkout), not from the stems, which miss `team` and the `session_*` tools.
+The names come from Pi Pocket's built-in registrations under `src/server/extensions/` (`pip.ts`, `subagents.ts`, `agent-teams.ts`, `schedules.ts`, and `triggers.ts`), not from the stems, which miss `team` and the `session_*` tools.
 Its observing tools (`sessions`, `session_read`, `session_follow`, `session_stop`, `session_archive`, `approvals`) stay available.
-Every other tool except the coding tools, `mcp__*` tools, and the drop-in's own repair tool still goes through `bin/fm-subagent-pretool-check.sh --tool <name>`, so the stem rule covers tools Pi Pocket adds later.
+Every other tool except the coding tools, `mcp__*` tools, and the drop-in's five supervisor tools (`fm_watch_arm_pocket`, `fm_branch_report`, `fm_branch_outcomes`, `fm_branch_processed`, and `fm_posture_pocket`) still goes through `bin/fm-subagent-pretool-check.sh --tool <name>`, so the stem rule covers tools Pi Pocket adds later.
 `FM_ALLOW_SUBAGENT=1` in the Pi Pocket server's environment is the same escape hatch.
 `tests/fm-pi-pocket-dropin.test.sh` proves the block in a Firstmate home and its absence in any other session.
 

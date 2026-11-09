@@ -386,6 +386,8 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # whose Enter never landed, so on an agent not reported busy it is submitted
 # rather than skipped; skipping it would block every later ring. On both paths
 # a lost first Enter gets one confirmed retry.
+# Pocket re-rings reuse the record path as the submit id, so a lost bridge
+# reply cannot enqueue a second copy; a new inbox record gets a new id.
 fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
   case "$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || true)" in
@@ -411,7 +413,9 @@ fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
   # steps, so an agent exiting after the liveness check could leave a bare
   # shell only a suffix; the `: ` prefix protects complete lines only. Do not
   # add process-bound atomic delivery here unless an incident reopens this.
-  if ! verdict=$(fm_backend_send_text_submit "$backend" "$target" "$line" 2 0.4 0.3 "$label" 2>/dev/null); then
+  local -a submit_args=("$backend" "$target" "$line" 2 0.4 0.3 "$label")
+  [ "$backend" != pi-pocket ] || submit_args+=("fm-inbox:$rec")
+  if ! verdict=$(fm_backend_send_text_submit "${submit_args[@]}" 2>/dev/null); then
     return 2
   fi
   # The verdict is read only to report a failed keystroke; every other value

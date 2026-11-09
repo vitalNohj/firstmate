@@ -420,9 +420,22 @@ async function readJson<T>(path: string): Promise<T | undefined> {
 
 /** Replace `path` whole, owner-only: a write that fails or is interrupted leaves the old record. */
 async function writeJson(path: string, value: unknown): Promise<void> {
-    const staged = `${path}.tmp-${SERVER_PID}`;
+    const staged = `${path}.tmp-${SERVER_PID}-${randomUUID()}`;
     await writeFile(staged, `${JSON.stringify(value)}\n`, { mode: 0o600 });
     await rename(staged, path);
+}
+
+/** Serialize read-modify-write operations on one record, including across a drop-in reload. */
+const recordChanges = ((globalThis as Record<symbol, unknown>)[Symbol.for("firstmate.pi-pocket.record-changes")] ??= new Map<string, Promise<void>>()) as Map<string, Promise<void>>;
+function changeRecord<T>(path: string, change: () => Promise<T>): Promise<T> {
+    const next = (recordChanges.get(path) ?? Promise.resolve()).then(change);
+    const settled = next.then(() => {}, () => {});
+    recordChanges.set(path, settled);
+    void settled.then(() => {
+        if (recordChanges.get(path) === settled) recordChanges.delete(path);
+    });
+
+    return next;
 }
 
 function jsonLines(text: string): Record<string, unknown>[] | undefined {
@@ -878,9 +891,12 @@ function createSupervision(host: Partial<Host>) {
                 await finish(home);
                 return toMain;
             }
-        } else if (await activate(home)) {
-            // Resumed: after a restart the grant must name this server again; the rows may already be consumed.
-            await script(home, "fm-wake-grant.sh", ["publish", grantGeneration, ...current.rows]);
+        } else {
+            // Resumed: consumed rows or a failed activation cannot authorize another branch prompt.
+            if (!(await activate(home)) || (await script(home, "fm-wake-grant.sh", ["publish", grantGeneration, ...current.rows])).code !== 0) {
+                await finish(home);
+                return toMain;
+            }
         }
 
         const branch = current.branch as unknown as ConversationId;
@@ -1294,6 +1310,7 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision, presente
                     };
                     deliverNext();
                     let ran: Ran | undefined;
+                    let deliveryFailure: string | undefined;
                     try {
                         while (ran === undefined) {
                             const event = await Promise.race([
@@ -1312,6 +1329,16 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision, presente
                                 delivering = undefined;
                             }
                         }
+                    } catch (error) {
+                        signal.throwIfAborted();
+                        deliveryFailure = `watcher: FAILED - wake delivery failed: ${(error as Error).message}`;
+                        // Keep next.pending intact and retire this arm before retrying under a successor.
+                        // Otherwise a failed submit ends the durable task while its arm keeps running.
+                        if (!(await arm.retire())) {
+                            await retry({ ...task, state: { ...task.state, checkpoint: next } }, runtime, context, deliveryFailure, arm.pid, true);
+                            return;
+                        }
+                        ran = await arm.closed;
                     } finally {
                         halt.abort();
                         const settled = await delivering?.catch(() => undefined);
@@ -1327,7 +1354,7 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision, presente
                         await runtime.commit(() => ({ status: "running", checkpoint: read }), context);
                         return;
                     }
-                    await retry({ ...task, state: { ...task.state, checkpoint: next } }, runtime, context, closed.message, arm.pid, false);
+                    await retry({ ...task, state: { ...task.state, checkpoint: next } }, runtime, context, deliveryFailure ?? closed.message, arm.pid, false);
                 } finally {
                     signal.removeEventListener("abort", stop);
                 }
@@ -1398,6 +1425,7 @@ async function ensureWatch(
 const BRIDGE_KIND = "x.firstmate.pocket-bridge";
 const BRIDGE_DIR = "pocket-bridge";
 const BRIDGE_POLL_MS = positive("FM_POCKET_BRIDGE_POLL_MS", 250);
+const BRIDGE_HEARTBEAT_MS = 1000;
 const BRIDGE_RECONCILE_MS = positive("FM_POCKET_BRIDGE_RECONCILE_MS", 15000);
 const BRIDGE_REQUEST_LIMIT = 1024 * 1024;
 /** The branch never starts a worker, including a relaunch; new bridge verbs must opt in to branch access. */
@@ -1464,7 +1492,7 @@ type LinkedApi = {
     start: (source: ConversationId, request: Record<string, string>, key: string) => Promise<{ session: ConversationId; address: string }>;
     list: (source: ConversationId) => Promise<LinkedRow[]>;
     stop?: (source: ConversationId, request: { to: string }, key: string) => Promise<{ busy: boolean }>;
-    archive?: (source: ConversationId, request: { to: string; archived?: boolean }, key: string) => Promise<{ archived: boolean }>;
+    archive?: (source: ConversationId, request: { to: string; archived?: boolean }, key: string) => Promise<{ archived: boolean; repeating?: number }>;
 };
 
 function bridgeDir(home: string): string {
@@ -1573,8 +1601,14 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
             if (record !== undefined && Number.isSafeInteger(record.session) && record.home === home) bySession.set(record.session, record);
         }
         if (homes.has(home)) return;
+        if (indexPath !== undefined) {
+            await changeRecord(indexPath, async () => {
+                const index = await readJson<{ homes?: unknown }>(indexPath);
+                const stored = Array.isArray(index?.homes) ? index.homes.filter((item): item is string => typeof item === "string") : [];
+                await writeJson(indexPath, { homes: [...new Set([...stored, ...homes, home])] });
+            });
+        }
         homes.add(home);
-        if (indexPath !== undefined) await writeJson(indexPath, { homes: [...homes] }).catch(() => undefined);
     }
 
     // A restarted server knows its workers before any bridge task runs: their hooks, prompt, and env must hold at once.
@@ -1809,13 +1843,17 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         return { ok: true, session: record.session, address: record.address, model: record.model, ...(record.thinking === undefined ? {} : { thinking: record.thinking }) };
     }
 
-    async function killWorker(record: WorkerRecord, runtime: Runtime, context: Context): Promise<BridgeResult> {
+    async function killWorker(record: WorkerRecord, runtime: Runtime, context: Context, attempt: string): Promise<BridgeResult> {
         const api = linked();
-        if (record.archived === true || record.retired === true) return { ok: true, archived: record.archived === true, retired: record.retired === true };
+        if (record.retired === true) return { ok: true, archived: record.archived === true, retired: true };
+        // Archive does not cancel repeating schedules, including on records written by an older drop-in.
         if (typeof api?.stop === "function" && typeof api.archive === "function") {
             try {
-                await api.stop(record.main as unknown as ConversationId, { to: record.address }, `${record.key}-stop`);
-                await api.archive(record.main as unknown as ConversationId, { to: record.address, archived: true }, `${record.key}-archive`);
+                await api.stop(record.main as unknown as ConversationId, { to: record.address }, `${record.key}-stop-${attempt}`);
+                const archived = await api.archive(record.main as unknown as ConversationId, { to: record.address, archived: true }, `${record.key}-archive-${attempt}`);
+                if ((archived.repeating ?? 0) > 0) {
+                    return refuse("unconfirmed", `the worker session ${String(record.session)} still has ${String(archived.repeating)} repeating schedule(s); cancel them in Pi Pocket before retrying exit or relaunch`);
+                }
                 const row = await rowOf(record);
                 if (row !== undefined && row.archived !== true) return refuse("unconfirmed", `the worker session ${String(record.session)} did not read back archived`);
                 if (row?.busy === true) return refuse("unconfirmed", `the worker session ${String(record.session)} still reads busy after its stop`);
@@ -1890,7 +1928,7 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
                 return { ok: true, state: "alive", busy: row.busy === true ? "busy" : "idle" };
             }
             case "kill":
-                return killWorker(record, runtime, context);
+                return killWorker(record, runtime, context, request.id);
         }
 
         return refuse("invalid", `unknown verb ${String(request.verb)}`);
@@ -1964,6 +2002,28 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         }
     }
 
+    /** Heartbeat independently of request duration, but only while this invocation owns the home. */
+    async function heartbeat(home: string, main: ConversationId, signal: AbortSignal): Promise<void> {
+        for (;;) {
+            signal.throwIfAborted();
+            const owner = await ownership(home, main);
+            if (owner === "other") return;
+            const dir = bridgeDir(home);
+            if (owner === "owned" && await privateDir(dir)) {
+                const api = linked();
+                await writeJson(join(dir, "heartbeat.json"), {
+                    server: SERVER_PID,
+                    boot: BOOT,
+                    conversation: String(main),
+                    at: Date.now(),
+                    pocketVersion: host.pocketVersion ?? "",
+                    stop: typeof api?.stop === "function" && typeof api.archive === "function",
+                });
+            }
+            await pause(BRIDGE_HEARTBEAT_MS, signal);
+        }
+    }
+
     const bridge = defineTask<{ home: string }, { phase: "serve" }, null>({
         name: BRIDGE_KIND,
         version: 1,
@@ -1971,10 +2031,14 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         phases: {
             serve: async (task, runtime, context) => {
                 const { home } = task.input;
-                const signal = signalsOf(runtime.signal, context.abortSignal, disposed.signal);
+                const pulseStop = new AbortController();
+                const signal = signalsOf(runtime.signal, context.abortSignal, disposed.signal, pulseStop.signal);
+                let pulse: Promise<void> | undefined;
                 try {
                     signal.throwIfAborted();
                     await load(home);
+                    pulse = heartbeat(home, runtime.conversationId, signal);
+                    void pulse.catch((error: unknown) => pulseStop.abort(error));
                     let reconciled = 0;
                     for (;;) {
                         signal.throwIfAborted();
@@ -1983,15 +2047,6 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
                         if (owner === "owned") {
                             const dir = bridgeDir(home);
                             if (await privateDir(dir)) {
-                                const api = linked();
-                                await writeJson(join(dir, "heartbeat.json"), {
-                                    server: SERVER_PID,
-                                    boot: BOOT,
-                                    conversation: String(runtime.conversationId),
-                                    at: Date.now(),
-                                    pocketVersion: host.pocketVersion ?? "",
-                                    stop: typeof api?.stop === "function" && typeof api.archive === "function",
-                                });
                                 await serve(home, runtime, context);
                                 if (Date.now() - reconciled >= BRIDGE_RECONCILE_MS) {
                                     reconciled = Date.now();
@@ -2006,6 +2061,9 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
                     // Release the old invocation, not its durable task. Reload or re-enable resumes with the new code.
                     await runtime.sleepUntil(runtime.now() + BRIDGE_POLL_MS, { phase: "serve" }, context);
                     return;
+                } finally {
+                    pulseStop.abort();
+                    await pulse?.catch(() => undefined);
                 }
                 await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
             },
@@ -2316,25 +2374,27 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             if (task === "" || summary === "") return say("invalid report: task, verdict (routine|captain), and summary are required", true);
             if (args.silent === true && args.verdict !== "routine") return say("invalid report: --silent true requires the routine verdict", true);
             const turnPath = join(stateOf(home), BRANCH_TURN);
-            const current = await readJson<BranchTurn>(turnPath);
-            if (current?.branch !== Number(api.conversationId)) return say("report refused: no wake is being handled in this session right now", true);
-            if (!current.unscoped && !current.tasks.includes(task)) {
-                return say(
-                    `report refused: the wake being handled (row ${current.rows.join(", ")}) names ${[...current.tasks].sort().join(", ")}, not ${task}; report only that task, never fleet or a task from memory`,
-                    true,
-                );
-            }
-            const appendArgs = ["append", "--task", task, "--verdict", args.verdict, "--summary", summary, "--silent", String(args.silent === true)];
-            const wake = args.wake?.trim() ?? "";
-            if (wake !== "") appendArgs.push("--wake", wake);
-            const appended = await script(home, "fm-branch-outcome.sh", appendArgs);
-            const seq = Number(appended.stdout.trim());
-            if (appended.code !== 0 || !Number.isSafeInteger(seq) || seq < 1) {
-                return say(`outcome store append failed: ${appended.stderr.trim() || `exit ${String(appended.code)}`}`, true);
-            }
-            await writeJson(turnPath, { ...current, reports: [...current.reports, seq] });
+            return changeRecord(turnPath, async () => {
+                const current = await readJson<BranchTurn>(turnPath);
+                if (current?.branch !== Number(api.conversationId)) return say("report refused: no wake is being handled in this session right now", true);
+                if (!current.unscoped && !current.tasks.includes(task)) {
+                    return say(
+                        `report refused: the wake being handled (row ${current.rows.join(", ")}) names ${[...current.tasks].sort().join(", ")}, not ${task}; report only that task, never fleet or a task from memory`,
+                        true,
+                    );
+                }
+                const appendArgs = ["append", "--task", task, "--verdict", args.verdict, "--summary", summary, "--silent", String(args.silent === true)];
+                const wake = args.wake?.trim() ?? "";
+                if (wake !== "") appendArgs.push("--wake", wake);
+                const appended = await script(home, "fm-branch-outcome.sh", appendArgs);
+                const seq = Number(appended.stdout.trim());
+                if (appended.code !== 0 || !Number.isSafeInteger(seq) || seq < 1) {
+                    return say(`outcome store append failed: ${appended.stderr.trim() || `exit ${String(appended.code)}`}`, true);
+                }
+                await writeJson(turnPath, { ...current, reports: [...current.reports, seq] });
 
-            return say(`recorded seq ${String(seq)} [${args.verdict}]; ${args.verdict === "captain" ? "the main Firstmate session is asked to process it" : "it stays in the outcome store"}`);
+                return say(`recorded seq ${String(seq)} [${args.verdict}]; ${args.verdict === "captain" ? "the main Firstmate session is asked to process it" : "it stays in the outcome store"}`);
+            });
         },
     });
 
@@ -2567,14 +2627,15 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             wrapTool({ name: "codemode" } as ToolRegistration, (codemode) => ({
                 ...codemode,
                 execute: async (args, api, context) => {
-                    if ((await workers.worker(api.conversationId)) === undefined) return codemode.execute(args, api, context);
+                    const assigned = await workers.worker(api.conversationId);
+                    if (assigned === undefined) return codemode.execute(args, api, context);
 
                     return codemode.execute(args, {
                         ...api,
                         agent: async (context) => {
                             const agent = await api.agent(context);
 
-                            return { ...agent, callable: agent.callable.filter((tool) => !SUPERVISOR_TOOLS.has(tool.name)) };
+                            return { ...agent, callable: agent.callable.filter((tool) => workerBlock(assigned, tool.name) === undefined) };
                         },
                     }, context);
                 },
@@ -2583,9 +2644,10 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             wrapSection("codemode", (inner) => ({
                 ...inner,
                 render: async (input, context) => {
-                    if ((await workers.worker(input.conversationId)) === undefined) return inner.render(input, context);
+                    const assigned = await workers.worker(input.conversationId);
+                    if (assigned === undefined) return inner.render(input, context);
 
-                    const agent = { ...input.agent, callable: input.agent.callable.filter((tool) => !SUPERVISOR_TOOLS.has(tool.name)) };
+                    const agent = { ...input.agent, callable: input.agent.callable.filter((tool) => workerBlock(assigned, tool.name) === undefined) };
 
                     return inner.render({ ...input, agent }, context);
                 },
@@ -2664,7 +2726,8 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 // A fresh conversation's first request runs the session start, and after a compaction the digest is
                 // gone from context: either way the hook runs it once and gives the model the whole digest.
                 beforeRequest: async ({ messages }, api, context) => {
-                    if ((await workers.worker(api.conversationId)) !== undefined) {
+                    const assigned = await workers.worker(api.conversationId);
+                    if (assigned !== undefined) {
                         // System messages are patches. Keep only the latest worker instructions and codemode
                         // catalog, so older catalogs cannot expose supervisor tools after registration or a reload.
                         const latest = new Map(["firstmate", "codemode"].map((key) => [
@@ -2682,7 +2745,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                                         sections: Object.fromEntries(Object.entries(message.sections).filter(([key]) => !latest.has(key) || latest.get(key) === index)),
                                     }),
                                     ...(message.toolsAdded === undefined ? {} : {
-                                        toolsAdded: message.toolsAdded.filter((tool) => !SUPERVISOR_TOOLS.has(tool.name)),
+                                        toolsAdded: message.toolsAdded.filter((tool) => workerBlock(assigned, tool.name) === undefined),
                                     }),
                                 };
                             }),
