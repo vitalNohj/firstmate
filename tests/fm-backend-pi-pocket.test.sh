@@ -171,7 +171,7 @@ test_worker_lifecycle_without_stop() {
 
   [ "$(pp_run 'fm_backend_send_text_submit pi-pocket 100 "hello worker" 1 0 0')" = empty ] || fail "a send must be accepted"
   [ "$(pp_world 'w.workers["100"].submissions[0].text')" = "hello worker" ] || fail "the send must be submitted"
-  [ "$(pp_world 'w.workers["100"].submissions[0].whenBusy')" = followUp ] || fail "a steer queues as a follow-up while busy"
+  [ "$(pp_world 'w.workers["100"].submissions[0].whenBusy')" = steer ] || fail "a send must request steer delivery"
   out=$(pp_run 'fm_backend_capture pi-pocket 100 5')
   assert_contains "$out" "user: hello worker" "capture must print the transcript tail"
 
@@ -256,14 +256,16 @@ test_doorbell_retry_uses_the_inbox_record_identity() {
   pp_case doorbell
   mkdir -p "$CASE_DIR/wt"
   pp_run 'fm_backend_pi_pocket_session_start ppring "$1" "" "" "" ""' "$CASE_DIR/wt" >/dev/null || fail "start must succeed"
+  pp_set 'w.workers["100"].busy = true'
   rec=$(pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$1" ppring "first instruction"' "$STATE") || fail "inbox write must succeed"
   pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_ring pi-pocket 100 "$1"' "$rec" || fail "first doorbell must succeed"
   pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_ring pi-pocket 100 "$1"' "$rec" || fail "the same doorbell retry must succeed"
   [ "$(pp_world 'w.workers["100"].submissions.length')" = 1 ] || fail "a repeated ring for one inbox record must submit only once"
+  [ "$(pp_world 'w.workers["100"].submissions[0].whenBusy')" = steer ] || fail "a doorbell must steer the active run rather than queue a follow-up"
   other=$(pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_write "$1" ppring "second instruction"' "$STATE") || fail "second inbox write must succeed"
   pp_run '. "$0/bin/fm-task-inbox-lib.sh"; fm_task_inbox_ring pi-pocket 100 "$1"' "$other" || fail "the next doorbell must succeed"
   [ "$(pp_world 'w.workers["100"].submissions.length')" = 2 ] || fail "different inbox records must have different submission identities"
-  pass "doorbell: re-rings share a stable request id, and a new inbox record gets a new id"
+  pass "doorbell: steers the active run, re-rings share a stable request id, and a new inbox record gets a new id"
 }
 
 # --- fm-spawn, fm-control, fm-teardown ----------------------------------------
@@ -403,6 +405,7 @@ test_spawn_starts_session_and_submits_brief() {
   [ "$(pp_world 'w.workers["100"].env.FM_TASK_INBOX')" = "$STATE/$id.inbox" ] || fail "the worker's commands must carry the task inbox"
   [ "$(pp_world 'w.workers["100"].env.GOTMPDIR')" = "/tmp/fm-$id/gotmp" ] || fail "the worker's commands must carry GOTMPDIR"
   [ "$(pp_world 'w.workers["100"].submissions.length')" = 1 ] || fail "spawn must submit exactly the launch brief"
+  [ "$(pp_world 'w.workers["100"].submissions[0].whenBusy')" = steer ] || fail "the launch brief must request steer delivery"
   assert_contains "$(pp_world 'w.workers["100"].submissions[0].text')" "FIRSTMATE_OP: v1 launch-brief:" "the brief must be the encoded launch brief"
   assert_contains "$(pp_world 'w.workers["100"].submissions[0].text')" "Verify the Pocket lifecycle under test." "the brief must carry its body"
   case "$(pp_world 'w.workers["100"].submissions[0].requestId')" in "fm-launch-$id-"*) ;; *) fail "the brief must carry a launch request id" ;; esac
@@ -432,6 +435,7 @@ test_spawn_starts_session_and_submits_brief() {
   [ "$(pp_world 'w.workers["100"].retired')" = true ] || fail "relaunch must tear the old session down first"$'\n'"$out"
   [ "$(pp_world 'w.workers["101"].cwd')" = "$WT" ] || fail "relaunch must start the new session in the same worktree"$'\n'"$out"
   assert_contains "$(pp_world 'w.workers["101"].submissions[0].text')" "FIRSTMATE_OP: v1 launch-brief:" "the new session must get the brief"
+  [ "$(pp_world 'w.workers["101"].submissions[0].whenBusy')" = steer ] || fail "the relaunch brief must request steer delivery"
   assert_grep "pocket_session=101" "$STATE/$id.meta" "meta must name the new session"
   [ "$(grep -c "get --lease" "$CASE_DIR/treehouse.log")" = 1 ] || fail "relaunch must reuse the worktree, not lease another"
 
