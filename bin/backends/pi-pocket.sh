@@ -209,11 +209,11 @@ fm_backend_pi_pocket_capture() {  # <session> <lines>
 }
 
 # fm_backend_pi_pocket_submit <session> <text> [request-id]: one unfenced
-# submit (a follow-up while a run is going). The drop-in refuses a worker
+# submit (a steer while a run is going). The drop-in refuses a worker
 # whose model left the owner's subagent list, a held spend, and a torn-down
 # worker; each refusal is a blocker, never retried here.
 fm_backend_pi_pocket_submit() {  # <session> <text> [request-id]
-  local -a args=(send --session "$1" --text "$2")
+  local -a args=(send --session "$1" --text "$2" --when-busy steer)
   [ -z "${3:-}" ] || args+=(--request-id "$3")
   fm_backend_pi_pocket_bridge "${args[@]}" >/dev/null
 }
