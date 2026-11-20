@@ -364,7 +364,7 @@ async function open(dataDir: string, enable: boolean): Promise<App> {
     return app;
 }
 
-/** The session's newest watcher task record, live or ended. */
+/** The session's newest task record of this kind, live or ended. */
 async function lastTask(app: App, id: unknown, kind: string) {
     return app.harness.commit(async (tx: { scanTasks: (query: object, limit: number) => Promise<{ items: any[] }> }) => {
         const page = await tx.scanTasks({ conversationId: id, kind, order: "descending" }, 1);
@@ -374,6 +374,7 @@ async function lastTask(app: App, id: unknown, kind: string) {
 }
 
 const watchTask = (app: App, id: unknown) => lastTask(app, id, "x.firstmate.watch");
+const bridgeTask = (app: App, id: unknown) => lastTask(app, id, "x.firstmate.pocket-bridge");
 const clientKey = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -576,6 +577,62 @@ test("a session start binds the lock to the session, starts the watcher, and del
     await say(app, id, "repair the watcher");
     assert.ok((await toolSaid(app, id)).some((text) => text.startsWith("watcher: unchanged")));
     assert.equal(lines(join(fmHome, "stub", "arms.log")).length, 3);
+});
+
+test("the server watcher and bridge resume after a transient home check failure", { timeout: 90_000 }, async (t) => {
+    const dataDir = join(root, "home-probe-restart");
+    const { app, id, fmHome } = await started(dataDir);
+    await say(app, id, "start firstmate");
+    const arms = join(fmHome, "stub", "arms.log");
+    const beat = join(fmHome, "state", "pocket-bridge", "heartbeat.json");
+    const tasks = (app: App) => Promise.all([watchTask(app, id), bridgeTask(app, id)]);
+    await until(() => lines(arms).length === 1, "the first arm", LONG);
+    await bridgeUp(fmHome, id);
+    fire(fmHome, "signal: before the unavailable check");
+    await until(async () => {
+        const checkpoint = (await watchTask(app, id))?.state.checkpoint;
+        return checkpoint?.seq === 1 && checkpoint.pending === undefined;
+    }, "a non-initial watcher checkpoint", LONG);
+    const before = await tasks(app);
+    await app.close();
+    const lastBeat = readJsonFile(beat).at;
+    const oldArms = lines(arms);
+    const marker = join(fmHome, "bin", "fm-session-start.sh");
+
+    // Only the fixture's home marker fails. Reopen the same app data without making a new request or repairing a task.
+    let failures = 0;
+    const lstat = fs.lstat;
+    const failProbe = t.mock.method(fs, "lstat", async (...args: Parameters<typeof lstat>) => {
+        if (args[0] === marker) {
+            failures += 1;
+            throw Object.assign(new Error("temporary home I/O error"), { code: "EIO" });
+        }
+        return lstat(...args);
+    });
+    syncBuiltinESMExports();
+    let restarted: App;
+    try {
+        restarted = await open(dataDir, false);
+        apps.push(restarted);
+        await until(async () => failures >= 2 && (await tasks(restarted)).every((task) =>
+            task?.state.status === "sleeping" || task?.state.status === "terminal"
+        ), "both durable tasks to handle the probe failure", LONG);
+        const waiting = await tasks(restarted);
+        assert.deepEqual(waiting.map((task) => task.state.status), ["sleeping", "sleeping"]);
+        assert.deepEqual(waiting.map((task) => task.state.checkpoint), before.map((task) => task.state.checkpoint));
+        assert.deepEqual(lines(arms), oldArms, "no new watcher arm while the home is unavailable");
+        assert.equal(readJsonFile(beat).at, lastBeat, "no bridge heartbeat while the home is unavailable");
+    } finally {
+        failProbe.mock.restore();
+        syncBuiltinESMExports();
+    }
+
+    await until(() => lines(arms).length > oldArms.length && readJsonFile(beat)?.at > lastBeat, "watcher and bridge to resume", LONG);
+    const resumed = await tasks(restarted);
+    assert.deepEqual(resumed.map((task) => task.id), before.map((task) => task.id));
+    assert.deepEqual(resumed.map((task) => task.state.status), ["running", "running"]);
+    fire(fmHome, "signal: after the unavailable check");
+    await until(async () => count(await userTexts(restarted, id), `${WAKE}signal: after the unavailable check`) === 1, "a wake after recovery", LONG);
 });
 
 test("a fresh conversation's first request runs the session start and gives the model the whole digest, once", async () => {
@@ -1411,7 +1468,7 @@ test("a real runner detects its opted-in home without touching the server or sta
     assert.deepEqual(readdirSync(join(runnerHome, "state")), [], "no runner lock, branch or bridge records");
     assert.deepEqual(readdirSync(join(runnerHome, "stub")), ["digest-tail"], "no startup, watcher or guard script ran");
     assert.equal(await watchTask(app, remote), undefined);
-    assert.equal(await lastTask(app, remote, "x.firstmate.pocket-bridge"), undefined);
+    assert.equal(await bridgeTask(app, remote), undefined);
     assert.equal(supervisionSessions(app).length, 1, "only the server launched a supervision session");
     assert.equal(readFileSync(join(serverHome, "state", ".lock-session"), "utf8").trim(), `pi-pocket:${String(local)}`);
 });

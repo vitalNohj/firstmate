@@ -222,6 +222,7 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 const HOME_OPT_IN = "config/pi-pocket-home-id";
 const HOME_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HOME_PROBE_MS = 5000;
+const HOME_RETRY_MS = 5000;
 const HOME_COMMAND_MS = 12000;
 const HOME_COMMAND_CHARS = 64 * 1024;
 const RUNNER_READ_ONLY = "Runner supervision is not enabled yet.";
@@ -1305,6 +1306,11 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision, presente
                 const signal = signalsOf(runtime.signal, context.abortSignal);
                 const checked = await checkHome(runtime, context);
                 signal.throwIfAborted();
+                if (checked.kind === "unavailable") {
+                    // A failed observation is not home loss. Keep pending wakes and the arm's retry state.
+                    await runtime.sleepUntil(runtime.now() + HOME_RETRY_MS, checkpoint, context);
+                    return;
+                }
                 if (checked.kind !== "local" || checked.home !== home) {
                     host.notice?.("warning", homeNotice(checked) ?? "Firstmate's watcher stopped: this session no longer has its verified server home.", id);
                     await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
@@ -2136,6 +2142,12 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
             serve: async (task, runtime, context) => {
                 const { home } = task.input;
                 const checked = await checkHome(runtime, context);
+                runtime.signal.throwIfAborted();
+                context.abortSignal?.throwIfAborted();
+                if (checked.kind === "unavailable") {
+                    await runtime.sleepUntil(runtime.now() + HOME_RETRY_MS, task.state.checkpoint, context);
+                    return;
+                }
                 if (checked.kind !== "local" || checked.home !== home) {
                     host.notice?.("warning", homeNotice(checked) ?? "Firstmate's bridge stopped: this session no longer has its verified server home.", runtime.conversationId);
                     await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
