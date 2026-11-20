@@ -6,15 +6,15 @@
  * lock it also starts the supervision branch: one linked Pi Pocket session per home, titled "Firstmate supervision",
  * that takes eligible wakes and records their outcomes in the durable store. Away and quiet postures reuse that
  * session; away captain outcomes wait for the human return (docs/pi-supervision-branch.md "Pi Pocket"). Every other
- * session is untouched.
+ * session is untouched. On a runner, it only detects and reports an opted-in home.
  * Install it with Firstmate's bin/fm-pi-pocket-install.sh, then turn it on in Menu → Extensions.
- * Where Pi Pocket can present an extension's own inputs, /calm folds this session's operational inputs; the model still
- * reads each one in full, and the supervision session's own prompts stay ordinary messages.
+ * Where Pi Pocket can present an extension's own inputs, /firstmate-calm toggles folding for all Firstmate inputs on
+ * this server. The model still reads each one in full, and the supervision session's own prompts stay ordinary messages.
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Type } from "@earendil-works/pi-ai";
 import {
     AgentDoc,
@@ -29,13 +29,17 @@ import {
     wrapSection,
     wrapTool,
 } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord";
+import { awaitWithContext, type Context, withAbortSignal } from "@earendil-works/chord/context";
 import type { ConversationHandle, ConversationId, GenerationHooks, HookApi, ToolExecutionApi, ToolRegistration, TaskRuntime, Tx } from "@earendil-works/pi-durable";
+import type { ExecutionEnv, FileError, Result } from "@earendil-works/pi-durable/env";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import type { Host } from "./_pocket.d.ts";
 
 // Tools return `output`: version 2 of Pi Pocket's extension API.
 export const pocketApi = 2;
+// Home admission and all local-only supervision paths below check the session's environment.
+export const remoteSessions = true;
 
 /** The Pi Pocket server process: the lock anchor of every session it serves (part 1's marker contract). */
 const SERVER_PID = String(process.pid);
@@ -215,23 +219,140 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 // ---------------------------------------------------------------------------------------------------------------
 // Firstmate homes and the session lock
 
-async function isFile(path: string): Promise<boolean> {
-    return (await stat(path).catch(() => undefined))?.isFile() === true;
+const HOME_OPT_IN = "config/pi-pocket-home-id";
+const HOME_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const HOME_PROBE_MS = 5000;
+const HOME_RETRY_MS = 5000;
+const HOME_COMMAND_MS = 12000;
+const HOME_COMMAND_CHARS = 64 * 1024;
+const RUNNER_READ_ONLY = "Runner supervision is not enabled yet.";
+// FileSystem.id is a namespace, not a runner ID. Only the documented Node namespace admits legacy server I/O.
+const SERVER_FILES = new NodeExecutionEnv({ cwd: "/" }).id;
+
+type EnvSource = {
+    readonly env?: ExecutionEnv | TaskRuntime<unknown, { phase: string }, unknown, object>["env"];
+    readonly signal?: AbortSignal;
+};
+
+type Placement = "server" | "nonlocal" | "unknown";
+type HomeCheck =
+    | { kind: "local"; placement: "server"; home: string; ops: HomeOps }
+    | { kind: "preview"; placement: "nonlocal"; home: string }
+    | { kind: "not-home"; placement: Placement; optInMissing?: true }
+    | { kind: "unavailable"; placement: Placement };
+
+/** One invocation's filesystem and shell. A missing file is not a failed transport or cancelled observation. */
+class HomeOps {
+    readonly env: ExecutionEnv;
+
+    constructor(env: ExecutionEnv) {
+        this.env = env;
+    }
+
+    private async file<T>(read: () => Promise<Result<T, FileError>>, context: Context): Promise<T | undefined> {
+        context.abortSignal?.throwIfAborted();
+        const result = await awaitWithContext(read(), context);
+        context.abortSignal?.throwIfAborted();
+        if (result.ok) return result.value;
+        if (result.error.code === "not_found" || result.error.code === "not_directory") return undefined;
+        throw result.error;
+    }
+
+    canonicalPath(path: string, context: Context) {
+        return this.file(() => this.env.canonicalPath(path, context), context);
+    }
+
+    joinPath(parts: string[], context: Context) {
+        return this.file(() => this.env.joinPath(parts, context), context);
+    }
+
+    async info(path: string, context: Context, follow = true) {
+        const info = await this.file(() => this.env.fileInfo(path, context), context);
+        if (!follow || info?.kind !== "symlink") return info;
+        const target = await this.canonicalPath(path, context);
+        return target === undefined ? undefined : this.file(() => this.env.fileInfo(target, context), context);
+    }
+
+    /** Read at most one byte over the limit, from a regular file without following a final symlink. */
+    async read(path: string, limit: number, context: Context): Promise<string | undefined> {
+        const file = await this.file(() => this.env.openBinaryReader(path, { noFollow: true }, context), context);
+        if (file === undefined) return undefined;
+        try {
+            const bytes = await this.file(() => file.read(0, limit + 1, context), context);
+            return bytes === undefined || bytes.byteLength > limit ? undefined : new TextDecoder().decode(bytes);
+        } finally {
+            await awaitWithContext(file.close(context), context);
+        }
+    }
+
+    /** Finite argv checks, without using a shell or spilling output into the session's files. */
+    async exec(argv: readonly [string, ...string[]], env: Record<string, string>, context: Context) {
+        const invocation = withAbortSignal(AbortSignal.timeout(HOME_COMMAND_MS), context);
+        let stdout = "";
+        let stderr = "";
+        invocation.abortSignal?.throwIfAborted();
+        const result = await awaitWithContext(this.env.exec(argv, {
+            env,
+            timeout: HOME_COMMAND_MS / 1000,
+            onOutput: (text, _context, { stream }) => {
+                if (stream === "stdout") stdout += text.slice(0, HOME_COMMAND_CHARS - stdout.length);
+                else stderr += text.slice(0, HOME_COMMAND_CHARS - stderr.length);
+            },
+        }, invocation), invocation);
+        invocation.abortSignal?.throwIfAborted();
+        if (!result.ok) throw result.error;
+        return { code: result.value.exitCode, stdout, stderr };
+    }
 }
 
 /**
- * The Firstmate home a session works in, or undefined: a primary checkout (its own .git directory, not a linked
- * worktree) or a secondmate home, with Firstmate's AGENTS.md and session start. Firstmate's scripts check the full
- * primary scope themselves.
+ * Hooks from Durable receive a runtime (env function); codemode hooks and tools receive api.env directly.
+ * Neither an agent snapshot nor a server path can substitute for an unavailable environment.
  */
-async function homeOf(cwd: string | undefined): Promise<string | undefined> {
-    if (cwd === undefined || cwd === "") return undefined;
-    if (!(await isFile(join(cwd, "AGENTS.md"))) || !(await isFile(join(cwd, "bin", "fm-session-start.sh")))) {
-        return undefined;
+async function checkHome(source: EnvSource, context: Context): Promise<HomeCheck> {
+    const probe = withAbortSignal(signalsOf(source.signal, AbortSignal.timeout(HOME_PROBE_MS)), context);
+    let placement: Placement = "unknown";
+    try {
+        probe.abortSignal?.throwIfAborted();
+        const env = typeof source.env === "function" ? await awaitWithContext(source.env(probe), probe) : source.env;
+        if (env === undefined || env.cwd === "") return { kind: "unavailable", placement };
+        placement = env.id === SERVER_FILES ? "server" : "nonlocal";
+        const ops = new HomeOps(env);
+        const home = await ops.canonicalPath(".", probe);
+        if (home === undefined) return { kind: "not-home", placement };
+        const [agents, start, git] = await Promise.all([
+            ops.info("AGENTS.md", probe), ops.info("bin/fm-session-start.sh", probe), ops.info(".git", probe),
+        ]);
+        if (agents?.kind !== "file" || start?.kind !== "file" ||
+            (git?.kind !== "directory" && (await ops.info(".fm-secondmate-home", probe))?.kind !== "file")) {
+            return { kind: "not-home", placement };
+        }
+        // Preserve the local path used by existing locks, watcher tasks and branch records. The runner is read-only.
+        if (placement === "server") return { kind: "local", placement, home: env.cwd, ops };
+        const optIn = await ops.info(HOME_OPT_IN, probe, false);
+        if (optIn?.kind === "file" && optIn.size <= 64) {
+            const expected = await ops.joinPath([home, HOME_OPT_IN], probe);
+            if (expected !== undefined && (await ops.canonicalPath(HOME_OPT_IN, probe)) === expected &&
+                HOME_ID.test((await ops.read(HOME_OPT_IN, 64, probe))?.trim() ?? "")) {
+                return { kind: "preview", placement, home };
+            }
+        }
+        return { kind: "not-home", placement, optInMissing: true };
+    } catch {
+        return { kind: "unavailable", placement };
     }
-    const git = await stat(join(cwd, ".git")).catch(() => undefined);
+}
 
-    return git?.isDirectory() === true || (await isFile(join(cwd, ".fm-secondmate-home"))) ? cwd : undefined;
+function homeNotice(check: HomeCheck): string | undefined {
+    if (check.kind === "preview") return `Firstmate home found at ${JSON.stringify(check.home)} on the session's computer. ${RUNNER_READ_ONLY}`;
+    if (check.kind === "unavailable") return "Firstmate home check unavailable. No Firstmate supervision actions ran for this check.";
+    if (check.kind === "not-home" && check.optInMissing) return `Not a Firstmate home: no valid ${HOME_OPT_IN} on the session's computer.`;
+    return undefined;
+}
+
+/** Constant paths in the already-admitted, local supervision code. */
+async function isFile(path: string): Promise<boolean> {
+    return (await stat(path).catch(() => undefined))?.isFile() === true;
 }
 
 type Ownership = "owned" | "other" | "missing";
@@ -320,35 +441,6 @@ function failureSummary(failure: string): string {
     return line === "" ? "watcher" : line;
 }
 
-/** `config/calm`, or `FM_CONFIG_OVERRIDE` when a test points the config directory elsewhere. */
-function calmPath(home: string): string {
-    return join(process.env.FM_CONFIG_OVERRIDE || join(home, "config"), "calm");
-}
-
-/** `on` and the legacy `max` are on. Anything else, including a missing file, is off. */
-async function calmOn(home: string): Promise<boolean> {
-    try {
-        const stored = (await readFile(calmPath(home), "utf8")).trim();
-
-        return stored === "on" || stored === "max";
-    } catch {
-        return false;
-    }
-}
-
-/** The same temp-file rename and mode the Pi Calm extension uses, so a failed write leaves the file as it was. */
-async function writeCalm(home: string, active: boolean): Promise<void> {
-    const path = calmPath(home);
-    await mkdir(dirname(path), { recursive: true });
-    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-        await writeFile(temporary, active ? "on\n" : "off\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
-        await rename(temporary, path);
-    } finally {
-        await rm(temporary, { force: true });
-    }
-}
-
 /** A PreToolUse seatbelt's deny reason: the Claude-shaped JSON's systemMessage, else its stderr. */
 function denyReason(stderr: string, fallback: string): string {
     const text = stderr.trim();
@@ -364,10 +456,16 @@ function denyReason(stderr: string, fallback: string): string {
     return text === "" ? fallback : text;
 }
 
-async function seatbelt(home: string, script: string, args: string[], fallback: string): Promise<string | undefined> {
-    const ran = await run(join(home, "bin", script), args, { cwd: home, env: { FM_HOME: home } });
-
-    return ran.code === 2 ? denyReason(ran.stderr, fallback) : undefined;
+async function seatbelt({ home, ops }: Extract<HomeCheck, { kind: "local" }>, script: string, args: string[], fallback: string, context: Context): Promise<string | undefined> {
+    const path = join(home, "bin", script);
+    try {
+        // An older local home may not ship every seatbelt yet.
+        if ((await ops.info(path, context))?.kind !== "file") return undefined;
+        const ran = await ops.exec([path, ...args], { FM_HOME: home }, context);
+        return ran.code === 2 ? denyReason(ran.stderr, fallback) : undefined;
+    } catch {
+        return "Firstmate's tool check is unavailable; no tool ran.";
+    }
 }
 
 function inputBody(text: string): string {
@@ -1206,6 +1304,18 @@ function createWatchTask(host: Partial<Host>, supervision: Supervision, presente
                 const id = runtime.conversationId;
                 const checkpoint = task.state.checkpoint;
                 const signal = signalsOf(runtime.signal, context.abortSignal);
+                const checked = await checkHome(runtime, context);
+                signal.throwIfAborted();
+                if (checked.kind === "unavailable") {
+                    // A failed observation is not home loss. Keep pending wakes and the arm's retry state.
+                    await runtime.sleepUntil(runtime.now() + HOME_RETRY_MS, checkpoint, context);
+                    return;
+                }
+                if (checked.kind !== "local" || checked.home !== home) {
+                    host.notice?.("warning", homeNotice(checked) ?? "Firstmate's watcher stopped: this session no longer has its verified server home.", id);
+                    await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+                    return;
+                }
 
                 if (checkpoint.boot !== BOOT) {
                     // A server restart re-drove the task: take the lock again as this conversation and give the model
@@ -2031,6 +2141,18 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         phases: {
             serve: async (task, runtime, context) => {
                 const { home } = task.input;
+                const checked = await checkHome(runtime, context);
+                runtime.signal.throwIfAborted();
+                context.abortSignal?.throwIfAborted();
+                if (checked.kind === "unavailable") {
+                    await runtime.sleepUntil(runtime.now() + HOME_RETRY_MS, task.state.checkpoint, context);
+                    return;
+                }
+                if (checked.kind !== "local" || checked.home !== home) {
+                    host.notice?.("warning", homeNotice(checked) ?? "Firstmate's bridge stopped: this session no longer has its verified server home.", runtime.conversationId);
+                    await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+                    return;
+                }
                 const pulseStop = new AbortController();
                 const signal = signalsOf(runtime.signal, context.abortSignal, disposed.signal, pulseStop.signal);
                 let pulse: Promise<void> | undefined;
@@ -2145,22 +2267,6 @@ function registerWorkerEvents(host: Partial<Host>, web: PocketSurface | undefine
 // ---------------------------------------------------------------------------------------------------------------
 // The extension
 
-/**
- * The working folder of a hook's session: its execution environment, else its agent's folder. A hook from the
- * Harness gets the task runtime, whose `env` is a function; a hook that Pi Pocket's codemode runs for a call from
- * a script gets the tool's execution API, whose `env` is the environment itself.
- */
-async function hookCwd(api: unknown, conversationId: ConversationId, context: Context): Promise<string | undefined> {
-    const runtime = api as Partial<Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "snapshot">> & {
-        env?: TaskRuntime<unknown, { phase: string }, unknown, object>["env"] | ToolExecutionApi["env"];
-    };
-    const env = typeof runtime.env === "function" ? await runtime.env(context).catch(() => undefined) : runtime.env;
-    if (env?.cwd) return env.cwd;
-    const agent = await runtime.snapshot?.(AgentDoc, conversationId, context);
-
-    return agent?.cwd ?? process.cwd();
-}
-
 /** The supervision branch a session is, with the main session it serves, or undefined for any other session. */
 async function branchOf(home: string | undefined, conversationId: ConversationId): Promise<ConversationId | undefined> {
     if (home === undefined) return undefined;
@@ -2180,17 +2286,17 @@ type PocketSurface = {
         name: string,
         command: {
             description: string;
-            scope: "conversation";
+            scope: "global";
             handler: (
                 args: string,
-                context: { cwd: string; conversationId: ConversationId },
+                context: { signal?: AbortSignal },
             ) => Promise<{ type: "toast"; level: "info" | "warning"; message: string }>;
         },
     ) => void;
     route?: (
         method: "GET",
         path: string,
-        handle: (request: { query: URLSearchParams; sessions?: () => readonly { id: number; cwd: string }[] }) => unknown,
+        handle: () => unknown,
         options?: { access?: string },
     ) => void;
     send?: (event: string, data?: unknown) => void;
@@ -2216,45 +2322,37 @@ function registerPresentations(web: PocketSurface | undefined): boolean {
     }
 }
 
-/** `/calm` and the reload route. A failure here leaves the command unregistered and does not stop wake delivery. */
-function registerCalm(web: PocketSurface | undefined): void {
-    if (typeof web?.command !== "function") return;
-    const send = web.send?.bind(web);
+/** Pocket Calm is one server setting. Neither the command nor the route needs any session's filesystem. */
+function registerCalm(host: Partial<Host>, web: PocketSurface | undefined): void {
+    const path = typeof host.dataDir === "string" ? join(host.dataDir, "firstmate-calm.json") : undefined;
+    const calmOn = async () => path === undefined || (await readJson<{ calm?: boolean }>(path))?.calm !== false;
     try {
-        // Pi Pocket refuses a command name with no hyphen, so this cannot be /calm. It toggles the same file.
-        web.command("firstmate-calm", {
-            description: "Toggle Firstmate's shared Calm preference for this home.",
-            scope: "conversation",
-            handler: async (_args, context) => {
-                const home = await homeOf(context.cwd);
-                if (home === undefined) {
-                    return { type: "toast", level: "info", message: "Calm is unchanged: this session is not a Firstmate home" };
-                }
-                const next = !(await calmOn(home));
-                try {
-                    await writeCalm(home, next);
-                } catch {
-                    return { type: "toast", level: "warning", message: "Calm is unchanged: the preference could not be saved" };
-                }
-                send?.("calm", { calm: next, conversation: String(context.conversationId) });
+        web?.command?.("firstmate-calm", {
+            description: "Toggle Calm for all Firstmate sessions on this Pi Pocket server.",
+            scope: "global",
+            handler: async (_args, { signal }) => {
+                if (path !== undefined) {
+                    return changeRecord(path, async () => {
+                        const next = !(await calmOn());
+                        signal?.throwIfAborted();
+                        try {
+                            await writeJson(path, { calm: next });
+                        } catch {
+                            return { type: "toast", level: "warning", message: "Calm is unchanged: the preference could not be saved" };
+                        }
+                        web.send?.("calm", { calm: next });
 
-                return { type: "toast", level: "info", message: next ? "Calm on" : "Calm off" };
+                        return { type: "toast", level: "info", message: next ? "Calm on" : "Calm off" };
+                    });
+                }
+                return { type: "toast", level: "warning", message: "Calm is unchanged: Pi Pocket did not provide a data directory" };
             },
         });
     } catch {
-        return;
+        // Older apps may omit commands; the route can still give the presentation default.
     }
-    const read = async (request: { query: URLSearchParams; sessions?: () => readonly { id: number; cwd: string }[] }) => {
-        const asked = request.query.get("conversation");
-        if (asked === null || typeof request.sessions !== "function") return { calm: false };
-        const cwd = request.sessions().find((session) => String(session.id) === asked)?.cwd;
-        if (cwd === undefined) return { calm: false };
-        const home = await homeOf(cwd);
-        if (home === undefined) return { calm: false };
-
-        return { calm: await calmOn(home) };
-    };
-    if (typeof web.route !== "function") return;
+    const read = async () => ({ calm: await calmOn() });
+    if (typeof web?.route !== "function") return;
     try {
         web.route("GET", "calm", read, { access: "view" });
     } catch {
@@ -2266,7 +2364,7 @@ function registerCalm(web: PocketSurface | undefined): void {
     }
 }
 
-/** The browser module applies the home preference. A missing file must not keep the drop-in from loading. */
+/** The browser module applies the server preference. A missing file must not keep the drop-in from loading. */
 function registerClient(web: PocketSurface | undefined): void {
     if (typeof web?.client !== "function") return;
     try {
@@ -2282,12 +2380,13 @@ function registerClient(web: PocketSurface | undefined): void {
 
 export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSurface) {
     const presented = registerPresentations(web);
-    registerCalm(web);
+    registerCalm(host, web);
     registerClient(web);
     const supervision = createSupervision(host);
     const watch = createWatchTask(host, supervision, presented);
     const workers = createWorkers(host, web);
     registerWorkerEvents(host, web, workers);
+    const lastHomeNotice = new Map<ConversationId, string>();
 
     const marked = createBashTool({
         prepare: (execution, api) => {
@@ -2316,9 +2415,12 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         }),
         replay: "safe",
         execute: async (args, api, context) => {
-            const home = await homeOf(api.env?.cwd);
-            if (home === undefined || (await branchOf(home, api.conversationId)) !== undefined || (await ownership(home, api.conversationId)) !== "owned") {
-                return say("posture unchanged: only the main Firstmate conversation that owns the fleet lock enters a posture", true);
+            const checked = await checkHome(api, context);
+            const refused = "posture unchanged: only the main Firstmate conversation that owns the fleet lock enters a posture";
+            if (checked.kind !== "local") return say(homeNotice(checked) ?? refused, true);
+            const { home } = checked;
+            if ((await branchOf(home, api.conversationId)) !== undefined || (await ownership(home, api.conversationId)) !== "owned") {
+                return say(refused, true);
             }
             const state = stateOf(home);
             if (await isFile(join(state, ".afk-return-catchup"))) return say("posture unchanged: run bin/fm-afk-return.sh check and finish return catch-up before entering again", true);
@@ -2364,10 +2466,13 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 Type.Boolean({ description: "True only for an eligible routine no-change outcome; captain outcomes are never silent, and actions, state changes, or new results stay rendered" }),
             ),
         }),
-        execute: async (args, api) => {
-            const home = await homeOf(api.env?.cwd);
-            if ((await branchOf(home, api.conversationId)) === undefined || home === undefined) {
-                return say("report refused: only the Firstmate supervision session records outcomes", true);
+        execute: async (args, api, context) => {
+            const checked = await checkHome(api, context);
+            const refused = "report refused: only the Firstmate supervision session records outcomes";
+            if (checked.kind !== "local") return say(homeNotice(checked) ?? refused, true);
+            const { home } = checked;
+            if ((await branchOf(home, api.conversationId)) === undefined) {
+                return say(refused, true);
             }
             const task = args.task.trim();
             const summary = args.summary.trim();
@@ -2406,9 +2511,10 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             recent: Type.Optional(Type.Number({ description: "How many most-recent outcomes to read (default 20)" })),
         }),
         replay: "safe",
-        execute: async (args, api) => {
-            const home = await homeOf(api.env?.cwd);
-            if (home === undefined) return say("could not read the outcome store: this session does not work in a Firstmate home", true);
+        execute: async (args, api, context) => {
+            const checked = await checkHome(api, context);
+            if (checked.kind !== "local") return say(homeNotice(checked) ?? "could not read the outcome store: this session does not work in a Firstmate home", true);
+            const { home } = checked;
             const recent = typeof args.recent === "number" && args.recent >= 1 ? String(Math.floor(args.recent)) : "20";
             const listed = await script(home, "fm-branch-outcome.sh", ["list", "--recent", recent]);
             if (listed.code !== 0) return say(`could not read the outcome store: ${listed.stderr.trim() || `exit ${String(listed.code)}`}`, true);
@@ -2427,8 +2533,10 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         execute: async (args, api, context) => {
             const through = Number.isSafeInteger(args.through) && args.through >= 1 ? args.through : undefined;
             if (through === undefined) return say("acknowledgement refused: through must be a positive outcome sequence number", true);
-            const home = await homeOf(api.env?.cwd);
-            if (home === undefined || (await ownership(home, api.conversationId)) !== "owned") {
+            const checked = await checkHome(api, context);
+            if (checked.kind !== "local") return say(homeNotice(checked) ?? "acknowledgement refused: this session does not own the fleet lock", true);
+            const { home } = checked;
+            if ((await ownership(home, api.conversationId)) !== "owned") {
                 return say("acknowledgement refused: this session does not own the fleet lock", true);
             }
             if ((await postureMode(home)) === "away") return say("acknowledgement refused: captain outcomes wait for the human return while away", true);
@@ -2460,8 +2568,9 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         replay: "safe",
         execute: async (_args, api, context) => {
             const say = (text: string) => ({ output: [{ type: "text" as const, text }] });
-            const home = await homeOf(api.env?.cwd);
-            if (home === undefined) return say("watcher: not armed - this session does not work in a Firstmate home");
+            const checked = await checkHome(api, context);
+            if (checked.kind !== "local") return say(homeNotice(checked) ?? "watcher: not armed - this session does not work in a Firstmate home");
+            const { home } = checked;
             const owner = await ownership(home, api.conversationId);
             if (owner === "other") return say("watcher: read-only - the session lock is held by another firstmate session");
             if (owner === "missing") {
@@ -2483,11 +2592,10 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
      * did, and the session start that bound the lock here also starts the watcher. A recovered request, whose view
      * predates the placed entry, finds that entry in the commit and places nothing twice.
      */
-    const firstStart = async (messages: readonly { role: string }[], api: HookApi, context: Context) => {
+    const firstStart = async (home: string, messages: readonly { role: string }[], api: HookApi, context: Context) => {
         if (messages.some((message) => message.role === "assistant")) return undefined;
         if (messages.some((message) => userText(message as never).startsWith(`${OPERATIONAL_PREFIX}session-start:`))) return undefined;
-        const home = await homeOf(await hookCwd(api, api.conversationId, context));
-        if (home === undefined || (await branchOf(home, api.conversationId)) !== undefined) return undefined;
+        if ((await branchOf(home, api.conversationId)) !== undefined) return undefined;
         const runtime = api as HookApi & Partial<Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "commit" | "now">>;
         if (typeof runtime.commit !== "function") return undefined;
         const key = "x.firstmate.first-start";
@@ -2513,9 +2621,8 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
      * report is a user-role input but is not a return. The cursor also prevents a tool round from returning on the
      * same human input that just entered a posture, including a natural-language /afk request.
      */
-    const postureRequest = async (messages: Parameters<GenerationHooks["beforeRequest"]>[0]["messages"], api: HookApi, context: Context) => {
-        const home = await homeOf(await hookCwd(api, api.conversationId, context));
-        if (home === undefined || (await branchOf(home, api.conversationId)) !== undefined || (await ownership(home, api.conversationId)) !== "owned") return undefined;
+    const postureRequest = async (home: string, messages: Parameters<GenerationHooks["beforeRequest"]>[0]["messages"], api: HookApi, context: Context) => {
+        if ((await branchOf(home, api.conversationId)) !== undefined || (await ownership(home, api.conversationId)) !== "owned") return undefined;
         const mode = await postureMode(home);
         const live = await api.snapshot(LiveDoc, api.conversationId, context);
         const first = live?.run?.first;
@@ -2612,11 +2719,14 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         tools: [repair, report, outcomesTool, processed, posture],
         tasks: [watch, workers.bridge],
         sections: [
-            section("firstmate", async (input) => {
-                const assigned = await workers.worker(input.conversationId);
-                if (assigned !== undefined) return workerPrompt(assigned);
-                const home = await homeOf(input.env?.cwd);
-                if (home === undefined) return undefined;
+            section("firstmate", async (input, context) => {
+                const checked = await checkHome(input, context);
+                if (checked.placement === "server") {
+                    const assigned = await workers.worker(input.conversationId);
+                    if (assigned !== undefined) return workerPrompt(assigned);
+                }
+                if (checked.kind !== "local") return undefined;
+                const { home } = checked;
                 if ((await branchOf(home, input.conversationId)) !== undefined) return branchPrompt(home);
 
                 return `The Firstmate Pi Pocket drop-in is active in this session. It marks every bash call with this session's Pi Pocket identity, runs the Firstmate watcher as a durable background task once this session holds the home's session lock, delivers each watcher wake as a follow-up input, and runs the session start itself, giving this session its digest, on the first request, after a server restart, and after a compaction. ${SHELL_MODEL} Repair a missing or failed watcher only with the ${REPAIR_TOOL} tool. The linked session "${BRANCH_TITLE}" is this home's supervision branch: it handles eligible wakes, and its captain outcomes reach this session as processing requests to acknowledge with ${PROCESSED_TOOL}. Away and quiet modes reuse that session through ${POSTURE_TOOL}; load their skills and never run bin/fm-afk-launch.sh under Pi Pocket.`;
@@ -2657,8 +2767,12 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             ...["project_context", "skills"].map((key) =>
                 wrapSection(key, (inner) => ({
                     ...inner,
-                    render: async (input, context) =>
-                        (await branchOf(await homeOf(input.env?.cwd), input.conversationId)) === undefined ? inner.render(input, context) : undefined,
+                    render: async (input, context) => {
+                        const checked = await checkHome(input, context);
+                        if (checked.kind === "preview") return undefined;
+                        if (checked.kind === "local" && (await branchOf(checked.home, input.conversationId)) !== undefined) return undefined;
+                        return inner.render(input, context);
+                    },
                 })),
             ),
             // In a Firstmate home every bash call carries the marker; the call that binds the home's lock to this
@@ -2668,8 +2782,9 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             wrapTool(createBashTool(), (bash) => ({
                 ...bash,
                 execute: async (args, api, context) => {
-                    const home = await homeOf(api.env?.cwd);
-                    if (home === undefined) return bash.execute(args, api, context);
+                    const checked = await checkHome(api, context);
+                    if (checked.kind !== "local") return bash.execute(args, api, context);
+                    const { home } = checked;
                     const main = await branchOf(home, api.conversationId);
                     if (main !== undefined) return branchBash(main).execute(args, api, context);
                     const before = await ownership(home, api.conversationId);
@@ -2686,13 +2801,19 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         hooks: [
             hook(ToolTask, {
                 beforeTool: async (call, api, context) => {
-                    const assigned = await workers.worker(api.conversationId);
-                    if (assigned !== undefined) {
-                        const block = workerBlock(assigned, call.name);
+                    const checked = await checkHome(api as HookApi & EnvSource, context);
+                    if (checked.placement === "server") {
+                        const assigned = await workers.worker(api.conversationId);
+                        if (assigned !== undefined) {
+                            const block = workerBlock(assigned, call.name);
+                            return block === undefined ? undefined : { block };
+                        }
+                    }
+                    if (checked.kind !== "local") {
+                        const block = SUPERVISOR_TOOLS.has(call.name) ? homeNotice(checked) : undefined;
                         return block === undefined ? undefined : { block };
                     }
-                    const home = await homeOf(await hookCwd(api, api.conversationId, context));
-                    if (home === undefined) return undefined;
+                    const { home } = checked;
                     const branch = (await branchOf(home, api.conversationId)) !== undefined;
                     if (branch && !BRANCH_TOOLS.has(call.name)) {
                         return { block: `[supervision-branch] the Firstmate supervision session uses only read, bash, ${REPORT_TOOL}, and the context tools ${CONTEXT_TOOLS.join(", ")}; ${call.name} belongs to the main Firstmate session.` };
@@ -2704,8 +2825,8 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                         const command = (call.arguments as { command?: unknown }).command;
                         if (typeof command !== "string") return undefined;
                         const block =
-                            (await seatbelt(home, "fm-cd-pretool-check.sh", ["--command", command], "denied by the cd-guard PreToolUse seatbelt")) ??
-                            (await seatbelt(home, "fm-arm-pretool-check.sh", ["--command", command], "denied by the watcher-arm PreToolUse seatbelt"));
+                            (await seatbelt(checked, "fm-cd-pretool-check.sh", ["--command", command], "denied by the cd-guard PreToolUse seatbelt", context)) ??
+                            (await seatbelt(checked, "fm-arm-pretool-check.sh", ["--command", command], "denied by the watcher-arm PreToolUse seatbelt", context));
 
                         return block === undefined ? undefined : { block };
                     }
@@ -2717,7 +2838,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     if (CODING_TOOLS.has(call.name) || SUPERVISOR_TOOLS.has(call.name) || call.name.startsWith("mcp__")) {
                         return undefined;
                     }
-                    const block = await seatbelt(home, "fm-subagent-pretool-check.sh", ["--tool", call.name], "denied by the subagent-dispatch PreToolUse seatbelt");
+                    const block = await seatbelt(checked, "fm-subagent-pretool-check.sh", ["--tool", call.name], "denied by the subagent-dispatch PreToolUse seatbelt", context);
 
                     return block === undefined ? undefined : { block };
                 },
@@ -2726,7 +2847,30 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 // A fresh conversation's first request runs the session start, and after a compaction the digest is
                 // gone from context: either way the hook runs it once and gives the model the whole digest.
                 beforeRequest: async ({ messages }, api, context) => {
-                    const assigned = await workers.worker(api.conversationId);
+                    const checked = await checkHome(api as HookApi & EnvSource, context);
+                    const notice = homeNotice(checked);
+                    if (notice === undefined) lastHomeNotice.delete(api.conversationId);
+                    else if (notice !== lastHomeNotice.get(api.conversationId)) {
+                        lastHomeNotice.set(api.conversationId, notice);
+                        host.notice?.(checked.kind === "unavailable" ? "warning" : "info", notice, api.conversationId);
+                    }
+                    if (checked.kind === "preview") {
+                        // Do not give this session the home's supervisor prompt, including one persisted in an old
+                        // system message. It would tell the model to start Firstmate manually without a lock check.
+                        return {
+                            messages: [{
+                                role: "system" as const,
+                                content: "",
+                                timestamp: Date.now(),
+                                sections: { firstmate_runner: `${notice} Do not run Firstmate startup, supervision, or worker commands here.` },
+                            }, ...messages.map((message) => {
+                                if (message.role !== "system" || message.sections === undefined) return message;
+                                const { firstmate, project_context, skills, ...sections } = message.sections;
+                                return { ...message, sections };
+                            })],
+                        };
+                    }
+                    const assigned = checked.placement === "server" ? await workers.worker(api.conversationId) : undefined;
                     if (assigned !== undefined) {
                         // System messages are patches. Keep only the latest worker instructions and codemode
                         // catalog, so older catalogs cannot expose supervisor tools after registration or a reload.
@@ -2751,18 +2895,19 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                             }),
                         };
                     }
+                    if (checked.kind !== "local") return undefined;
+                    const { home } = checked;
                     const summary = messages.findLastIndex((message) => userText(message as never).startsWith(COMPACTED));
                     if (summary < 0) {
-                        const started = await firstStart(messages, api, context);
+                        const started = await firstStart(home, messages, api, context);
 
-                        return await postureRequest(started?.messages ?? messages, api, context) ?? started;
+                        return await postureRequest(home, started?.messages ?? messages, api, context) ?? started;
                     }
                     const compaction = hash(userText(messages[summary] as never));
                     const after = messages.slice(summary + 1).some((message) => userText(message as never).startsWith(`${OPERATIONAL_PREFIX}session-start:`));
-                    if (after) return postureRequest(messages, api, context);
-                    const home = await homeOf(await hookCwd(api, api.conversationId, context));
+                    if (after) return postureRequest(home, messages, api, context);
                     // The supervision session never owns the lock, so it never gets the digest.
-                    if (home === undefined || (await ownership(home, api.conversationId)) !== "owned") return undefined;
+                    if ((await ownership(home, api.conversationId)) !== "owned") return undefined;
                     const runtime = api as Partial<Pick<ToolExecutionApi, "conversation">>;
                     if (typeof runtime.conversation !== "function") return undefined;
                     const key = `x.firstmate.reemit-${compaction}`;
@@ -2779,7 +2924,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                         context,
                     );
 
-                    return postureRequest(messages, api, context);
+                    return postureRequest(home, messages, api, context);
                 },
                 // A turn that would end with supervision off continues once with the guard's text.
                 onYield: async (_answer, api, context) => {
@@ -2791,9 +2936,11 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     if (lastText.startsWith(`${OPERATIONAL_PREFIX}turn-end-guard:`) || lastText.startsWith(GUARD_HEADER)) {
                         return undefined;
                     }
-                    const home = await homeOf(await hookCwd(api, api.conversationId, context));
+                    const checked = await checkHome(api as HookApi & EnvSource, context);
+                    if (checked.kind !== "local") return undefined;
+                    const { home } = checked;
                     // The supervision session's turns end with their report; supervision continuity is main's.
-                    if (home === undefined || (await branchOf(home, api.conversationId)) !== undefined) return undefined;
+                    if ((await branchOf(home, api.conversationId)) !== undefined) return undefined;
                     const key = "x.firstmate.turn-end-guard";
                     let verdict = await api.memo<{ code: number; text: string }>(key, context);
                     if (verdict === undefined) {

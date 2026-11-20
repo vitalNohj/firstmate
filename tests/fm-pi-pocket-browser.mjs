@@ -1,6 +1,5 @@
 // The Pi Pocket browser module (pi-pocket/firstmate.js), driven by
-// tests/fm-pi-pocket-dropin.test.sh. A preference read applies only while the
-// conversation and refresh generation it captured are still current.
+// tests/fm-pi-pocket-dropin.test.sh. A delayed read must not undo a newer server event.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -16,122 +15,51 @@ const FOLDED = {
 };
 
 function harness() {
-    const presented = [];
+    const modes = {};
     const reads = [];
-    const calmListeners = [];
-    let conversationHandler = null;
-    const pocket = {
-        entryPresentation(kind, mode) {
-            presented.push({ kind, mode });
-        },
+    const listeners = [];
+    let resolve;
+    const response = new Promise((done) => { resolve = done; });
+    setup({
+        entryPresentation(kind, mode) { modes[kind] = mode; },
         api(path) {
-            let resolve;
-            let reject;
-            const promise = new Promise((res, rej) => {
-                resolve = res;
-                reject = rej;
-            });
-            reads.push({ path, promise, resolve, reject });
-            return promise;
+            reads.push(path);
+            return response;
         },
         on(name, listener) {
-            if (name === "calm") calmListeners.push(listener);
+            if (name === "calm") listeners.push(listener);
         },
-        onConversation(handler) {
-            conversationHandler = handler;
-        },
-    };
-    setup(pocket);
+    });
     return {
-        presented,
+        modes,
         reads,
-        show(id) {
-            conversationHandler(id);
+        async receive(calm) {
+            resolve({ calm });
+            await response;
         },
-        calm(data) {
-            for (const listener of calmListeners) listener(data);
+        calm(calm) {
+            for (const listener of listeners) listener({ calm });
         },
     };
 }
 
-function modes(presented) {
-    const found = {};
-    for (const entry of presented) found[entry.kind] = entry.mode;
-    return found;
-}
-
-test("an older calm read that resolves last does not change the active conversation", async () => {
+test("Firstmate inputs start folded and a browser loads the shared Pocket setting", async () => {
     const ui = harness();
-    ui.show("conv-on");
-    ui.show("conv-off");
-    assert.equal(ui.reads[0].path, "calm?conversation=conv-on");
-    assert.equal(ui.reads[1].path, "calm?conversation=conv-off");
+    assert.deepEqual(ui.modes, FOLDED);
+    assert.deepEqual(ui.reads, ["calm"]);
 
-    ui.reads[1].resolve({ calm: false });
-    await ui.reads[1].promise;
-    assert.deepEqual(modes(ui.presented), OPEN);
-
-    const applied = ui.presented.length;
-    ui.reads[0].resolve({ calm: true });
-    await ui.reads[0].promise;
-    assert.equal(ui.presented.length, applied);
-    assert.deepEqual(modes(ui.presented), OPEN);
-});
-
-test("an older calm read that resolves before the active one does not present it", async () => {
-    const ui = harness();
-    ui.show("conv-on");
-    ui.show("conv-off");
-
-    ui.reads[0].resolve({ calm: true });
-    await ui.reads[0].promise;
-    assert.deepEqual(modes(ui.presented), {});
-
-    ui.reads[1].resolve({ calm: false });
-    await ui.reads[1].promise;
-    assert.deepEqual(modes(ui.presented), OPEN);
+    await ui.receive(false);
+    assert.deepEqual(ui.modes, OPEN);
+    ui.calm(true);
+    assert.deepEqual(ui.modes, FOLDED);
+    assert.deepEqual(ui.reads, ["calm"], "a server-wide event needs no conversation lookup");
 });
 
 test("a calm toggle is kept when the earlier settings response resolves last", async () => {
     const ui = harness();
-    ui.show("conv");
-    assert.equal(ui.reads.length, 1);
-    assert.equal(ui.reads[0].path, "calm?conversation=conv");
+    ui.calm(false);
+    assert.deepEqual(ui.modes, OPEN);
 
-    ui.calm({ calm: true, conversation: "conv" });
-    assert.deepEqual(modes(ui.presented), FOLDED);
-
-    const applied = ui.presented.length;
-    ui.reads[0].resolve({ calm: false });
-    await ui.reads[0].promise;
-    assert.equal(ui.presented.length, applied);
-    assert.deepEqual(modes(ui.presented), FOLDED);
-});
-
-test("a calm event for another conversation rereads the shown conversation", async () => {
-    const ui = harness();
-    ui.show("conv-b");
-    assert.equal(ui.reads[0].path, "calm?conversation=conv-b");
-
-    ui.calm({ calm: true, conversation: "conv-a" });
-    assert.equal(ui.reads.length, 2);
-    assert.equal(ui.reads[1].path, "calm?conversation=conv-b");
-    assert.deepEqual(modes(ui.presented), {});
-
-    ui.reads[1].resolve({ calm: true });
-    await ui.reads[1].promise;
-    assert.deepEqual(modes(ui.presented), FOLDED);
-
-    const applied = ui.presented.length;
-    ui.reads[0].resolve({ calm: false });
-    await ui.reads[0].promise;
-    assert.equal(ui.presented.length, applied);
-    assert.deepEqual(modes(ui.presented), FOLDED);
-
-    const otherHome = harness();
-    otherHome.show("conv-b");
-    otherHome.calm({ calm: true, conversation: "conv-a" });
-    otherHome.reads[1].resolve({ calm: false });
-    await otherHome.reads[1].promise;
-    assert.deepEqual(modes(otherHome.presented), OPEN);
+    await ui.receive(true);
+    assert.deepEqual(ui.modes, OPEN);
 });
