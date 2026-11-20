@@ -43,8 +43,8 @@ typescript_node() {
 
 # --- browser module ----------------------------------------------------------
 
-test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last() {
-  command -v node >/dev/null 2>&1 || fail "node is required to prove a stale Calm read cannot override the active conversation"
+test_browser_keeps_calm_after_a_stale_read() {
+  command -v node >/dev/null 2>&1 || fail "node is required to test Pocket Calm in the browser module"
   local out
   out=$(node --test --test-concurrency=1 --test-reporter=tap "$BROWSER" 2>&1) || {
     printf '%s\n' "$out" >&2
@@ -52,10 +52,8 @@ test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last() {
   }
   local needle
   for needle in \
-    "ok 1 - an older calm read that resolves last does not change the active conversation" \
-    "ok 2 - an older calm read that resolves before the active one does not present it" \
-    "ok 3 - a calm toggle is kept when the earlier settings response resolves last" \
-    "ok 4 - a calm event for another conversation rereads the shown conversation" \
+    "ok 1 - Firstmate inputs start folded and a browser loads the shared Pocket setting" \
+    "ok 2 - a calm toggle is kept when the earlier settings response resolves last" \
     "# fail 0"
   do
     case "$out" in
@@ -66,10 +64,10 @@ test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last() {
         ;;
     esac
   done
-  pass "browser module: a slower Calm read cannot override the active conversation or a newer toggle, and another conversation's toggle rereads the shown home"
+  pass "browser module: Calm starts folded and a delayed read cannot undo a newer server-wide toggle"
 }
 
-test_browser_keeps_the_active_calm_state_when_an_older_read_resolves_last
+test_browser_keeps_calm_after_a_stale_read
 
 if [ ! -f "$CHECKOUT/test/helpers.ts" ] || [ ! -d "$CHECKOUT/node_modules/@earendil-works/pi-durable" ]; then
   echo "skip: no Pi Pocket checkout with installed dependencies at $CHECKOUT"

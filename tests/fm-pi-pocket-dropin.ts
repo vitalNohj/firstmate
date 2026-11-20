@@ -16,6 +16,7 @@ import {
     mkdirSync,
     mkdtempSync,
     readFileSync,
+    readdirSync,
     renameSync,
     rmSync,
     statSync,
@@ -23,6 +24,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { after, mock, test } from "node:test";
@@ -363,14 +365,15 @@ async function open(dataDir: string, enable: boolean): Promise<App> {
 }
 
 /** The session's newest watcher task record, live or ended. */
-async function watchTask(app: App, id: unknown) {
+async function lastTask(app: App, id: unknown, kind: string) {
     return app.harness.commit(async (tx: { scanTasks: (query: object, limit: number) => Promise<{ items: any[] }> }) => {
-        const page = await tx.scanTasks({ conversationId: id, kind: "x.firstmate.watch", order: "descending" }, 1);
+        const page = await tx.scanTasks({ conversationId: id, kind, order: "descending" }, 1);
 
         return page.items[0];
     }, context);
 }
 
+const watchTask = (app: App, id: unknown) => lastTask(app, id, "x.firstmate.watch");
 const clientKey = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1247,61 +1250,202 @@ test("a compaction re-emits the session start for the model", { timeout: 60_000 
     assert.match(digest!.text, /^\u2063FIRSTMATE_OP: v1 session-start: /);
 });
 
-test("/calm toggles the shared preference file and a reloaded tab can read it", { timeout: 60_000 }, async () => {
-    const { app, id, fmHome } = await started();
-    const elsewhere = await newSession(app, work);
-    const path = join(fmHome, "config", "calm");
-    const commandId = app.webs.commands().find((command: { name?: string }) => command.name === "firstmate-calm")?.id;
-    assert.equal(typeof commandId, "string");
-    const toggle = async (session: unknown, args = "") =>
-        app.extensionCommands.run(session, owner(app), { commandId, args, requestId: crypto.randomUUID() }) as Promise<{
-            type?: string;
-            level?: string;
-            message?: string;
-            status?: string;
-        }>;
+const HOME_ID_FILE = "config/pi-pocket-home-id";
 
-    const textsBefore = (await userTexts(app, id)).length;
-    const turnedOn = await toggle(id);
-    assert.equal(turnedOn.status, "done");
-    assert.equal(turnedOn.type, "toast");
-    assert.equal(turnedOn.message, "Calm on");
-    assert.equal(readFileSync(path, "utf8"), "on\n");
-    assert.equal(statSync(path).mode & 0o777, 0o600);
-    assert.equal((await userTexts(app, id)).length, textsBefore, "/calm does not add a transcript row");
+function optIn(fmHome: string, homeId = crypto.randomUUID()): string {
+    mkdirSync(join(fmHome, "config"), { recursive: true });
+    writeFileSync(join(fmHome, HOME_ID_FILE), `${homeId}\n`, { mode: 0o600 });
+    return homeId;
+}
 
-    const turnedOff = await toggle(id, "please");
-    assert.equal(turnedOff.message, "Calm off");
-    assert.equal(readFileSync(path, "utf8"), "off\n");
-
-    writeFileSync(path, "max\n", { mode: 0o600 });
-    assert.equal((await toggle(id)).message, "Calm off", "the legacy max value is on, so /calm turns it off");
-    assert.equal(readFileSync(path, "utf8"), "off\n");
-
-    const unchanged = await toggle(elsewhere);
-    assert.equal(unchanged.message, "Calm is unchanged: this session is not a Firstmate home");
-    assert.equal(readFileSync(path, "utf8"), "off\n");
-
-    assert.equal((await toggle(id)).message, "Calm on");
-
+/** A loopback-only app listener; pass the runner upgrade path as in Pi Pocket's runner tests. */
+async function serveFixture(app: App) {
     const { createHandler } = await import(join(checkout, "src/server/http.ts"));
     const server: Server = createServer(createHandler({ app, listen: { host: "127.0.0.1", port: 0 }, restart: () => {} }));
+    server.on("upgrade", (request, socket, head) => {
+        if (!app.runners?.upgrade(request, socket, head)) socket.destroy();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return {
+        base: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        close: () => new Promise<void>((resolve) => {
+            server.closeAllConnections();
+            server.close(() => resolve());
+        }),
+    };
+}
+
+async function toggleCalm(app: App, id: unknown, args = "") {
+    const commandId = app.webs.commands().find((command: { name?: string }) => command.name === "firstmate-calm")?.id;
+    assert.equal(typeof commandId, "string");
+    return app.extensionCommands.run(id, owner(app), { commandId, args, requestId: crypto.randomUUID() }) as Promise<{
+        type?: string;
+        level?: string;
+        message?: string;
+        status?: string;
+    }>;
+}
+
+async function readCalm(app: App, base: string) {
+    const response = await fetch(`${base}/api/x/firstmate/calm`, {
+        headers: { authorization: `Bearer ${app.config.ownerToken}`, "x-pocket": "1" },
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+}
+
+const runnerCapable = existsSync(join(checkout, "src/runner/runner.ts")) && existsSync(join(checkout, "src/runner/secure-link.ts"));
+
+test("a real runner detects its opted-in home without touching the server or starting supervision", { skip: !runnerCapable, timeout: 90_000 }, async (t) => {
+    const { app, id: local, fmHome: serverHome } = await started();
+    const runnerHome = await home();
+    const runnerId = optIn(runnerHome);
+    const localId = optIn(serverHome);
+    writeFileSync(join(serverHome, "stub", "digest-tail"), "SERVER HOME ONLY\n");
+    writeFileSync(join(runnerHome, "stub", "digest-tail"), "RUNNER HOME ONLY\n");
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await say(app, local, "check the server home");
+    assert.ok((await userTexts(app, local)).some((text) => text.includes("SERVER HOME ONLY")));
+    assert.equal(readFileSync(join(serverHome, "state", ".lock-session"), "utf8").trim(), `pi-pocket:${String(local)}`);
+    await bridgeUp(serverHome, local);
+    await branchStarted(app, serverHome);
+    writeFileSync(join(serverHome, "config", "calm"), "legacy server preference\n");
+    writeFileSync(join(runnerHome, "config", "calm"), "legacy runner preference\n");
+
+    const server = await serveFixture(app);
+    const { linkInProcess } = await import(join(checkout, "src/runner/secure-link.ts"));
+    const link = linkInProcess((request: unknown) => app.runners.redeem(request), app.runners.makeCode("Fixture laptop", owner(app).id).code);
+    const runnerData = mkdtempSync(join(root, "runner-data-"));
+    const source = `
+        import { Runner } from ${JSON.stringify(pathToFileURL(join(checkout, "src/runner/runner.ts")).href)};
+        const runner = new Runner({ link: JSON.parse(process.env.FIXTURE_LINK), cwd: process.cwd(), version: "test" });
+        process.stdin.resume();
+        process.stdin.once("end", () => void runner.stop());
+        process.on("SIGTERM", () => void runner.stop());
+        runner.start();
+        await runner.finished;
+        process.exit(0);
+    `;
+    const runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", source], {
+        cwd: runnerHome,
+        env: { PATH: process.env.PATH, HOME: runnerData, TMPDIR: runnerData, PI_POCKET_DIR: runnerData,
+            FIXTURE_LINK: JSON.stringify({ server: server.base, ...link }) },
+        stdio: ["pipe", "ignore", "inherit"],
+    });
+    runner.stdin.on("error", () => {});
+    const exited = new Promise((resolve) => runner.once("close", resolve));
+    const stopRunner = async () => {
+        runner.stdin.end();
+        await exited;
+    };
+    t.after(async () => {
+        await stopRunner();
+        await server.close();
+    });
+    await until(() => app.runners.link(link.id).online, "the fixture runner", LONG);
+    const remote = (await app.commands.createSession(owner(app), { cwd: runnerHome, runner: link.id })).id;
+    const tab = fakeTab(remote, owner(app));
+    app.attach(tab.client);
+    t.after(() => app.detach(tab.client));
+    const notices = () => tab.events.filter((item: { event: string }) => item.event === "notice").map((item: { data: { message: string } }) => item.data.message);
+
+    // Simulate an identical pathname on two computers. Only server filesystem calls are redirected; the actual runner
+    // and its pi-env daemon have their own processes and still see the runner's separate fixture home.
+    const hostChecks: string[] = [];
+    for (const op of ["stat", "lstat", "realpath", "readFile", "open"] as const) {
+        const actual = fs[op] as (...args: any[]) => Promise<unknown>;
+        t.mock.method(fs, op, (...args: any[]) => {
+            const [path] = args;
+            if (typeof path === "string" && (path === runnerHome || path.startsWith(`${runnerHome}/`))) {
+                hostChecks.push(path);
+                args[0] = `${serverHome}${path.slice(runnerHome.length)}`;
+            }
+            return actual(...args);
+        });
+    }
+    syncBuiltinESMExports();
+    t.after(() => {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+    });
+    const marker = join(runnerHome, HOME_ID_FILE);
+    const remoteEnv = app.envFor(remote); // Test fixture only: compare contents and stop the link during a real home probe.
+    assert.equal(await fs.readFile(marker, "utf8"), `${localId}\n`);
+    assert.deepEqual(await remoteEnv.readTextFile(marker, context), { ok: true, value: `${runnerId}\n` });
+    hostChecks.length = 0;
+
+    await say(app, remote, "check the runner home");
+    assert.ok(notices().some((notice: string) => notice.includes(runnerHome) && /runner supervision is not enabled/i.test(notice)), notices().join("\n"));
+    assert.deepEqual(await readCalm(app, server.base), { calm: true });
+    assert.equal((await toggleCalm(app, remote)).message, "Calm off");
+    assert.deepEqual(await readCalm(app, server.base), { calm: false }, "the runner changes the same preference as the server");
+    assert.equal((await toggleCalm(app, local)).message, "Calm on");
+    assert.equal(readFileSync(join(serverHome, "config", "calm"), "utf8"), "legacy server preference\n");
+    assert.equal(readFileSync(join(runnerHome, "config", "calm"), "utf8"), "legacy runner preference\n");
+
+    await say(app, remote, "show the marker");
+    assert.ok((await toolSaid(app, remote)).some((text) => text.includes("marker=none")));
+    await say(app, remote, "force supervisor tool fm_watch_arm_pocket");
+    assert.ok((await toolSaid(app, remote)).some((text) => /runner supervision is not enabled/i.test(text)));
+
+    // The folder still has every structural marker, but only the server's path has an opt-in now.
+    rmSync(marker);
+    await say(app, remote, "check the runner without opt-in");
+    assert.ok(notices().some((notice: string) => /no valid config\/pi-pocket-home-id/i.test(notice)), notices().join("\n"));
+    optIn(runnerHome, runnerId);
+
+    // Let Pocket prepare a request while the runner is online, then disconnect during the add-on's probe.
+    // A request started offline would wait in Pocket before the extension had any environment at all.
+    const fileInfo = remoteEnv.fileInfo.bind(remoteEnv);
+    const underlying = app.runners.env(link.id, runnerHome, app.runnerScope(remote));
+    t.mock.method(underlying, "fileInfo", async (path: string, ctx: typeof context) => {
+        if (path.endsWith("pi-pocket-home-id")) await stopRunner();
+        return fileInfo(path, ctx);
+    });
+    const submission = app.commands.submit(remote, owner(app), { text: "check the disconnected runner", requestId: crypto.randomUUID() });
+    await submission;
+    await until(() => notices().some((notice: string) => /Firstmate home check unavailable/i.test(notice)), "a runner-unavailable notice", LONG);
+    assert.equal(app.runners.link(link.id).online, false);
+
+    assert.deepEqual(hostChecks, [], "runner admission, tools and Calm never consult host files at the matching path");
+    assert.deepEqual(readdirSync(join(runnerHome, "state")), [], "no runner lock, branch or bridge records");
+    assert.deepEqual(readdirSync(join(runnerHome, "stub")), ["digest-tail"], "no startup, watcher or guard script ran");
+    assert.equal(await watchTask(app, remote), undefined);
+    assert.equal(await lastTask(app, remote, "x.firstmate.pocket-bridge"), undefined);
+    assert.equal(supervisionSessions(app).length, 1, "only the server launched a supervision session");
+    assert.equal(readFileSync(join(serverHome, "state", ".lock-session"), "utf8").trim(), `pi-pocket:${String(local)}`);
+});
+
+test("Pocket Calm defaults to on and its shared toggle persists across a server restart", { timeout: 60_000 }, async () => {
+    const dataDir = join(root, "calm-data");
+    const { app, id, fmHome } = await started(dataDir);
+    const legacy = join(fmHome, "config", "calm");
+    mkdirSync(dirname(legacy));
+    writeFileSync(legacy, "off\n");
+    const server = await serveFixture(app);
     try {
-        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-        const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-        const readCalm = async () => {
-            const response = await fetch(`${base}/api/x/firstmate/calm?conversation=${String(id)}`, {
-                headers: { authorization: `Bearer ${app.config.ownerToken}`, "x-pocket": "1" },
-            });
-            assert.equal(response.status, 200);
-            return response.json() as Promise<{ calm?: boolean }>;
-        };
-        assert.deepEqual(await readCalm(), { calm: true });
-        assert.equal((await toggle(id)).message, "Calm off");
-        assert.deepEqual(await readCalm(), { calm: false });
+        assert.deepEqual(await readCalm(app, server.base), { calm: true });
+        const textsBefore = (await userTexts(app, id)).length;
+        const turnedOff = await toggleCalm(app, id);
+        assert.equal(turnedOff.status, "done");
+        assert.equal(turnedOff.type, "toast");
+        assert.equal(turnedOff.message, "Calm off");
+        assert.deepEqual(await readCalm(app, server.base), { calm: false });
+        assert.equal((await userTexts(app, id)).length, textsBefore, "/firstmate-calm does not add a transcript row");
     } finally {
-        server.closeAllConnections();
-        server.close();
+        await server.close();
+        await app.close();
+    }
+    const restarted = await open(dataDir, true);
+    apps.push(restarted);
+    const reopened = await serveFixture(restarted);
+    try {
+        assert.deepEqual(await readCalm(restarted, reopened.base), { calm: false });
+        assert.equal((await toggleCalm(restarted, id)).message, "Calm on");
+        assert.deepEqual(await readCalm(restarted, reopened.base), { calm: true });
+        assert.equal(readFileSync(legacy, "utf8"), "off\n");
+    } finally {
+        await reopened.close();
     }
 });
 

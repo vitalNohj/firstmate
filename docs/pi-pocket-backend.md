@@ -28,6 +28,33 @@ A spawn from anywhere else, or while the drop-in's bridge is not running, refuse
 
 Secondmates are not supported: Pi Pocket can start top-level sessions, but Firstmate has not implemented their isolated home, lock, parent-channel, and lifecycle integration.
 
+## Runner home preview
+
+Install the drop-in on the Pi Pocket server, not on the linked computer.
+To opt in, the owner creates a gitignored `config/pi-pocket-home-id` in the Firstmate home on the runner.
+It must be a regular file in that home with one random UUID v4, not a symbolic link or a copy of the server home's ID.
+From the runner home's root, create it once with Node:
+
+```sh
+mkdir -p config
+node -e 'require("node:fs").writeFileSync("config/pi-pocket-home-id", require("node:crypto").randomUUID() + "\n", { flag: "wx", mode: 0o600 })'
+```
+
+Open a Pi Pocket session on that runner in the home folder and send a message.
+The drop-in checks `AGENTS.md`, `bin/fm-session-start.sh`, and either a `.git` directory or `.fm-secondmate-home`, then checks the opt-in file on the same computer.
+A match gives a read-only notice; remove the opt-in file to stop recognition.
+An interrupted or unavailable check never falls back to the server's files, even when both computers use the same path.
+The preview does not take the lock, run startup scripts, start monitoring, or launch supervision and workers on a runner.
+It does not restrict ordinary Pi Pocket tools.
+Local server sessions do not need this marker and still use the existing supervision and worker backend.
+
+## Pocket Calm
+
+Calm folds Firstmate operational inputs in Pi Pocket where the app supports entry presentation.
+The model still reads the full text.
+Calm defaults to on; the owner can toggle it with `/firstmate-calm` from a server or runner session.
+The drop-in stores one setting in the Pi Pocket server's data directory and does not read or write either home's `config/calm`.
+
 ## The worker bridge
 
 The drop-in serves the bridge as a durable background task in the main conversation, started when that conversation takes the home's session lock and after every server restart.
@@ -184,5 +211,7 @@ bin/fm-test-run.sh tests/fm-backend-pi-pocket.test.sh tests/fm-pi-pocket-dropin.
 
 [`tests/fm-backend-pi-pocket.test.sh`](../tests/fm-backend-pi-pocket.test.sh) covers the adapter, the bridge client, and the `fm-spawn`, `fm-control`, and `fm-teardown` paths against a [fake bridge](../tests/pi-pocket-fake-bridge.mjs) and fake Treehouse.
 [`tests/fm-pi-pocket-dropin.test.sh`](../tests/fm-pi-pocket-dropin.test.sh) runs the drop-in's side of the bridge in a real Pi Pocket app on temporary data directories with a scripted model.
+On a runner-capable checkout it links a temporary runner to test separate homes, explicit opt-in, disconnection, and the absence of runner supervision.
+It also verifies the shared Calm setting across a server restart.
 It covers wake-delivery faults on both sides of an arm close, resumed-grant refusal, parallel reports, concurrent home discovery, slow-request heartbeats, surviving-schedule refusal, the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, worker tool inventories and forced-call refusals without changing main or supervision sessions, supervision commands and their restricted bridge access, read-only launch preflight, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#pi-pocket-workers) records the dated results.
