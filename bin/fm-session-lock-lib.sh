@@ -1009,6 +1009,42 @@ fm_session_lock_foreign_owner_live() {
   return 0
 }
 
+# Runner v1 uses a directory in the native lock slot. It never grants the
+# PID-based owned-by-self authority used by the ordinary fleet commands.
+fm_pocket_runner_uuid() {
+  [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]
+}
+
+fm_pocket_runner_lock_record() {  # <state> -> canonical owner line
+  local lock="$1/.lock" record version install home conversation generation
+  [ -d "$lock" ] && [ ! -L "$lock" ] && [ -f "$lock/owner" ] && [ ! -L "$lock/owner" ] || return 1
+  record=$(head -c 512 "$lock/owner" | LC_ALL=C tr -d '\000') || return 1
+  IFS=$'\t' read -r version install home conversation generation <<< "$record"
+  [ "$version" = pi-pocket-runner-v1 ] && fm_pocket_runner_uuid "$install" \
+    && fm_pocket_runner_uuid "$home" && fm_pocket_runner_uuid "$generation" \
+    && [[ "$conversation" =~ ^[A-Za-z0-9._:-]{1,128}$ ]] || return 1
+  cmp -s "$lock/owner" <(printf '%s\t%s\t%s\t%s\t%s\n' "$version" "$install" "$home" "$conversation" "$generation") || return 1
+  printf '%s\n' "$record"
+}
+
+# The preview caller must be below the live local holder of the same claim
+# mutex under which the exact runner owner was published. A copied generation
+# or an ordinary runner bash call is not authority to run preview startup.
+fm_pocket_runner_start_owned() {  # <home> <state> <config> <data>
+  local home=$1 state=$2 record mutex="$2/.lock.acquire" holder pid=$$
+  [ "$state" = "$home/state" ] && [ "$3" = "$home/config" ] && [ "$4" = "$home/data" ] || return 1
+  record=$(fm_pocket_runner_lock_record "$state") || return 1
+  [ "${record##*$'\t'}" = "${FM_POCKET_RUNNER_START:-}" ] || return 1
+  holder=$(cat "$mutex/pid" 2>/dev/null) || return 1
+  [ "$holder" = "${FM_POCKET_RUNNER_HELPER_PID:-}" ] && [[ "$holder" =~ ^[0-9]+$ ]] && [ "$holder" -gt 1 ] || return 1
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    pid=$(fm_ps_ppid "$pid") || return 1
+    [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || return 1
+    [ "$pid" != "$holder" ] || return 0
+  done
+  return 1
+}
+
 # Read-only classification of state/.lock for machine-readable callers.
 # Never acquires the lock. A held lock is not proof the holder is consuming
 # wakes; that question belongs to the inbox readiness projection.
@@ -1017,8 +1053,9 @@ fm_session_lock_foreign_owner_live() {
 #   FM_LOCK_INSPECT_STATE         free|held|stale|unreadable|unknown
 #   FM_LOCK_INSPECT_PID           recorded pid, or empty
 #   FM_LOCK_INSPECT_LIVE_HARNESS  true|false|unknown
+#   FM_LOCK_INSPECT_RUNNER        runner owner line, or empty
 #
-# held: the recorded pid is a live session holder (fm_session_lock_holder_alive).
+# held: a live session holder PID or a persistent runner owner without a PID.
 # stale: the recorded pid is gone.
 # unknown: the file or pid cannot be classified without guessing, including a
 # live process that is not a verified harness. Existence of a lock file, a
@@ -1027,6 +1064,7 @@ fm_session_lock_foreign_owner_live() {
 FM_LOCK_INSPECT_STATE=unknown
 FM_LOCK_INSPECT_PID=
 FM_LOCK_INSPECT_LIVE_HARNESS=unknown
+FM_LOCK_INSPECT_RUNNER=
 fm_session_lock_inspect() {  # <state>
   local state=$1 lock pid
   # shellcheck disable=SC2034 # Output globals, read by lock status and inbox ready.
@@ -1035,7 +1073,14 @@ fm_session_lock_inspect() {  # <state>
   FM_LOCK_INSPECT_PID=
   # shellcheck disable=SC2034 # Output globals, read by lock status and inbox ready.
   FM_LOCK_INSPECT_LIVE_HARNESS=unknown
+  FM_LOCK_INSPECT_RUNNER=
   lock="$state/.lock"
+  # shellcheck disable=SC2034 # Output global, read by lock status.
+  if [ -d "$lock" ] && FM_LOCK_INSPECT_RUNNER=$(fm_pocket_runner_lock_record "$state"); then
+    FM_LOCK_INSPECT_STATE=held
+    FM_LOCK_INSPECT_LIVE_HARNESS=false
+    return 0
+  fi
   if [ ! -e "$lock" ]; then
     FM_LOCK_INSPECT_STATE=free
     FM_LOCK_INSPECT_LIVE_HARNESS=false

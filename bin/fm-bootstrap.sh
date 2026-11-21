@@ -223,8 +223,7 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # deferred network stage sets, so an ordinary bootstrap run records nothing.
 # shellcheck source=bin/fm-timing-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-timing-lib.sh"
-# Sourced only for fm_session_pid_valid: the lock identity this script compares
-# is not always a local pid.
+# Shared native lock identity and the fenced Pi Pocket runner startup check.
 # shellcheck source=bin/fm-session-lock-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
@@ -235,6 +234,17 @@ case "${FM_BOOTSTRAP_NETWORK:-all}" in
   skip|only) FM_BOOTSTRAP_NETWORK_PHASE=${FM_BOOTSTRAP_NETWORK:-all} ;;
   *) FM_BOOTSTRAP_NETWORK_PHASE=all ;;
 esac
+# Pocket runner startup contract: pi-pocket-runner-v1
+RUNNER_PREVIEW=0
+if [ -n "${FM_POCKET_RUNNER_START:-}" ]; then
+  if [ "$#" -ne 0 ] || [ "$FM_ROOT" != "$FM_HOME" ] \
+    || ! fm_pocket_runner_start_owned "$FM_HOME" "$STATE" "$CONFIG" "$DATA"; then
+    echo "error: runner startup ownership was not verified" >&2
+    exit 1
+  fi
+  RUNNER_PREVIEW=1
+  FM_BOOTSTRAP_NETWORK_PHASE=skip
+fi
 local_phase() { [ "$FM_BOOTSTRAP_NETWORK_PHASE" != only ]; }
 network_phase() { [ "$FM_BOOTSTRAP_NETWORK_PHASE" != skip ]; }
 
@@ -1518,6 +1528,10 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ] && local_phase; then
     fi
   fi
 fi
+
+# The runner pilot ends bootstrap at home-local setup and reconciliation. It
+# must not diagnose worker endpoints, register polls or enter the network phase.
+[ "$RUNNER_PREVIEW" -eq 0 ] || exit 0
 
 # Local detection: presence, version floors, and configuration. Nothing here
 # leaves this machine, so it stays on the session-start critical path.

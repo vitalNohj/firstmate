@@ -148,13 +148,14 @@ test_dropin_in_pi_pocket() {
   cp "$ROOT/tests/fm-pi-pocket-dropin.ts" "$dir/run/dropin.test.ts"
   mkdir -p "$dir/tmp"
   (cd "$dir/run" && TMPDIR="$dir/tmp" FM_PI_POCKET_CHECKOUT="$CHECKOUT" FM_PI_POCKET_BIN="$ROOT/bin" \
-    FM_PI_POCKET_DROPIN="$DROPIN" FM_POCKET_BRIDGE_RECONCILE_MS=300 \
+    FM_PI_POCKET_DROPIN="$DROPIN" FM_PI_POCKET_RUNNER_OWNER="$ROOT/pi-pocket/runner-owner.sh" \
+    FM_POCKET_BRIDGE_RECONCILE_MS=300 \
     "$NODE" --test --test-reporter=spec --test-concurrency=1 ${FM_PI_POCKET_DROPIN_FILTER:+--test-name-pattern="$FM_PI_POCKET_DROPIN_FILTER"} dropin.test.ts)
   rc=$?
   if [ "$rc" -ne 0 ]; then
     fail "the drop-in's Pi Pocket tests failed (exit $rc)"
   fi
-  pass "drop-in: first-request session start with the whole digest, lock binding, wake delivery, marker scope, seatbelts, held-back delivery, retry limit, turn-end guard, crash restart, and the supervision branch (one visible linked session, wake routing, outcomes on main, fallback to main incl. a past-deadline turn, restart without a duplicate, record-backed away and quiet postures without a daemon, held outcomes, automatic-input and human-return classification, return briefs, /quiet off, posture recovery after a server restart), and Pocket workers (unfenced brief, task env, seatbelts, trust across hot reload, bridge handoff and disable/re-enable, restricted supervision commands, model-list and spend refusals, run events and reconcile, interrupt, retire and archive teardown, one restart nudge) in a real Pi Pocket app"
+  pass "drop-in: first-request session start with the whole digest, lock binding, wake delivery, marker scope, seatbelts, held-back delivery, retry limit, turn-end guard, crash restart, and the supervision branch (one visible linked session, wake routing, outcomes on main, fallback to main incl. a past-deadline turn, restart without a duplicate, record-backed away and quiet postures without a daemon, held outcomes, automatic-input and human-return classification, return briefs, /quiet off, posture recovery after a server restart), and Pocket workers (unfenced brief, task env, seatbelts, trust across hot reload, bridge handoff and disable/re-enable, restricted supervision commands, model-list and spend refusals, run events and reconcile, interrupt, retire and archive teardown, one restart nudge), and isolated runner ownership, startup and handoff in a real Pi Pocket app"
 }
 
 test_install_copies_idempotently_and_skips_without_pi_pocket

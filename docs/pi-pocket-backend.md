@@ -31,8 +31,11 @@ Secondmates are not supported: Pi Pocket can start top-level sessions, but First
 ## Runner home preview
 
 Install the drop-in on the Pi Pocket server, not on the linked computer.
+Use a matching Firstmate checkout on the runner, with `pi-pocket/runner-owner.sh` and the runner startup support in `bin/`.
+This preview is for a trusted, private home: use a runner you control and do not share the Firstmate conversations.
 To opt in, the owner creates a gitignored `config/pi-pocket-home-id` in the Firstmate home on the runner.
-It must be a regular file in that home with one random UUID v4, not a symbolic link or a copy of the server home's ID.
+It must be a regular file with one random UUID v4.
+Generate a new ID for each home on each computer; do not share, link, or copy the file between homes.
 From the runner home's root, create it once with Node:
 
 ```sh
@@ -40,12 +43,33 @@ mkdir -p config
 node -e 'require("node:fs").writeFileSync("config/pi-pocket-home-id", require("node:crypto").randomUUID() + "\n", { flag: "wx", mode: 0o600 })'
 ```
 
-Open a Pi Pocket session on that runner in the home folder and send a message.
-The drop-in checks `AGENTS.md`, `bin/fm-session-start.sh`, and either a `.git` directory or `.fm-secondmate-home`, then checks the opt-in file on the same computer.
-A match gives a read-only notice; remove the opt-in file to stop recognition.
-An interrupted or unavailable check never falls back to the server's files, even when both computers use the same path.
-The preview does not take the lock, run startup scripts, start monitoring, or launch supervision and workers on a runner.
-It does not restrict ordinary Pi Pocket tools.
+Open a new top-level Pi Pocket session on the runner in the home folder and send a message as the owner.
+Only a direct owner turn in a known top-level session can claim the home.
+Forks, linked children, worktrees, and secondmate homes cannot claim it.
+A session opened before the add-on saw its creation can detect the home but needs a new top-level session to claim it.
+
+The add-on uses the session's runner environment to take the existing `state/.lock` slot on that computer.
+A native Firstmate or another Pi Pocket conversation cannot take the same slot while it is held.
+On the first claim, `bin/fm-session-start.sh` runs the home-local bootstrap and prints a digest, capped at 48 KiB.
+It does not run network checks, drain wakes, start monitoring or launch supervision and workers.
+The same conversation can reconnect and read the saved result without running startup again.
+A lost link, elapsed time, server restart, or removal of the opt-in does not clear the lock.
+The add-on never falls back to server files, even if two computers use the same path.
+
+To hand off, archive the owning conversation and send a message in a new top-level session on the same runner home.
+An archive that the add-on observed clears the old generation on that next eligible turn, not at archive or reconnect time.
+Unarchive before the next turn keeps the old owner.
+After a server restart or extension reload, the add-on cannot confirm earlier archive events with the current public Pi Pocket API.
+For an active or unconfirmed owner, the refusal gives an exact `take over <generation>` message.
+Send that message yourself in the new session to take over that specific lock.
+Deletion alone does not authorize a handoff.
+
+If startup was interrupted and the helper cannot confirm that it stopped, the lock remains held even after archive or takeover.
+For that case only, verify on the runner that startup and its children have stopped, then run `bash pi-pocket/runner-owner.sh pi-pocket-runner-v1 recover <home> <installation-uuid> <home-uuid> <conversation> <generation-uuid>` from the canonical home directory.
+The IDs are in order after the version in `state/.lock/owner`.
+Do not delete the lock or its retired records by hand.
+
+The preview does not grant Firstmate supervision authority or restrict ordinary Pi Pocket tools.
 Local server sessions do not need this marker and still use the existing supervision and worker backend.
 
 ## Pocket Calm
@@ -211,7 +235,8 @@ bin/fm-test-run.sh tests/fm-backend-pi-pocket.test.sh tests/fm-pi-pocket-dropin.
 
 [`tests/fm-backend-pi-pocket.test.sh`](../tests/fm-backend-pi-pocket.test.sh) covers the adapter, the bridge client, and the `fm-spawn`, `fm-control`, and `fm-teardown` paths against a [fake bridge](../tests/pi-pocket-fake-bridge.mjs) and fake Treehouse.
 [`tests/fm-pi-pocket-dropin.test.sh`](../tests/fm-pi-pocket-dropin.test.sh) runs the drop-in's side of the bridge in a real Pi Pocket app on temporary data directories with a scripted model.
-On a runner-capable checkout it links a temporary runner to test separate homes, explicit opt-in, disconnection, and the absence of runner supervision.
+On a runner-capable checkout it links a separate temporary runner process.
+It checks local and runner homes, identical paths on separate filesystems, claim and startup, reconnect, archive and owner takeover, and the absence of runner supervision.
 It also verifies the shared Calm setting across a server restart.
 It covers wake-delivery faults on both sides of an arm close, resumed-grant refusal, parallel reports, concurrent home discovery, slow-request heartbeats, surviving-schedule refusal, the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, worker tool inventories and forced-call refusals without changing main or supervision sessions, supervision commands and their restricted bridge access, read-only launch preflight, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#pi-pocket-workers) records the dated results.

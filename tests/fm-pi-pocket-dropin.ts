@@ -4,9 +4,10 @@
 //   FM_PI_POCKET_CHECKOUT  the Pi Pocket checkout whose test/helpers.ts opens apps on temporary data directories
 //   FM_PI_POCKET_BIN       a copy of Firstmate's bin/ that every fixture home starts from
 //   FM_PI_POCKET_DROPIN    the drop-in file under test
+//   FM_PI_POCKET_RUNNER_OWNER  the helper from the same checkout, run in fixture homes
 // Run with `--child <dataDir> <home>`, the file is instead the server that experiment (b) kills mid-delivery.
 import assert from "node:assert/strict";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import {
     chmodSync,
@@ -19,7 +20,9 @@ import {
     readdirSync,
     renameSync,
     rmSync,
+    rmdirSync,
     statSync,
+    symlinkSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -102,7 +105,7 @@ let homes = 0;
  * A Firstmate primary home: a plain Git repository (not a linked worktree, so Firstmate's scripts see a primary
  * checkout) with AGENTS.md, a copy of bin/ with stubs, and state/.
  */
-async function home(): Promise<string> {
+async function home({ runner = false } = {}): Promise<string> {
     homes += 1;
     const home = join(root, `fm-home-${homes}`);
     await new Promise<void>((resolve, reject) => {
@@ -120,6 +123,21 @@ async function home(): Promise<string> {
     writeFileSync(join(home, "AGENTS.md"), "# Firstmate fixture\n");
     mkdirSync(join(home, "state"));
     mkdirSync(join(home, "stub"));
+    if (runner) {
+        for (const name of ["fm-session-start.sh", "fm-bootstrap.sh"]) copyFileSync(join(bin, name), join(home, "bin", name));
+        const helper = process.env.FM_PI_POCKET_RUNNER_OWNER!;
+        mkdirSync(join(home, "pi-pocket"));
+        if (existsSync(helper)) copyFileSync(helper, join(home, "pi-pocket", "runner-owner.sh"));
+        mkdirSync(join(home, "config"));
+        mkdirSync(join(home, "data"));
+        writeFileSync(join(home, "config", "backlog-backend"), "manual\n");
+        writeFileSync(join(home, "data", "captain.md"), "RUNNER HOME ONLY\n");
+        writeFileSync(join(home, "state", ".wake-queue"), "fixture wake must stay unread\n");
+        for (const name of ["fm-startup-network.sh", "fm-branch-outcome.sh", "fm-herdr-stale-lock.sh", "fm-contributions.sh"]) {
+            const forbidden = join(home, "bin", name);
+            writeFileSync(forbidden, "#!/usr/bin/env bash\nprintf '%s\\n' \"$0\" >> \"$FM_HOME/stub/unexpected\"\nexit 91\n", { mode: 0o755 });
+        }
+    }
 
     return home;
 }
@@ -1353,22 +1371,7 @@ async function readCalm(app: App, base: string) {
 
 const runnerCapable = existsSync(join(checkout, "src/runner/runner.ts")) && existsSync(join(checkout, "src/runner/secure-link.ts"));
 
-test("a real runner detects its opted-in home without touching the server or starting supervision", { skip: !runnerCapable, timeout: 90_000 }, async (t) => {
-    const { app, id: local, fmHome: serverHome } = await started();
-    const runnerHome = await home();
-    const runnerId = optIn(runnerHome);
-    const localId = optIn(serverHome);
-    writeFileSync(join(serverHome, "stub", "digest-tail"), "SERVER HOME ONLY\n");
-    writeFileSync(join(runnerHome, "stub", "digest-tail"), "RUNNER HOME ONLY\n");
-    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
-    await say(app, local, "check the server home");
-    assert.ok((await userTexts(app, local)).some((text) => text.includes("SERVER HOME ONLY")));
-    assert.equal(readFileSync(join(serverHome, "state", ".lock-session"), "utf8").trim(), `pi-pocket:${String(local)}`);
-    await bridgeUp(serverHome, local);
-    await branchStarted(app, serverHome);
-    writeFileSync(join(serverHome, "config", "calm"), "legacy server preference\n");
-    writeFileSync(join(runnerHome, "config", "calm"), "legacy runner preference\n");
-
+async function runnerFixture(app: App, runnerHome: string) {
     const server = await serveFixture(app);
     const { linkInProcess } = await import(join(checkout, "src/runner/secure-link.ts"));
     const link = linkInProcess((request: unknown) => app.runners.redeem(request), app.runners.makeCode("Fixture laptop", owner(app).id).code);
@@ -1383,23 +1386,45 @@ test("a real runner detects its opted-in home without touching the server or sta
         await runner.finished;
         process.exit(0);
     `;
-    const runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", source], {
-        cwd: runnerHome,
-        env: { PATH: process.env.PATH, HOME: runnerData, TMPDIR: runnerData, PI_POCKET_DIR: runnerData,
-            FIXTURE_LINK: JSON.stringify({ server: server.base, ...link }) },
-        stdio: ["pipe", "ignore", "inherit"],
-    });
-    runner.stdin.on("error", () => {});
-    const exited = new Promise((resolve) => runner.once("close", resolve));
-    const stopRunner = async () => {
-        runner.stdin.end();
-        await exited;
+    let listener: typeof server | undefined = server;
+    let running: { stop: () => Promise<void> } | undefined;
+    const connect = async (next: App = app) => {
+        listener ??= await serveFixture(next);
+        const runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", source], {
+            cwd: runnerHome,
+            env: { PATH: process.env.PATH, HOME: runnerData, TMPDIR: runnerData, PI_POCKET_DIR: runnerData,
+                FIXTURE_LINK: JSON.stringify({ server: listener.base, ...link }) },
+            stdio: ["pipe", "ignore", "inherit"],
+        });
+        runner.stdin.on("error", () => {});
+        const exited = new Promise((resolve) => runner.once("close", resolve));
+        running = { stop: async () => { runner.stdin.end(); await exited; } };
+        await until(() => next.runners.link(link.id).online, "the fixture runner", LONG);
     };
-    t.after(async () => {
-        await stopRunner();
-        await server.close();
-    });
-    await until(() => app.runners.link(link.id).online, "the fixture runner", LONG);
+    const disconnect = async () => { await running?.stop(); running = undefined; };
+    const close = async () => { await disconnect(); await listener?.close(); listener = undefined; };
+    return { connect, disconnect, close, runnerData, link, base: server.base };
+}
+
+test("a real runner owns its opted-in home and runs startup there without supervision or host fallback", { skip: !runnerCapable, timeout: 90_000 }, async (t) => {
+    const { app, id: local, fmHome: serverHome } = await started();
+    const runnerHome = await home({ runner: true });
+    const runnerId = optIn(runnerHome);
+    const localId = optIn(serverHome);
+    writeFileSync(join(serverHome, "stub", "digest-tail"), "SERVER HOME ONLY\n");
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await say(app, local, "check the server home");
+    assert.ok((await userTexts(app, local)).some((text) => text.includes("SERVER HOME ONLY")));
+    assert.equal(readFileSync(join(serverHome, "state", ".lock-session"), "utf8").trim(), `pi-pocket:${String(local)}`);
+    await bridgeUp(serverHome, local);
+    await branchStarted(app, serverHome);
+    writeFileSync(join(serverHome, "config", "calm"), "legacy server preference\n");
+    writeFileSync(join(runnerHome, "config", "calm"), "legacy runner preference\n");
+
+    const runner = await runnerFixture(app, runnerHome);
+    t.after(runner.close);
+    await runner.connect();
+    const { link } = runner;
     const remote = (await app.commands.createSession(owner(app), { cwd: runnerHome, runner: link.id })).id;
     const tab = fakeTab(remote, owner(app));
     app.attach(tab.client);
@@ -1432,10 +1457,17 @@ test("a real runner detects its opted-in home without touching the server or sta
     hostChecks.length = 0;
 
     await say(app, remote, "check the runner home");
+    const lock = join(runnerHome, "state", ".lock");
+    assert.ok(existsSync(lock) && statSync(lock).isDirectory(), "the opted-in runner did not take the actual home lock");
+    const runnerRecord = readFileSync(join(lock, "owner"), "utf8");
+    assert.match(runnerRecord, new RegExp(`\\t${remote}\\t`));
+    assert.ok(existsSync(join(runnerHome, "config", "startup-memory-budget")), "real bootstrap materialized its home-local default");
+    assert.match(readFileSync(join(lock, "digest"), "utf8"), /RUNNER HOME ONLY/);
+    assert.doesNotMatch(readFileSync(join(lock, "digest"), "utf8"), /SERVER HOME ONLY/);
     assert.ok(notices().some((notice: string) => notice.includes(runnerHome) && /runner supervision is not enabled/i.test(notice)), notices().join("\n"));
-    assert.deepEqual(await readCalm(app, server.base), { calm: true });
+    assert.deepEqual(await readCalm(app, runner.base), { calm: true });
     assert.equal((await toggleCalm(app, remote)).message, "Calm off");
-    assert.deepEqual(await readCalm(app, server.base), { calm: false }, "the runner changes the same preference as the server");
+    assert.deepEqual(await readCalm(app, runner.base), { calm: false }, "the runner changes the same preference as the server");
     assert.equal((await toggleCalm(app, local)).message, "Calm on");
     assert.equal(readFileSync(join(serverHome, "config", "calm"), "utf8"), "legacy server preference\n");
     assert.equal(readFileSync(join(runnerHome, "config", "calm"), "utf8"), "legacy runner preference\n");
@@ -1456,7 +1488,7 @@ test("a real runner detects its opted-in home without touching the server or sta
     const fileInfo = remoteEnv.fileInfo.bind(remoteEnv);
     const underlying = app.runners.env(link.id, runnerHome, app.runnerScope(remote));
     t.mock.method(underlying, "fileInfo", async (path: string, ctx: typeof context) => {
-        if (path.endsWith("pi-pocket-home-id")) await stopRunner();
+        if (path.endsWith("pi-pocket-home-id")) await runner.disconnect();
         return fileInfo(path, ctx);
     });
     const submission = app.commands.submit(remote, owner(app), { text: "check the disconnected runner", requestId: crypto.randomUUID() });
@@ -1465,12 +1497,175 @@ test("a real runner detects its opted-in home without touching the server or sta
     assert.equal(app.runners.link(link.id).online, false);
 
     assert.deepEqual(hostChecks, [], "runner admission, tools and Calm never consult host files at the matching path");
-    assert.deepEqual(readdirSync(join(runnerHome, "state")), [], "no runner lock, branch or bridge records");
-    assert.deepEqual(readdirSync(join(runnerHome, "stub")), ["digest-tail"], "no startup, watcher or guard script ran");
+    assert.equal(readFileSync(join(lock, "owner"), "utf8"), runnerRecord, "disconnect does not release the owner");
+    assert.equal(readFileSync(join(runnerHome, "state", ".wake-queue"), "utf8"), "fixture wake must stay unread\n");
+    for (const name of [".lock-session", ".pocket-branch", ".session-start-complete", ".session-start-agents-baseline", ".startup-network.lock"]) {
+        assert.equal(existsSync(join(runnerHome, "state", name)), false, `no runner ${name}`);
+    }
+    assert.deepEqual(readdirSync(join(runnerHome, "stub")), [], "no terminal or supervision command ran");
     assert.equal(await watchTask(app, remote), undefined);
     assert.equal(await bridgeTask(app, remote), undefined);
     assert.equal(supervisionSessions(app).length, 1, "only the server launched a supervision session");
     assert.equal(readFileSync(join(serverHome, "state", ".lock-session"), "utf8").trim(), `pi-pocket:${String(local)}`);
+});
+
+const fixtureLock = (home: string) => join(home, "state", ".lock");
+const fixtureOwner = (home: string) => readFileSync(join(fixtureLock(home), "owner"), "utf8");
+const fixtureGeneration = (record: string) => record.trimEnd().split("\t").at(-1)!;
+const retiredOwner = (home: string, record: string) => join(home, "state", `.lock.runner-retired-${fixtureGeneration(record)}`, "owner");
+
+function nativeLock(home: string, ...args: string[]) {
+    return spawnSync("bash", [join(home, "bin", "fm-lock.sh"), ...args], {
+        cwd: home, encoding: "utf8", timeout: 5000,
+        env: { HOME: home, PATH: process.env.PATH, FM_HOME: home,
+            FM_PI_POCKET_SERVER_PID: String(process.pid), FM_PI_POCKET_CONVERSATION: "native-fixture" },
+    });
+}
+
+function callRunnerOwner(home: string, operation: string, fields: string[], previous?: string) {
+    return spawnSync("bash", [join(home, "pi-pocket", "runner-owner.sh"), "pi-pocket-runner-v1", operation, home,
+        ...fields, ...(previous === undefined ? [] : [previous.trimEnd()])], {
+        cwd: home, encoding: "utf8", timeout: 12000, env: { HOME: home, PATH: process.env.PATH },
+    });
+}
+
+test("runner ownership survives app restart, refuses a concurrent main, and hands off only on archive or explicit owner input", { skip: !runnerCapable, timeout: 150_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    rmSync(join(fmHome, "state", ".wake-queue"));
+    rmdirSync(join(fmHome, "state"));
+    const data = mkdtempSync(join(root, "runner-ownership-"));
+    let app = await open(data, true);
+    apps.push(app);
+    const runner = await runnerFixture(app, fmHome);
+    t.after(runner.close);
+    await runner.connect();
+    const main = async (cwd = fmHome) => {
+        const id = (await app.commands.createSession(owner(app), { cwd, runner: runner.link.id })).id;
+        await app.commands.configure(id, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+        return id;
+    };
+    const alias = join(runner.runnerData, "same-home");
+    symlinkSync(fmHome, alias);
+    const both = [await main(), await main(alias)];
+    await Promise.all(both.map((id) => say(app, id, "start in the runner home")));
+    const first = fixtureOwner(fmHome);
+    const ownerId = both.find((id) => first.includes(`\t${id}\t`));
+    const rival = both.find((id) => id !== ownerId)!;
+    assert.ok(ownerId !== undefined, "exactly one eligible main claimed this physical home");
+    const originalDigest = readFileSync(join(fixtureLock(fmHome), "digest"), "utf8");
+    assert.match(originalDigest, /RUNNER HOME ONLY/);
+    assert.match(nativeLock(fmHome, "status").stdout, /held by Pi Pocket runner.*no monitoring/);
+    const native = nativeLock(fmHome);
+    assert.equal(native.status, 1, native.stderr);
+    assert.match(native.stderr, /belongs to a Pi Pocket runner conversation/);
+    await say(app, rival, "try again after startup");
+    assert.equal(fixtureOwner(fmHome), first, "a second main cannot clear an active owner");
+    const fork = (await app.commands.fork(ownerId, owner(app), { place: { runner: runner.link.id, cwd: fmHome } })).id;
+    await say(app, fork, `take over ${fixtureGeneration(first)}`);
+    assert.equal(fixtureOwner(fmHome), first, "a fork does not qualify as a new main");
+    assert.equal(readdirSync(join(fmHome, "state")).filter((name) => name.startsWith(".lock.runner-retired-")).length, 0);
+
+    await runner.close();
+    await app.close();
+    app = await open(data, true);
+    apps.push(app);
+    assert.equal(fixtureOwner(fmHome), first, "restart while offline does not release");
+    await runner.connect(app);
+    writeFileSync(join(fmHome, "data", "captain.md"), "SECOND START SENTINEL\n");
+    await say(app, ownerId, "resume after reconnect and restart");
+    await say(app, rival, "do not steal on reconnect");
+    assert.equal(fixtureOwner(fmHome), first);
+    assert.equal(readFileSync(join(fixtureLock(fmHome), "digest"), "utf8"), originalDigest, "the same owner got the receipt, not a second startup");
+    assert.ok(systemPrompts.some((prompt) => prompt.includes("Startup preview complete.") && prompt.includes("RUNNER HOME ONLY")));
+
+    await app.commands.updateSession(ownerId, owner(app), { archived: true });
+    await app.commands.updateSession(ownerId, owner(app), { archived: false });
+    await say(app, rival, "the owning session is active again");
+    assert.equal(fixtureOwner(fmHome), first, "unarchive cancels automatic handoff");
+    await runner.disconnect();
+    await app.commands.updateSession(ownerId, owner(app), { archived: true });
+    assert.equal(fixtureOwner(fmHome), first, "the archive event does not run a remote release");
+    await runner.connect(app);
+    assert.equal(fixtureOwner(fmHome), first, "reconnect alone does not run a release");
+    await say(app, rival, "start now that the previous owner was archived");
+    const second = fixtureOwner(fmHome);
+    assert.match(second, new RegExp(`\\t${rival}\\t`));
+    assert.equal(readFileSync(retiredOwner(fmHome, first), "utf8"), first);
+    assert.match(readFileSync(join(fixtureLock(fmHome), "digest"), "utf8"), /SECOND START SENTINEL/);
+
+    const next = await main();
+    await say(app, next, `take over ${fixtureGeneration(first)}`);
+    assert.equal(fixtureOwner(fmHome), second, "stale takeover cannot release the successor");
+    const automatic = await app.commands.submit(next, owner(app), { text: `take over ${fixtureGeneration(second)}`, requestId: crypto.randomUUID() }, "schedule");
+    await (await app.harness.submission(automatic.submissionId, context))!.wait(context);
+    assert.equal(fixtureOwner(fmHome), second, "an automatic message cannot take over even with the owner's attribution");
+    const takeover = `take over ${fixtureGeneration(second)}`;
+    await say(app, next, takeover);
+    const third = fixtureOwner(fmHome);
+    assert.match(third, new RegExp(`\\t${next}\\t`));
+    assert.equal(readFileSync(retiredOwner(fmHome, second), "utf8"), second);
+    const promptsBeforeReplay = systemPrompts.length;
+    await say(app, next, takeover);
+    assert.equal(fixtureOwner(fmHome), third, "a repeated input does not create a new claim");
+    assert.ok(systemPrompts.slice(promptsBeforeReplay).some((prompt) => prompt.includes("Startup preview complete.")), "a repeated takeover input reads the current owner's receipt");
+    assert.equal(await watchTask(app, next), undefined);
+    assert.equal(supervisionSessions(app).length, 0);
+});
+
+test("runner helper fences legacy, unsafe and interrupted owners", { skip: !runnerCapable, timeout: 30_000 }, async () => {
+    const fmHome = await home({ runner: true });
+    const homeId = optIn(fmHome);
+    const install = crypto.randomUUID();
+    const first = [install, homeId, "41", crypto.randomUUID()];
+    const next = [install, homeId, "42", crypto.randomUUID()];
+    const lock = fixtureLock(fmHome);
+    const owner = join(lock, "owner");
+    const start = join(fmHome, "bin", "fm-session-start.sh");
+    const originalStart = readFileSync(start, "utf8");
+    writeFileSync(start, "#!/usr/bin/env bash\nprintf 'old read-only digest\\n'\n");
+    assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "invalid-home\n", "never claim with an old startup script");
+    assert.equal(existsSync(lock), false);
+    writeFileSync(start, originalStart);
+    writeFileSync(lock, "2147483647\n");
+    assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "foreign\n");
+    assert.equal(readFileSync(lock, "utf8"), "2147483647\n", "even a stale native lock is not converted");
+    rmSync(lock);
+    mkdirSync(lock);
+    writeFileSync(owner, "unrecognized lock\n");
+    assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "foreign\n");
+    const version = "pi-pocket-runner-v1";
+    const interrupted = [version, ...first].join("\t") + "\n";
+    writeFileSync(owner, interrupted.replace("\t41\t", "\t4\0" + "1\t"));
+    assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "foreign\n", "malformed owner data cannot authorize a replay");
+    writeFileSync(owner, interrupted);
+    assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "incomplete\n", "no blind retry after an interruption");
+    assert.equal(callRunnerOwner(fmHome, "claim", next, interrupted).stdout, "incomplete\n", "no automatic release without proof of quiescence");
+    assert.equal(fixtureOwner(fmHome), interrupted);
+    assert.equal(callRunnerOwner(fmHome, "recover", next).status, 1, "local recovery cannot name the wrong generation");
+    assert.equal(callRunnerOwner(fmHome, "recover", first).stdout, "recovered\n");
+    assert.equal(readFileSync(retiredOwner(fmHome, interrupted), "utf8"), interrupted);
+    assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "retired\n", "a delayed claim cannot reacquire after release");
+
+    // A synchronous bootstrap refusal is incomplete, but records that all
+    // foreground startup work stopped. Only the exact predecessor can retire it.
+    const unsafe = join(fmHome, "state", "unsafe.meta");
+    symlinkSync(join(fmHome, "data", "captain.md"), unsafe);
+    assert.equal(callRunnerOwner(fmHome, "claim", next).stdout, "incomplete\n");
+    assert.equal(existsSync(join(lock, "digest")), false);
+    assert.equal(readFileSync(join(lock, "settled"), "utf8"), `${next.at(-1)}\n`);
+    const stopped = fixtureOwner(fmHome);
+    rmSync(unsafe);
+    const replacement = [install, homeId, "43", crypto.randomUUID()];
+    assert.match(callRunnerOwner(fmHome, "claim", replacement, stopped).stdout, /^started\n/);
+    assert.equal(readFileSync(retiredOwner(fmHome, stopped), "utf8"), stopped);
+    renameSync(lock, join(fmHome, "state", "completed-fixture"));
+    symlinkSync(join(fmHome, "stub"), lock);
+    assert.equal(callRunnerOwner(fmHome, "claim", next).stdout, "foreign\n", "a symlink is never a runner lock");
+    rmSync(lock);
+    writeFileSync(join(fmHome, ".fm-secondmate-home"), "secondmate\n");
+    assert.equal(callRunnerOwner(fmHome, "claim", next).stdout, "invalid-home\n");
+    assert.equal(existsSync(lock), false);
 });
 
 test("Pocket Calm defaults to on and its shared toggle persists across a server restart", { timeout: 60_000 }, async () => {

@@ -44,6 +44,8 @@
 # owner, the same conversation re-acquires, and a restarted server's dead pid
 # is reclaimed like any stale owner.
 #
+# A Pi Pocket runner owner occupies state/.lock as a directory, not a PID.
+# Only pi-pocket/runner-owner.sh can retire it; native acquisition refuses it.
 # Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
 #        fm-lock.sh status    print holder and liveness; always exits 0.
 #                             A held lock is not proof the holder is consuming
@@ -73,7 +75,9 @@ if [ "${1:-}" = "status" ]; then
   case "$FM_LOCK_INSPECT_STATE" in
     free) echo "lock: free" ;;
     unreadable) echo "lock: unreadable" ;;
-    held) echo "lock: held by live harness pid $FM_LOCK_INSPECT_PID" ;;
+    held)
+      if [ -n "$FM_LOCK_INSPECT_RUNNER" ]; then echo "lock: held by Pi Pocket runner conversation (no monitoring)"
+      else echo "lock: held by live harness pid $FM_LOCK_INSPECT_PID"; fi ;;
     *) echo "lock: stale (pid $FM_LOCK_INSPECT_PID dead or not a harness)" ;;
   esac
   exit 0
@@ -288,7 +292,11 @@ fi
 
 if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
   if [ ! -f "$LOCK" ] || [ -L "$LOCK" ]; then
-    echo "error: session lock is not a regular file; operate read-only until resolved" >&2
+    if fm_pocket_runner_lock_record "$STATE" >/dev/null; then
+      echo "error: session lock belongs to a Pi Pocket runner conversation; operate read-only" >&2
+    else
+      echo "error: session lock is not a regular file; operate read-only until resolved" >&2
+    fi
     exit 1
   fi
   old=$(cat "$LOCK" 2>/dev/null) || {
