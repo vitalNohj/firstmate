@@ -1600,9 +1600,15 @@ test("runner ownership survives app restart, refuses a concurrent main, and hand
     const automatic = await app.commands.submit(next, owner(app), { text: `take over ${fixtureGeneration(second)}`, requestId: crypto.randomUUID() }, "schedule");
     await (await app.harness.submission(automatic.submissionId, context))!.wait(context);
     assert.equal(fixtureOwner(fmHome), second, "an automatic message cannot take over even with the owner's attribution");
-    await say(app, next, `take over ${fixtureGeneration(second)}`);
-    assert.match(fixtureOwner(fmHome), new RegExp(`\\t${next}\\t`));
+    const takeover = `take over ${fixtureGeneration(second)}`;
+    await say(app, next, takeover);
+    const third = fixtureOwner(fmHome);
+    assert.match(third, new RegExp(`\\t${next}\\t`));
     assert.equal(readFileSync(retiredOwner(fmHome, second), "utf8"), second);
+    const promptsBeforeReplay = systemPrompts.length;
+    await say(app, next, takeover);
+    assert.equal(fixtureOwner(fmHome), third, "a repeated input does not create a new claim");
+    assert.ok(systemPrompts.slice(promptsBeforeReplay).some((prompt) => prompt.includes("Startup preview complete.")), "a repeated takeover input reads the current owner's receipt");
     assert.equal(await watchTask(app, next), undefined);
     assert.equal(supervisionSessions(app).length, 0);
 });

@@ -482,15 +482,23 @@ function registerRunnerPreview(host: Partial<Host>, web?: PocketSurface) {
                 const record = result.body.trimEnd();
                 const [version, install, ownerHome, ownerId, generation] = record.split("\t");
                 if (version !== RUNNER_OWNER_VERSION || install !== installation || ownerHome !== homeId ||
-                    !/^[1-9][0-9]*$/.test(ownerId) || !HOME_ID.test(generation) || ownerId === String(id)) {
+                    !/^[1-9][0-9]*$/.test(ownerId) || !HOME_ID.test(generation)) {
                     return reply("The lock has a different owner. It was not changed.");
                 }
-                const old = await changeRecord(path, async () => (await load()).sessions[ownerId]);
-                const sameBinding = old !== undefined && old.home === home && old.homeId === homeId &&
-                    runnerOwner(installation, ownerId, old) === record;
-                const archived = sameBinding && old.archived?.observer === observer && old.archived.value && archive.get(Number(ownerId)) === true;
-                if (archive.get(id) !== true && (takeover === undefined ? archived : takeover === generation)) outcome = await invoke(record);
-                else return reply(`This runner home belongs to conversation ${ownerId}. Archive it or send exactly: take over ${generation}`);
+                if (archive.get(id) === true) return undefined;
+                if (ownerId === String(id)) {
+                    if (record !== runnerOwner(installation, ownerId, binding)) return reply("This conversation's current lock could not be verified.");
+                    // A replay after handoff may read its own receipt, but must
+                    // not claim if this exact record disappears before exec.
+                    outcome = await invoke(record);
+                } else {
+                    const old = await changeRecord(path, async () => (await load()).sessions[ownerId]);
+                    const sameBinding = old !== undefined && old.home === home && old.homeId === homeId &&
+                        runnerOwner(installation, ownerId, old) === record;
+                    const archived = sameBinding && old.archived?.observer === observer && old.archived.value && archive.get(Number(ownerId)) === true;
+                    if (archive.get(id) !== true && (takeover === undefined ? archived : takeover === generation)) outcome = await invoke(record);
+                    else return reply(`This runner home belongs to conversation ${ownerId}. Archive it or send exactly: take over ${generation}`);
+                }
             }
             if (outcome.status === "started") {
                 const digest = outcome.body + (Buffer.byteLength(outcome.body, "utf8") >= RUNNER_DIGEST_BYTES - 3 ? "\n[Runner startup digest reached its 48 KiB output limit.]" : "");
