@@ -2778,6 +2778,13 @@ FM_TEST_END 2026-11-09T11:34:44Z tests/fm-backend-pi-pocket.test.sh exit=0 durat
 These checks prove Firstmate's handling of the public API results, not cancellation of independent Pocket jobs.
 The remaining public job-lifecycle limitation is documented in [Teardown](../pi-pocket-backend.md#teardown).
 
+### Runner-home startup preview
+
+Verified on Linux 7.0.0-38-generic with Pi Pocket 0.29.0 (`cf4e4083`) and Node 24.21.0 using [`tests/fm-pi-pocket-dropin.test.sh`](../../tests/fm-pi-pocket-dropin.test.sh) and a separate temporary runner process.
+The suite verified runner-local lock and digest writes, native and second-session refusal, startup receipt reuse after reconnect and app restart, and generation-bound handoff after archive or explicit owner input.
+The matching-path fixture simulates separate filesystems and rejects server fallback; it does not verify a Mac installation.
+The runner did not start a watcher, supervision session, or worker bridge.
+
 ## T3 Code
 
 ### Orchestrator V2 transport

@@ -6,7 +6,7 @@
  * lock it also starts the supervision branch: one linked Pi Pocket session per home, titled "Firstmate supervision",
  * that takes eligible wakes and records their outcomes in the durable store. Away and quiet postures reuse that
  * session; away captain outcomes wait for the human return (docs/pi-supervision-branch.md "Pi Pocket"). Every other
- * session is untouched. On a runner, it only detects and reports an opted-in home.
+ * session is untouched. On a runner, an opted-in home can run the locked startup preview without supervision.
  * Install it with Firstmate's bin/fm-pi-pocket-install.sh, then turn it on in Menu → Extensions.
  * Where Pi Pocket can present an extension's own inputs, /firstmate-calm toggles folding for all Firstmate inputs on
  * this server. The model still reads each one in full, and the supervision session's own prompts stay ordinary messages.
@@ -225,6 +225,9 @@ const HOME_PROBE_MS = 5000;
 const HOME_RETRY_MS = 5000;
 const HOME_COMMAND_MS = 12000;
 const HOME_COMMAND_CHARS = 64 * 1024;
+const RUNNER_OWNER_VERSION = "pi-pocket-runner-v1";
+const RUNNER_OWNER_HELPER = "pi-pocket/runner-owner.sh";
+const RUNNER_DIGEST_BYTES = 49152;
 const RUNNER_READ_ONLY = "Runner supervision is not enabled yet.";
 // FileSystem.id is a namespace, not a runner ID. Only the documented Node namespace admits legacy server I/O.
 const SERVER_FILES = new NodeExecutionEnv({ cwd: "/" }).id;
@@ -237,7 +240,7 @@ type EnvSource = {
 type Placement = "server" | "nonlocal" | "unknown";
 type HomeCheck =
     | { kind: "local"; placement: "server"; home: string; ops: HomeOps }
-    | { kind: "preview"; placement: "nonlocal"; home: string }
+    | { kind: "preview"; placement: "nonlocal"; home: string; homeId: string; ops: HomeOps }
     | { kind: "not-home"; placement: Placement; optInMissing?: true }
     | { kind: "unavailable"; placement: Placement };
 
@@ -286,14 +289,14 @@ class HomeOps {
     }
 
     /** Finite argv checks, without using a shell or spilling output into the session's files. */
-    async exec(argv: readonly [string, ...string[]], env: Record<string, string>, context: Context) {
-        const invocation = withAbortSignal(AbortSignal.timeout(HOME_COMMAND_MS), context);
+    async exec(argv: readonly [string, ...string[]], env: Record<string, string>, context: Context, limitMs = HOME_COMMAND_MS) {
+        const invocation = withAbortSignal(AbortSignal.timeout(limitMs), context);
         let stdout = "";
         let stderr = "";
         invocation.abortSignal?.throwIfAborted();
         const result = await awaitWithContext(this.env.exec(argv, {
             env,
-            timeout: HOME_COMMAND_MS / 1000,
+            timeout: limitMs / 1000,
             onOutput: (text, _context, { stream }) => {
                 if (stream === "stdout") stdout += text.slice(0, HOME_COMMAND_CHARS - stdout.length);
                 else stderr += text.slice(0, HOME_COMMAND_CHARS - stderr.length);
@@ -327,14 +330,14 @@ async function checkHome(source: EnvSource, context: Context): Promise<HomeCheck
             (git?.kind !== "directory" && (await ops.info(".fm-secondmate-home", probe))?.kind !== "file")) {
             return { kind: "not-home", placement };
         }
-        // Preserve the local path used by existing locks, watcher tasks and branch records. The runner is read-only.
+        // Preserve the local path used by existing locks, watcher tasks and branch records.
         if (placement === "server") return { kind: "local", placement, home: env.cwd, ops };
         const optIn = await ops.info(HOME_OPT_IN, probe, false);
         if (optIn?.kind === "file" && optIn.size <= 64) {
             const expected = await ops.joinPath([home, HOME_OPT_IN], probe);
-            if (expected !== undefined && (await ops.canonicalPath(HOME_OPT_IN, probe)) === expected &&
-                HOME_ID.test((await ops.read(HOME_OPT_IN, 64, probe))?.trim() ?? "")) {
-                return { kind: "preview", placement, home };
+            if (expected !== undefined && (await ops.canonicalPath(HOME_OPT_IN, probe)) === expected) {
+                const homeId = (await ops.read(HOME_OPT_IN, 64, probe))?.trim().toLowerCase() ?? "";
+                if (HOME_ID.test(homeId)) return { kind: "preview", placement, home, homeId, ops };
             }
         }
         return { kind: "not-home", placement, optInMissing: true };
@@ -348,6 +351,170 @@ function homeNotice(check: HomeCheck): string | undefined {
     if (check.kind === "unavailable") return "Firstmate home check unavailable. No Firstmate supervision actions ran for this check.";
     if (check.kind === "not-home" && check.optInMissing) return `Not a Firstmate home: no valid ${HOME_OPT_IN} on the session's computer.`;
     return undefined;
+}
+
+type RunnerBinding = {
+    person: string;
+    home: string;
+    homeId: string;
+    generation: string;
+    archived?: { value: boolean; observer: string };
+};
+type RunnerIndex = { installation: string; sessions: Record<string, RunnerBinding> };
+type RunnerInput = { person: string; text: string };
+type RunnerPreview = { notice: string; digest?: string };
+
+function runnerOwner(installation: string, conversation: string, binding: RunnerBinding) {
+    return [RUNNER_OWNER_VERSION, installation, binding.homeId, conversation, binding.generation].join("\t");
+}
+
+/** Only a current, directly authenticated input may authorize a runner startup or handoff. */
+function registerRunnerPreview(host: Partial<Host>, web?: PocketSurface) {
+    const path = typeof host.dataDir === "string" ? join(host.dataDir, "firstmate-runner-owners.json") : undefined;
+    if (path === undefined || host.on === undefined) return undefined;
+    const observer = randomUUID();
+    const roots = new Map<number, string>();
+    const inputs = new Map<string, RunnerInput>();
+    const archive = new Map<number, boolean>();
+    const inputWaiters = new Map<number, () => void>();
+
+    const load = async (): Promise<RunnerIndex> => {
+        const file = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") throw error;
+            return undefined;
+        });
+        if (file === undefined) return { installation: randomUUID(), sessions: {} };
+        const index = file.isFile() ? await readJson<RunnerIndex>(path) : undefined;
+        if (index == null || !HOME_ID.test(index.installation) || index.sessions == null ||
+            typeof index.sessions !== "object" || Array.isArray(index.sessions)) throw new Error("invalid runner owner index");
+        return index;
+    };
+    const stops = [
+        host.on("session.created", ({ conversationId, createdBy, forkedFrom, linkedFrom }) => {
+            if (createdBy !== undefined && forkedFrom === undefined && linkedFrom === undefined && host.roleOf?.(createdBy) === "owner") {
+                roots.set(conversationId, createdBy);
+            }
+        }),
+        host.on("session.archived", ({ conversationId, archived }) => {
+            archive.set(conversationId, archived);
+            return changeRecord(path, async () => {
+                const index = await load();
+                const binding = index.sessions[conversationId];
+                if (binding === undefined) return;
+                binding.archived = { value: archived, observer };
+                await writeJson(path, index);
+            });
+        }),
+        host.on("message.sent", ({ conversationId, by, submissionId, text, via }) => {
+            if (via !== undefined || host.roleOf?.(by) !== "owner") return;
+            inputs.set(`${conversationId}:${submissionId}`, { person: by, text });
+            if (inputs.size > 256) inputs.delete(inputs.keys().next().value!);
+            inputWaiters.get(conversationId)?.();
+        }),
+    ];
+    for (const stop of stops) web?.onDispose?.(stop);
+
+    const ownerInput = async (api: HookApi, context: Context): Promise<RunnerInput | undefined> => {
+        const id = Number(api.conversationId);
+        const requester = host.requesterOf?.(api.conversationId);
+        if (requester === undefined || host.roleOf?.(requester) !== "owner") return undefined;
+        const run = (await api.snapshot(LiveDoc, api.conversationId, context))?.run;
+        if (run === undefined || run.inputs.length === 0) return undefined;
+        const find = () => {
+            const input = inputs.get(`${id}:${run.inputs.at(-1)}`);
+            return input?.person === requester ? input : undefined;
+        };
+        if (find() !== undefined) return find();
+        // Pocket emits message.sent after it commits the submission. Let that
+        // event catch up with this hook, but never infer authorship if absent.
+        await new Promise<void>((resolve) => {
+            const wake = () => { if (find() !== undefined) resolve(); };
+            inputWaiters.set(id, wake);
+            setTimeout(resolve, 500).unref();
+        });
+        inputWaiters.delete(id);
+        return find();
+    };
+
+    return async (checked: Extract<HomeCheck, { kind: "preview" }>, api: HookApi, context: Context): Promise<RunnerPreview | undefined> => {
+        const { home, homeId, ops } = checked;
+        const id = Number(api.conversationId);
+        const reply = (text: string): RunnerPreview => ({ notice: `Firstmate home at ${JSON.stringify(home)}. ${text} ${RUNNER_READ_ONLY}` });
+        try {
+            const input = await ownerInput(api, context);
+            if (input === undefined || archive.get(id) === true) return undefined;
+            const probe = withAbortSignal(AbortSignal.timeout(HOME_PROBE_MS), context);
+            const helperPath = await ops.joinPath([home, RUNNER_OWNER_HELPER], probe);
+            if ((await ops.info(".git", probe, false))?.kind !== "directory" ||
+                (await ops.info(".fm-secondmate-home", probe, false)) !== undefined ||
+                helperPath === undefined || (await ops.info(RUNNER_OWNER_HELPER, probe, false))?.kind !== "file" ||
+                (await ops.canonicalPath(RUNNER_OWNER_HELPER, probe)) !== helperPath) return undefined;
+            const bound = await changeRecord(path, async () => {
+                const { installation, sessions } = await load();
+                let binding = sessions[id];
+                if (binding === undefined) {
+                    if (roots.get(id) !== input.person || archive.get(id) === true) return undefined;
+                    binding = { person: input.person, home, homeId, generation: randomUUID() };
+                    sessions[id] = binding;
+                    await writeJson(path, { installation, sessions });
+                    roots.delete(id);
+                }
+                return binding.person === input.person && binding.home === home && binding.homeId === homeId &&
+                    HOME_ID.test(binding.generation) ? { installation, binding } : undefined;
+            });
+            if (bound === undefined) return undefined;
+            const { installation, binding } = bound;
+            const invoke = async (old?: string) => {
+                const ran = await ops.exec(["bash", helperPath, RUNNER_OWNER_VERSION, "claim", home, installation, homeId,
+                    String(id), binding.generation, ...(old === undefined ? [] : [old])], {}, context, 100_000);
+                if (ran.code !== 0) throw new Error("runner startup helper failed");
+                const newline = ran.stdout.indexOf("\n");
+                if (newline < 0) throw new Error("runner startup helper sent no status");
+                return { status: ran.stdout.slice(0, newline), body: ran.stdout.slice(newline + 1) };
+            };
+            // A takeover message must never become an ordinary claim against a
+            // free slot or a different owner. First read the current record in
+            // the helper, then send only the exact authorized predecessor.
+            const takeover = /^take over ([0-9a-f-]{36})$/i.exec(input.text.trim())?.[1]?.toLowerCase();
+            const result = takeover === undefined ? await invoke() : await readOwner(ops, context);
+            let outcome = result;
+            if (result.status === "held") {
+                const record = result.body.trimEnd();
+                const [version, install, ownerHome, ownerId, generation] = record.split("\t");
+                if (version !== RUNNER_OWNER_VERSION || install !== installation || ownerHome !== homeId ||
+                    !/^[1-9][0-9]*$/.test(ownerId) || !HOME_ID.test(generation) || ownerId === String(id)) {
+                    return reply("The lock has a different owner. It was not changed.");
+                }
+                const old = await changeRecord(path, async () => (await load()).sessions[ownerId]);
+                const sameBinding = old !== undefined && old.home === home && old.homeId === homeId &&
+                    runnerOwner(installation, ownerId, old) === record;
+                const archived = sameBinding && old.archived?.observer === observer && old.archived.value && archive.get(Number(ownerId)) === true;
+                if (archive.get(id) !== true && (takeover === undefined ? archived : takeover === generation)) outcome = await invoke(record);
+                else return reply(`This runner home belongs to conversation ${ownerId}. Archive it or send exactly: take over ${generation}`);
+            }
+            if (outcome.status === "started") {
+                const digest = outcome.body + (Buffer.byteLength(outcome.body, "utf8") >= RUNNER_DIGEST_BYTES - 3 ? "\n[Runner startup digest reached its 48 KiB output limit.]" : "");
+                return { ...reply("This conversation owns the runner lock. Startup preview complete."), digest };
+            }
+            if (outcome.status === "incomplete") return reply("Startup is incomplete. The runner lock remains held. Check the runner before recovery.");
+            if (outcome.status === "foreign") return reply("The lock has a native or unrecognized owner. It was not changed.");
+            if (outcome.status === "busy") return reply("The session lock is busy. No takeover occurred. Try another turn after startup finishes.");
+            if (outcome.status === "retired") return reply("This conversation's runner claim was retired. Start a new main conversation to claim the home.");
+            return reply("Runner ownership could not be verified. No startup is reported.");
+        } catch {
+            return reply("Runner ownership or startup is unavailable. No startup is reported.");
+        }
+    };
+}
+
+/** An explicit takeover never creates a claim unless it has an exact old record to compare. */
+async function readOwner(ops: HomeOps, context: Context) {
+    const probe = withAbortSignal(AbortSignal.timeout(HOME_PROBE_MS), context);
+    if ((await ops.info("state", probe, false))?.kind !== "directory" ||
+        (await ops.info("state/.lock", probe, false))?.kind !== "directory" ||
+        (await ops.info("state/.lock/owner", probe, false))?.kind !== "file") return { status: "changed", body: "" };
+    const record = await ops.read("state/.lock/owner", 512, probe);
+    return record === undefined ? { status: "changed", body: "" } : { status: "held", body: record };
 }
 
 /** Constant paths in the already-admitted, local supervision code. */
@@ -2382,6 +2549,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
     const presented = registerPresentations(web);
     registerCalm(host, web);
     registerClient(web);
+    const runnerPreview = registerRunnerPreview(host, web);
     const supervision = createSupervision(host);
     const watch = createWatchTask(host, supervision, presented);
     const workers = createWorkers(host, web);
@@ -2848,7 +3016,8 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 // gone from context: either way the hook runs it once and gives the model the whole digest.
                 beforeRequest: async ({ messages }, api, context) => {
                     const checked = await checkHome(api as HookApi & EnvSource, context);
-                    const notice = homeNotice(checked);
+                    const preview = checked.kind === "preview" ? await runnerPreview?.(checked, api, context) : undefined;
+                    const notice = preview?.notice ?? homeNotice(checked);
                     if (notice === undefined) lastHomeNotice.delete(api.conversationId);
                     else if (notice !== lastHomeNotice.get(api.conversationId)) {
                         lastHomeNotice.set(api.conversationId, notice);
@@ -2862,10 +3031,10 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                                 role: "system" as const,
                                 content: "",
                                 timestamp: Date.now(),
-                                sections: { firstmate_runner: `${notice} Do not run Firstmate startup, supervision, or worker commands here.` },
+                                sections: { firstmate_runner: `${notice} Do not run Firstmate startup, supervision, or worker commands here.${preview?.digest === undefined ? "" : `\n\n${preview.digest}`}` },
                             }, ...messages.map((message) => {
                                 if (message.role !== "system" || message.sections === undefined) return message;
-                                const { firstmate, project_context, skills, ...sections } = message.sections;
+                                const { firstmate, firstmate_runner, project_context, skills, ...sections } = message.sections;
                                 return { ...message, sections };
                             })],
                         };

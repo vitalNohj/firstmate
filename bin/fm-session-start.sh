@@ -201,8 +201,8 @@
 # the digest never runs without the same hard bound and process-group cleanup.
 #
 # Usage: fm-session-start.sh [--reemit] [--source <source>]
-#   Prints the full ordered digest to stdout and always exits 0: this is a
-#   reporting command, not a gate. A lock refusal is reported as a loud
+#   The ordinary run prints the full ordered digest and exits 0: it reports
+#   startup rather than gating it. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
 #   an agent skip the rest of the digest.
 #
@@ -236,6 +236,8 @@
 #             current AGENTS.md to print before the bulky digest. The baseline
 #             remains immutable so every later drifted compaction refreshes
 #             again, while an equal baseline emits no instruction refresh.
+#             The internal pi-pocket-runner source instead requires the
+#             runner helper’s lock and returns a failure on incomplete startup.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -291,6 +293,19 @@ stage() {  # <stage-name>: breadcrumb for the parent's truncation banner
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
+# Pocket runner startup contract: pi-pocket-runner-v1
+# Internal source used only underneath the runner's local claim helper. Status
+# 73 is a synchronous bootstrap refusal; interruption has no such proof.
+RUNNER_PREVIEW=0
+if [ "$SESSION_SOURCE" = pi-pocket-runner ]; then
+  if [ "$REEMIT" -ne 0 ] || [ "$FM_ROOT" != "$FM_HOME" ] \
+    || ! fm_pocket_runner_start_owned "$FM_HOME" "$STATE" "$CONFIG" "$DATA"; then
+    echo "error: runner startup ownership was not verified" >&2
+    exit 1
+  fi
+  RUNNER_PREVIEW=1
+fi
+
 if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
   SESSION_START_BUDGET=${FM_SESSION_START_TIMEOUT:-120}
   # A non-positive or non-numeric budget is not a budget (`timeout 0` disables
@@ -324,6 +339,10 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
       "$SCRIPT_DIR/fm-session-start.sh"
   fi
   SESSION_START_RC=$?
+  if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+    rm -f "$SESSION_START_STAGE_FILE" 2>/dev/null || true
+    exit "$SESSION_START_RC"
+  fi
   # ANY nonzero child exit is a truncation: the banner contract promises that
   # a stage that cannot print is named. Exit 124 is the bound firing; any
   # other status means the child died or was killed mid-stage, which truncates
@@ -361,7 +380,11 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
   exit 0
 fi
 
-PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
+if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+  PRIMARY_HARNESS=pi-pocket
+else
+  PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
+fi
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
@@ -693,8 +716,13 @@ fi
 # --- 1. lock -----------------------------------------------------------
 stage lock
 subsection "LOCK"
-LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
-LOCK_RC=$?
+if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+  LOCK_OUT='lock acquired: Pi Pocket runner conversation (startup only)'
+  LOCK_RC=0
+else
+  LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
+  LOCK_RC=$?
+fi
 printf '%s\n' "$LOCK_OUT"
 READ_ONLY=0
 if [ "$LOCK_RC" -ne 0 ]; then
@@ -713,8 +741,11 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '%s\n' "$BAR"
   }
 fi
-REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
-print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
+REBUILDING_SESSION_PID=
+if [ "$RUNNER_PREVIEW" -eq 0 ]; then
+  REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
+  print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
+fi
 
 # --- 1b. home role -------------------------------------------------------
 # This home's firstmate-repository role: user/operator unless an explicit
@@ -725,7 +756,7 @@ subsection "HOME ROLE"
 FM_HOME="$FM_HOME" FM_CONFIG_OVERRIDE="$CONFIG" "$SCRIPT_DIR/fm-role.sh" report 2>/dev/null \
   || printf 'fm-role: unknown (bin/fm-role.sh report failed)\n'
 
-if [ "$READ_ONLY" -eq 0 ]; then
+if [ "$READ_ONLY" -eq 0 ] && [ "$RUNNER_PREVIEW" -eq 0 ]; then
   if [ "$REEMIT" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi
@@ -757,7 +788,17 @@ fi
 # re-block this digest and race the worker's sweeps against themselves.
 stage bootstrap
 subsection "BOOTSTRAP"
-if [ "$READ_ONLY" -eq 1 ]; then
+if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+  BOOT_OUT=$(FM_BOOTSTRAP_NETWORK=skip FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" \
+    FM_TASKS_AXI_CHECK_REASON="$TASKS_AXI_CHECK_REASON" "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
+  BOOT_RC=$?
+  if [ "$BOOT_RC" -ne 0 ]; then
+    printf '%s\n' "$BOOT_OUT"
+    # A signal death is not a synchronous refusal and does not prove quiet.
+    [ "$BOOT_RC" -lt 128 ] && exit 73
+    exit "$BOOT_RC"
+  fi
+elif [ "$READ_ONLY" -eq 1 ]; then
   BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_NETWORK=skip \
     FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" \
     FM_TASKS_AXI_CHECK_REASON="$TASKS_AXI_CHECK_REASON" "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
@@ -795,7 +836,9 @@ fi
 # surface without repair commands.
 stage wake-queue
 subsection "WAKE QUEUE"
-if [ "$READ_ONLY" -eq 1 ]; then
+if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+  printf 'skipped (Pi Pocket runner startup preview)\n'
+elif [ "$READ_ONLY" -eq 1 ]; then
   QLEN=0
   [ -s "$STATE/.wake-queue" ] && QLEN=$(grep -c . "$STATE/.wake-queue" 2>/dev/null || printf '0')
   printf 'skipped (read-only session) - %s record(s) remain queued because this session lacks verified fleet-lock ownership.\n' "$QLEN"
@@ -879,12 +922,14 @@ if [ "$PRIMARY_HARNESS" = omp ]; then
     fi
   fi
 fi
-"$SCRIPT_DIR/fm-supervision-instructions.sh" \
-  --harness "$PRIMARY_HARNESS" \
-  --read-only "$READ_ONLY" \
-  --afk "$AFK_PRESENT" \
-  --afk-mode "$AFK_MODE" \
-  --x-mode "$X_MODE_PRESENT"
+if [ "$RUNNER_PREVIEW" -eq 0 ]; then
+  "$SCRIPT_DIR/fm-supervision-instructions.sh" \
+    --harness "$PRIMARY_HARNESS" \
+    --read-only "$READ_ONLY" \
+    --afk "$AFK_PRESENT" \
+    --afk-mode "$AFK_MODE" \
+    --x-mode "$X_MODE_PRESENT"
+fi
 
 # --- 5. read-once contract -------------------------------------------------
 # Ahead of the two digests it governs, not after them: a truncated tail is
@@ -937,7 +982,9 @@ for meta in "$STATE"/*.meta; do
 
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
-  if [ -n "$window" ]; then
+  if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+    printf 'endpoint: not checked (Pi Pocket runner startup preview)\n'
+  elif [ -n "$window" ]; then
     backend=$(fm_backend_of_meta "$meta")
     endpoint_rc=0
     fm_session_start_endpoint_read "$backend" "${target:-$window}" "fm-$id" || endpoint_rc=$?
@@ -982,7 +1029,9 @@ subsection "AFK"
 # still marks a running daemon on the harnesses that launch one.
 # A quiet record (bin/fm-afk-contract.sh mode) is a present captain: it holds
 # nothing for a return.
-if [ -f "$STATE/.afk-contract" ]; then
+if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+  printf 'not applied (Pi Pocket runner startup preview)\n'
+elif [ -f "$STATE/.afk-contract" ]; then
   if [ "$("$SCRIPT_DIR/fm-afk-contract.sh" mode 2>/dev/null)" = quiet ]; then
     printf 'present - quiet mode recorded at %s (the captain is present and nothing is held for a return: requested actions proceed under ordinary attended authority; only an explicit /quiet off exits it)' \
       "$("$SCRIPT_DIR/fm-afk-contract.sh" field entered 2>/dev/null || printf unknown)"
@@ -1016,7 +1065,7 @@ fi
 # here rather than from conversation memory. fm-public-followup-lib.sh owns both
 # gates: a home that never opted into the relay runs one [ -f ] test, prints no
 # subsection, and never reaches fm-public-followup.sh.
-if fm_pf_relay_active "$FM_HOME" \
+if [ "$RUNNER_PREVIEW" -eq 0 ] && fm_pf_relay_active "$FM_HOME" \
   && { fm_pf_has_registrations "$STATE" || fm_pf_has_events "$STATE"; }; then
   PUBLIC_FOLLOWUP=$("$SCRIPT_DIR/fm-public-followup.sh" pending 2>/dev/null) || PUBLIC_FOLLOWUP=
   if [ -n "$PUBLIC_FOLLOWUP" ]; then
@@ -1039,7 +1088,9 @@ fi
 # printed, and whatever it has not is named as not yet confirmed.
 stage network-checks
 section "NETWORK CHECKS"
-if [ "$READ_ONLY" -eq 1 ]; then
+if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+  printf 'skipped (Pi Pocket runner startup preview)\n'
+elif [ "$READ_ONLY" -eq 1 ]; then
   printf 'skipped (read-only session) - GitHub authentication, project clone refresh,\n'
   printf 'secondmate liveness and convergence, and pending handoff delivery were not run.\n'
   printf 'They need the fleet lock, and this session must not spawn, steer, or merge, so it\n'
@@ -1064,7 +1115,9 @@ print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
 # --- 9. closing reminder -----------------------------------------------
 stage next-step
 section "NEXT STEP"
-if [ "$READ_ONLY" -eq 1 ]; then
+if [ "$RUNNER_PREVIEW" -eq 1 ]; then
+  printf 'Startup preview only. Do not arm supervision or start workers.\n'
+elif [ "$READ_ONLY" -eq 1 ]; then
   cat <<'EOF'
 This session did not acquire the fleet lock. Stay read-only: do not arm,
 drain, spawn, steer, merge, or repair fleet state from here. Only a session
@@ -1114,7 +1167,7 @@ The digest above is complete for this session start. The READ-ONCE CONTRACT
 section near the top of it governs what may still be read from disk.
 EOF
 
-if [ "$READ_ONLY" -eq 0 ] && [ "$REEMIT" -eq 0 ]; then
+if [ "$READ_ONLY" -eq 0 ] && [ "$REEMIT" -eq 0 ] && [ "$RUNNER_PREVIEW" -eq 0 ]; then
   COMPLETION_RECORDED=0
   COMPLETION_PID=$(cat "$STATE/.lock" 2>/dev/null || true)
   fm_session_pid_valid "$COMPLETION_PID" || COMPLETION_PID=
