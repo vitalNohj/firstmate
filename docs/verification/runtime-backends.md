@@ -2778,12 +2778,20 @@ FM_TEST_END 2026-11-09T11:34:44Z tests/fm-backend-pi-pocket.test.sh exit=0 durat
 These checks prove Firstmate's handling of the public API results, not cancellation of independent Pocket jobs.
 The remaining public job-lifecycle limitation is documented in [Teardown](../pi-pocket-backend.md#teardown).
 
-### Runner-home startup preview
+### Runner-home monitoring pilot
 
-Verified on Linux 7.0.0-38-generic with Pi Pocket 0.29.0 (`cf4e4083`) and Node 24.21.0 using [`tests/fm-pi-pocket-dropin.test.sh`](../../tests/fm-pi-pocket-dropin.test.sh) and a separate temporary runner process.
-The suite verified runner-local lock and digest writes, native and second-session refusal, startup receipt reuse after reconnect and app restart, and generation-bound handoff after archive or explicit owner input.
-The matching-path fixture simulates separate filesystems and rejects server fallback; it does not verify a Mac installation.
-The runner did not start a watcher, supervision session, or worker bridge.
+Verified on 2026-11-22 on Linux 7.0.0-38-generic with Pi Pocket 0.30.1 (`4aa7cc7b`) and Node 24.21.0, using temporary app data and a separate runner process.
+
+```sh
+timeout 900s systemd-run --user --scope -q --expand-environment=no -p CPUQuota=200% -- \
+  env -u FM_PI_POCKET_DROPIN_FILTER bash bin/fm-test-run.sh --jobs 1 tests/fm-pi-pocket-dropin.test.sh
+```
+
+The full app run reported `tests 51`, `pass 51`, `fail 0`, and `skipped 0`.
+The runner cases checked manual opt-in, exact owner handoff, offline and held delivery, reconnect without repeated startup, and replay after lost submit, drain, and acknowledgement results.
+They also checked bounded retries after a failed turn, separate inbox acknowledgement, retention of verifiably dead legacy locks, and the race between native and runner claims.
+The matching-path fixture simulates separate filesystems and rejects server fallback, but it does not verify a Mac installation.
+The runner did not start a native watcher, supervision session, or worker bridge, and the existing server-side regressions passed.
 
 ## T3 Code
 

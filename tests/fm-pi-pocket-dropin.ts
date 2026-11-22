@@ -47,6 +47,7 @@ type App = Awaited<ReturnType<typeof openApp>>;
 
 const WAKE = "FIRSTMATE WATCHER WAKE: ";
 const BRANCH_WAKE = "FIRSTMATE SUPERVISION WAKE: ";
+const RUNNER_WAKE = "FIRSTMATE RUNNER WAKE: ";
 const PROCESSING = "supervision processing request";
 const AUTO_REPORT_BODY = "RAW_LINKED_REPORT_MUST_NOT_REACH_THE_MODEL";
 let rawReportBodies = 0;
@@ -128,6 +129,8 @@ async function home({ runner = false } = {}): Promise<string> {
         const helper = process.env.FM_PI_POCKET_RUNNER_OWNER!;
         mkdirSync(join(home, "pi-pocket"));
         if (existsSync(helper)) copyFileSync(helper, join(home, "pi-pocket", "runner-owner.sh"));
+        const monitor = process.env.FM_PI_POCKET_RUNNER_MONITOR!;
+        if (existsSync(monitor)) copyFileSync(monitor, join(home, "pi-pocket", "runner-monitor.sh"));
         mkdirSync(join(home, "config"));
         mkdirSync(join(home, "data"));
         writeFileSync(join(home, "config", "backlog-backend"), "manual\n");
@@ -262,6 +265,7 @@ const call = (name: string, args: Record<string, unknown>) =>
 
 /** Every system prompt the model was sent, its sections joined: Pi Durable sends them as system messages. */
 const systemPrompts: string[] = [];
+let failNextRunnerWake = false;
 const route = (request: unknown) => {
     const sections = (request as { messages: { role: string; sections?: Record<string, string> }[] }).messages
         .filter((message) => message.role === "system")
@@ -295,6 +299,11 @@ const route = (request: unknown) => {
     if (text.includes("FIRSTMATE RETURN BRIEF") && !text.includes(PROCESSING)) return fauxAssistantMessage([fauxText(text)]);
     if (text.startsWith("run fixture command:\n")) {
         return call("bash", { command: `${text.slice("run fixture command:\n".length)}\nrc=$?\nprintf '\\nfixture-exit=%s\\n' "$rc"` });
+    }
+    if (text.startsWith("runner fixture tool: ")) return call("fm_runner", JSON.parse(text.slice("runner fixture tool: ".length)));
+    if (text.startsWith(RUNNER_WAKE) && failNextRunnerWake) {
+        failNextRunnerWake = false;
+        return fauxAssistantMessage([], { stopReason: "error", errorMessage: "fixture runner wake turn failed" });
     }
     if (text.endsWith("list the offered tools")) {
         return fauxAssistantMessage([fauxText(`offered tools: ${getCurrentTools(all as never).map((tool) => tool.name).join(", ")}`)]);
@@ -393,6 +402,7 @@ async function lastTask(app: App, id: unknown, kind: string) {
 
 const watchTask = (app: App, id: unknown) => lastTask(app, id, "x.firstmate.watch");
 const bridgeTask = (app: App, id: unknown) => lastTask(app, id, "x.firstmate.pocket-bridge");
+const monitorTask = (app: App, id: unknown) => lastTask(app, id, "x.firstmate.runner-monitor");
 const clientKey = (key: string) => key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1406,10 +1416,18 @@ async function runnerFixture(app: App, runnerHome: string) {
     return { connect, disconnect, close, runnerData, link, base: server.base };
 }
 
-test("a real runner owns its opted-in home and runs startup there without supervision or host fallback", { skip: !runnerCapable, timeout: 90_000 }, async (t) => {
+async function runnerToolCall(app: App, id: unknown, action: string, args = {}) {
+    await say(app, id, `runner fixture tool: ${JSON.stringify({ action, ...args })}`);
+    return (await toolSaid(app, id)).at(-1)!;
+}
+
+const runnerReceipt = (text: string) => /^RUNNER_RECEIPT: (\S+)$/m.exec(text)?.[1];
+
+test("a real runner owns and monitors its opted-in home without server path fallback", { skip: !runnerCapable, timeout: 90_000 }, async (t) => {
     const { app, id: local, fmHome: serverHome } = await started();
     const runnerHome = await home({ runner: true });
-    const runnerId = optIn(runnerHome);
+    const runnerId = crypto.randomUUID();
+    rmSync(join(runnerHome, "state", ".wake-queue"));
     const localId = optIn(serverHome);
     writeFileSync(join(serverHome, "stub", "digest-tail"), "SERVER HOME ONLY\n");
     await app.setSubagentModels(owner(app), ["faux/faux-1"]);
@@ -1451,11 +1469,25 @@ test("a real runner owns its opted-in home and runs startup there without superv
         syncBuiltinESMExports();
     });
     const marker = join(runnerHome, HOME_ID_FILE);
-    const remoteEnv = app.envFor(remote); // Test fixture only: compare contents and stop the link during a real home probe.
+    const remoteEnv = app.envFor(remote); // Test fixture only: compare contents across the two filesystems.
     assert.equal(await fs.readFile(marker, "utf8"), `${localId}\n`);
-    assert.deepEqual(await remoteEnv.readTextFile(marker, context), { ok: true, value: `${runnerId}\n` });
     hostChecks.length = 0;
-
+    await say(app, remote, "ok");
+    assert.equal(existsSync(marker), false);
+    assert.ok(notices().some((notice: string) => /UUID file manually/.test(notice)));
+    writeFileSync(marker, "not-a-uuid\n");
+    await say(app, remote, "check invalid opt-in");
+    assert.equal(existsSync(fixtureLock(runnerHome)), false);
+    rmSync(marker);
+    const markerTarget = join(runnerHome, "config", "elsewhere");
+    writeFileSync(markerTarget, `${runnerId}\n`);
+    symlinkSync(markerTarget, marker);
+    await say(app, remote, "check the symlink opt-in");
+    assert.equal(existsSync(fixtureLock(runnerHome)), false);
+    assert.equal(await monitorTask(app, remote), undefined);
+    rmSync(marker);
+    optIn(runnerHome, runnerId);
+    assert.deepEqual(await remoteEnv.readTextFile(marker, context), { ok: true, value: `${runnerId}\n` });
     await say(app, remote, "check the runner home");
     const lock = join(runnerHome, "state", ".lock");
     assert.ok(existsSync(lock) && statSync(lock).isDirectory(), "the opted-in runner did not take the actual home lock");
@@ -1464,7 +1496,9 @@ test("a real runner owns its opted-in home and runs startup there without superv
     assert.ok(existsSync(join(runnerHome, "config", "startup-memory-budget")), "real bootstrap materialized its home-local default");
     assert.match(readFileSync(join(lock, "digest"), "utf8"), /RUNNER HOME ONLY/);
     assert.doesNotMatch(readFileSync(join(lock, "digest"), "utf8"), /SERVER HOME ONLY/);
-    assert.ok(notices().some((notice: string) => notice.includes(runnerHome) && /runner supervision is not enabled/i.test(notice)), notices().join("\n"));
+    const monitor = await monitorTask(app, remote);
+    assert.ok(monitor, "startup must install the generation's durable monitor");
+    await until(() => notices().some((notice: string) => /runner monitoring healthy/i.test(notice)), "runner monitoring online");
     assert.deepEqual(await readCalm(app, runner.base), { calm: true });
     assert.equal((await toggleCalm(app, remote)).message, "Calm off");
     assert.deepEqual(await readCalm(app, runner.base), { calm: false }, "the runner changes the same preference as the server");
@@ -1472,34 +1506,140 @@ test("a real runner owns its opted-in home and runs startup there without superv
     assert.equal(readFileSync(join(serverHome, "config", "calm"), "utf8"), "legacy server preference\n");
     assert.equal(readFileSync(join(runnerHome, "config", "calm"), "utf8"), "legacy runner preference\n");
 
-    await say(app, remote, "show the marker");
-    assert.ok((await toolSaid(app, remote)).some((text) => text.includes("marker=none")));
-    await say(app, remote, "force supervisor tool fm_watch_arm_pocket");
-    assert.ok((await toolSaid(app, remote)).some((text) => /runner supervision is not enabled/i.test(text)));
+    for (const tool of ["bash", "codemode", "fm_watch_arm_pocket"]) {
+        const input = tool === "bash" ? "show the marker" : tool === "codemode" ? "run a script" : `force supervisor tool ${tool}`;
+        await say(app, remote, input);
+        assert.match((await toolSaid(app, remote)).at(-1)!, /runner.*(?:denied|not allowed|not available)/i);
+    }
+    await say(app, remote, "list the offered tools");
+    const offered = (await (await app.harness.conversation(remote, context))!.context(context)).messages;
+    assert.match(lastText({ messages: offered }).text, /offered tools: .*fm_runner/);
+    assert.doesNotMatch(lastText({ messages: offered }).text, /\b(?:bash|write|edit|codemode|subagent)\b/);
 
-    // The folder still has every structural marker, but only the server's path has an opt-in now.
-    rmSync(marker);
-    await say(app, remote, "check the runner without opt-in");
-    assert.ok(notices().some((notice: string) => /no valid config\/pi-pocket-home-id/i.test(notice)), notices().join("\n"));
-    optIn(runnerHome, runnerId);
+    const remoteState = join(runnerHome, "state");
+    const localState = join(serverHome, "state");
+    const queue = join(remoteState, ".wake-queue");
+    const status = "same-task.status";
+    const pauseFlag = join(remoteState, ".afk-return-catchup");
+    writeFileSync(pauseFlag, "fixture catch-up state\n");
+    await until(() => notices().some((notice: string) => notice.includes(".afk-return-catchup")), "existing catch-up pauses monitoring");
+    await say(app, remote, "check while handling is paused");
+    assert.ok(notices().some((notice: string) => notice.includes("Turn ended without a recent runner monitoring check")));
+    await recordCost(app, remote, 2);
+    await app.spend.setSessionBudget(owner(app), remote, 1);
+    assert.notEqual(app.spend.heldBack(remote), undefined);
+    writeFileSync(join(localState, status), "needs-decision: SERVER STATUS SENTINEL\n");
+    writeFileSync(join(remoteState, status), "needs-decision [key=runner-test]: RUNNER STATUS SENTINEL\nworking: still at work\n");
+    writeFileSync(join(remoteState, "same-task.turn-ended"), "fixture turn ended\n");
+    const inbox = join(runnerHome, "bin", "fm-inbox.sh");
+    const inboxEnv = { HOME: runner.runnerData, PATH: process.env.PATH, FM_HOME: runnerHome };
+    const note = JSON.parse(execFileSync("bash", [inbox, "note", "--json", "RUNNER NOTE SENTINEL"], { env: inboxEnv, encoding: "utf8" })).id;
+    const noteFile = join(remoteState, "inbox", `${note}.note`);
+    assert.equal(readFileSync(pauseFlag, "utf8"), "fixture catch-up state\n", "the monitor does not change posture or catch-up records");
+    assert.equal(existsSync(join(remoteState, ".seen-same-task_status")), false);
+    rmSync(pauseFlag);
+    await until(() => lines(queue).some((row) => row.includes(`\t${status}\tneeds-decision:`)), "decision-owned status wake");
+    await until(async () => (await monitorTask(app, remote))?.state.checkpoint?.delivery !== undefined, "pending wake while held back");
+    assert.equal(count(await userTexts(app, remote), RUNNER_WAKE), 0);
+    await runner.disconnect();
+    await until(() => notices().some((notice: string) => /runner monitoring offline/i.test(notice)), "runner offline after enqueue");
+    await app.spend.setSessionBudget(owner(app), remote, null);
+    const offlineRows = lines(queue);
+    writeFileSync(join(remoteState, "late.turn-ended"), "unobserved while offline\n");
+    await settle(750);
+    assert.deepEqual(lines(queue), offlineRows);
+    assert.equal(count(await userTexts(app, remote), RUNNER_WAKE), 0, "an offline monitor does not submit its saved wake");
 
-    // Let Pocket prepare a request while the runner is online, then disconnect during the add-on's probe.
-    // A request started offline would wait in Pocket before the extension had any environment at all.
-    const fileInfo = remoteEnv.fileInfo.bind(remoteEnv);
-    const underlying = app.runners.env(link.id, runnerHome, app.runnerScope(remote));
-    t.mock.method(underlying, "fileInfo", async (path: string, ctx: typeof context) => {
-        if (path.endsWith("pi-pocket-home-id")) await runner.disconnect();
-        return fileInfo(path, ctx);
+    const { Submissions } = await import(join(checkout, "node_modules/@earendil-works/pi-durable/dist/harness/submissions.js"));
+    const originalAdmit = Submissions.prototype.admit;
+    const attempts: string[] = [];
+    t.mock.method(Submissions.prototype, "admit", async function (tx: unknown, target: unknown, draft: any) {
+        const result = await originalAdmit.call(this, tx, target, draft);
+        if (target === remote && typeof draft.content === "string" && draft.content.startsWith(RUNNER_WAKE)) {
+            attempts.push(draft.requestId);
+            if (attempts.length === 1) throw new Error("fixture delivery commit failed");
+        }
+        return result;
     });
-    const submission = app.commands.submit(remote, owner(app), { text: "check the disconnected runner", requestId: crypto.randomUUID() });
-    await submission;
-    await until(() => notices().some((notice: string) => /Firstmate home check unavailable/i.test(notice)), "a runner-unavailable notice", LONG);
-    assert.equal(app.runners.link(link.id).online, false);
+    await runner.connect();
+    await until(async () => count(await userTexts(app, remote), RUNNER_WAKE) === 1, "runner-only wake after reconnect and submit error");
+    assert.equal(attempts.length, 2);
+    assert.equal(attempts[0], attempts[1], "a failed submit retries its committed intent");
+    assert.ok(lines(queue).some((row) => row.includes("\tsame-task.turn-ended\t")));
+    assert.ok(existsSync(noteFile), "a submission is not an inbox acknowledgement");
+    assert.ok(existsSync(join(remoteState, ".seen-same-task_status")));
+    assert.equal(existsSync(join(localState, ".seen-same-task_status")), false);
+    assert.equal(count(await userTexts(app, local), RUNNER_WAKE), 0);
 
-    assert.deepEqual(hostChecks, [], "runner admission, tools and Calm never consult host files at the matching path");
-    assert.equal(readFileSync(join(lock, "owner"), "utf8"), runnerRecord, "disconnect does not release the owner");
-    assert.equal(readFileSync(join(runnerHome, "state", ".wake-queue"), "utf8"), "fixture wake must stay unread\n");
-    for (const name of [".lock-session", ".pocket-branch", ".session-start-complete", ".session-start-agents-baseline", ".startup-network.lock"]) {
+    const run = (action: string, args = {}) => runnerToolCall(app, remote, action, args);
+    const underlying = app.runners.env(link.id, runnerHome, app.runnerScope(remote));
+    const exec = underlying.exec.bind(underlying);
+    let loseReply = "drain";
+    t.mock.method(underlying, "exec", async (...args: Parameters<typeof exec>) => {
+        const result = await exec(...args);
+        if (args[0][3] === loseReply && result.ok && result.value.exitCode === 0) {
+            loseReply = "";
+            throw new Error("fixture lost the runner reply");
+        }
+        return result;
+    });
+    assert.match(await run("drain"), /interrupted/i);
+    assert.equal(loseReply, "", "the first drain completed remotely before its reply failed");
+    const drained = await run("drain");
+    const receipt = runnerReceipt(drained);
+    assert.ok(receipt, drained);
+    assert.match(drained, /WAKE_ACK_REQUIRED/);
+    assert.match(drained, /RUNNER STATUS SENTINEL/);
+    assert.doesNotMatch(drained, /SERVER STATUS SENTINEL/);
+    assert.equal(await run("drain"), drained, "a second drain reads the same completed presentation");
+    assert.match(await run("ack", { receipt: crypto.randomUUID() }), /refused/i);
+    assert.match(await run("inbox-read", { receipt, note }), /RUNNER NOTE SENTINEL/);
+    assert.match(await run("inbox-reply", { receipt, note, text: "Recorded reply" }), /replied/);
+    assert.match(await run("inbox-reply", { receipt, note, text: "Must not overwrite" }), /already recorded|refused/i);
+    const late = lines(queue).find((row) => row.includes("\tlate.turn-ended\t"));
+    assert.ok(late, "reconnect also scans new records");
+    assert.doesNotMatch(drained, /late\.turn-ended/, "new rows cannot extend the committed presentation");
+    loseReply = "ack";
+    assert.match(await run("ack", { receipt }), /interrupted/i);
+    assert.equal(loseReply, "");
+    assert.match(await run("ack", { receipt }), /already acknowledged/);
+    assert.deepEqual(lines(queue), [late], "the ack removes only the presented prefix");
+    assert.ok(existsSync(noteFile), "wake acknowledgement does not consume a note");
+    assert.match(await run("inbox-ack", { receipt, note }), /acked/);
+    assert.equal(existsSync(noteFile), false);
+    const readiness = JSON.parse(execFileSync("bash", [inbox, "ready"], { env: { ...inboxEnv, FM_SUPERVISION_MODEL: "persistent" }, encoding: "utf8" }));
+    assert.equal(readiness.can_receive, "unknown");
+    assert.match(readiness.wake_consumer.reason, /pocket/i);
+
+    assert.match(await run("repair"), /task is present/);
+    assert.equal((await monitorTask(app, remote))?.id, monitor.id, "repair does not create a second healthy monitor");
+    await until(async () => {
+        const active = (await monitorTask(app, remote))?.state.checkpoint?.delivery;
+        return active !== undefined && active.token !== receipt;
+    }, "next batch after bounded ack");
+    const pending = runnerReceipt(await run("drain"));
+    assert.ok(pending);
+    const priorOfflineNotices = count(notices(), "monitoring offline");
+    await runner.disconnect();
+    await until(() => count(notices(), "monitoring offline") > priorOfflineNotices, "runner offline after submit and before ack", LONG);
+    assert.deepEqual(lines(queue), [late]);
+    const digest = readFileSync(join(lock, "digest"), "utf8");
+    assert.equal(fixtureOwner(runnerHome), runnerRecord, "disconnect does not release the owner");
+    await runner.connect();
+    assert.equal((await monitorTask(app, remote))?.id, monitor.id);
+    assert.equal(readFileSync(join(lock, "digest"), "utf8"), digest, "startup did not run again");
+
+    // The server still has a marker at this path. It is not a backup runner opt-in.
+    rmSync(marker);
+    await say(app, remote, "ok");
+    assert.equal(existsSync(marker), false);
+    assert.match(await run("ack", { receipt: pending }), /refused|not available/i);
+    assert.deepEqual(lines(queue), [late], "opt-out leaves work pending");
+    await say(app, remote, "show the marker");
+    assert.match((await toolSaid(app, remote)).at(-1)!, /runner.*denied/i);
+    assert.deepEqual(hostChecks, [], "runner admission, tools, monitor and Calm never consult host files at the matching path");
+    assert.equal(fixtureOwner(runnerHome), runnerRecord);
+    for (const name of [".lock-session", ".pocket-branch", ".last-watcher-beat", ".watch.lock", ".session-start-complete", ".session-start-agents-baseline", ".startup-network.lock"]) {
         assert.equal(existsSync(join(runnerHome, "state", name)), false, `no runner ${name}`);
     }
     assert.deepEqual(readdirSync(join(runnerHome, "stub")), [], "no terminal or supervision command ran");
@@ -1522,10 +1662,10 @@ function nativeLock(home: string, ...args: string[]) {
     });
 }
 
-function callRunnerOwner(home: string, operation: string, fields: string[], previous?: string) {
-    return spawnSync("bash", [join(home, "pi-pocket", "runner-owner.sh"), "pi-pocket-runner-v1", operation, home,
-        ...fields, ...(previous === undefined ? [] : [previous.trimEnd()])], {
-        cwd: home, encoding: "utf8", timeout: 12000, env: { HOME: home, PATH: process.env.PATH },
+function callRunnerOwner(home: string, operation: string, fields: string[], extra?: string | string[], env = {}) {
+    const args = extra === undefined ? [] : typeof extra === "string" ? [extra.trimEnd()] : extra;
+    return spawnSync("bash", [join(home, "pi-pocket", "runner-owner.sh"), "pi-pocket-runner-v1", operation, home, ...fields, ...args], {
+        cwd: home, encoding: "utf8", timeout: 12000, env: { HOME: home, PATH: process.env.PATH, ...env },
     });
 }
 
@@ -1555,7 +1695,7 @@ test("runner ownership survives app restart, refuses a concurrent main, and hand
     assert.ok(ownerId !== undefined, "exactly one eligible main claimed this physical home");
     const originalDigest = readFileSync(join(fixtureLock(fmHome), "digest"), "utf8");
     assert.match(originalDigest, /RUNNER HOME ONLY/);
-    assert.match(nativeLock(fmHome, "status").stdout, /held by Pi Pocket runner.*no monitoring/);
+    assert.match(nativeLock(fmHome, "status").stdout, /held by Pi Pocket runner conversation/);
     const native = nativeLock(fmHome);
     assert.equal(native.status, 1, native.stderr);
     assert.match(native.stderr, /belongs to a Pi Pocket runner conversation/);
@@ -1572,8 +1712,20 @@ test("runner ownership survives app restart, refuses a concurrent main, and hand
     apps.push(app);
     assert.equal(fixtureOwner(fmHome), first, "restart while offline does not release");
     await runner.connect(app);
+    const state = join(fmHome, "state");
+    assert.ok(await monitorTask(app, ownerId));
+    const seen = join(state, ".seen-startup-gap_turn-ended");
+    writeFileSync(join(state, "startup-gap.turn-ended"), "finished across server restart\n");
+    await until(async () => (await monitorTask(app, ownerId))?.state.checkpoint?.misses > 0, "restart pauses the monitor until the owner returns");
+    assert.equal(existsSync(seen), false);
+    assert.equal(count(await userTexts(app, ownerId), RUNNER_WAKE), 0);
     writeFileSync(join(fmHome, "data", "captain.md"), "SECOND START SENTINEL\n");
     await say(app, ownerId, "resume after reconnect and restart");
+    await until(() => existsSync(seen), "the owner's return resumes the same monitor");
+    await until(async () => count(await userTexts(app, ownerId), RUNNER_WAKE) === 1, "the retained work wakes the verified owner");
+    const presented = await runnerToolCall(app, ownerId, "drain");
+    const priorReceipt = runnerReceipt(presented);
+    assert.ok(priorReceipt, presented);
     await say(app, rival, "do not steal on reconnect");
     assert.equal(fixtureOwner(fmHome), first);
     assert.equal(readFileSync(join(fixtureLock(fmHome), "digest"), "utf8"), originalDigest, "the same owner got the receipt, not a second startup");
@@ -1593,6 +1745,10 @@ test("runner ownership survives app restart, refuses a concurrent main, and hand
     assert.match(second, new RegExp(`\\t${rival}\\t`));
     assert.equal(readFileSync(retiredOwner(fmHome, first), "utf8"), first);
     assert.match(readFileSync(join(fixtureLock(fmHome), "digest"), "utf8"), /SECOND START SENTINEL/);
+    assert.match(await runnerToolCall(app, rival, "ack", { receipt: priorReceipt }), /refused/i, "a successor cannot replay the retired generation's receipt");
+    assert.ok(lines(join(state, ".wake-queue")).some((row) => row.includes("startup-gap.turn-ended")));
+    const oldArgs = first.trimEnd().split("\t").slice(1);
+    assert.equal(callRunnerOwner(fmHome, "ack", oldArgs, priorReceipt).stdout, "changed\n", "a late tool on the retired owner cannot advance the queue");
 
     const next = await main();
     await say(app, next, `take over ${fixtureGeneration(first)}`);
@@ -1613,6 +1769,91 @@ test("runner ownership survives app restart, refuses a concurrent main, and hand
     assert.equal(supervisionSessions(app).length, 0);
 });
 
+test("a failed runner wake turn leaves the batch pending for a bounded retry", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    const data = mkdtempSync(join(root, "runner-failed-wake-"));
+    const retry = process.env.FM_POCKET_RUNNER_RETRY_MS;
+    process.env.FM_POCKET_RUNNER_RETRY_MS = "4000";
+    const app = await open(data, true).finally(() => {
+        if (retry === undefined) delete process.env.FM_POCKET_RUNNER_RETRY_MS;
+        else process.env.FM_POCKET_RUNNER_RETRY_MS = retry;
+    });
+    apps.push(app);
+    const runner = await runnerFixture(app, fmHome);
+    t.after(runner.close);
+    await runner.connect();
+    const id = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: runner.link.id })).id;
+    await app.commands.configure(id, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    await say(app, id, "claim the runner home");
+    failNextRunnerWake = true;
+    t.after(() => { failNextRunnerWake = false; });
+    writeFileSync(join(fmHome, "state", "failed-wake.turn-ended"), "fixture work\n");
+    const delivered = async () => count(await userTexts(app, id), RUNNER_WAKE);
+    await until(async () => !failNextRunnerWake && await delivered() === 1, "failed runner wake turn", LONG);
+    const active = (await monitorTask(app, id))?.state.checkpoint?.delivery;
+    assert.ok(active, "a failed turn did not discard the pending delivery");
+    assert.ok(lines(join(fmHome, "state", ".wake-queue")).some((row) => row.includes("failed-wake.turn-ended")));
+    await settle(350);
+    assert.equal(await delivered(), 1, "a failed turn is not retried on every poll");
+    await until(async () => await delivered() === 2, "retry of the unacknowledged runner wake", LONG);
+    const next = (await monitorTask(app, id))?.state.checkpoint?.delivery;
+    assert.equal(next?.token, active.token);
+    assert.notEqual(next?.requestId, active.requestId);
+});
+
+test("runner helper pages records and refuses an incomplete or oversized drain", { skip: !runnerCapable, timeout: 60_000 }, async () => {
+    const fmHome = await home({ runner: true });
+    const fields = [crypto.randomUUID(), optIn(fmHome), "51", crypto.randomUUID()];
+    const run = (op: string, ...args: string[]) => callRunnerOwner(fmHome, op, fields, args);
+    const state = join(fmHome, "state");
+    const queue = join(state, ".wake-queue");
+    rmSync(queue);
+    assert.match(run("claim").stdout, /^started\n/);
+    for (let i = 0; i < 18; i++) writeFileSync(join(state, `a-${String(i).padStart(2, "0")}.turn-ended`), `${i}\n`);
+    symlinkSync(join(fmHome, "data", "captain.md"), join(state, "z-bad.status"));
+    const status = join(state, "z-rotate.status");
+    writeFileSync(status, "working: before rotation\n");
+    const batch = crypto.randomUUID();
+    const obs = run("poll", batch, "");
+    assert.equal(obs.stdout, `ready a-15.turn-ended ${batch} false\n`, obs.stderr);
+    assert.equal(lines(queue).length, 16);
+    assert.equal(run("poll", crypto.randomUUID(), "a-15.turn-ended").stdout, `ready - ${batch} true\n`);
+    assert.equal(lines(queue).length, 18, "a bad record cannot hide later records in a page");
+    assert.ok(existsSync(join(state, ".seen-z-rotate_status")));
+    assert.equal(existsSync(join(state, ".seen-z-bad_status")), false);
+    const replaced = join(state, "replacement");
+    writeFileSync(replaced, "needs-decision: after status rotation\n");
+    renameSync(replaced, status);
+    assert.equal(run("poll", crypto.randomUUID(), "a-15.turn-ended").stdout, `ready - ${batch} true\n`);
+    assert.equal(lines(queue).filter((row) => row.includes("\tz-rotate.status\tneeds-decision:")).length, 1);
+    rmSync(join(state, "z-bad.status"));
+    assert.notEqual(run("ack", batch).status, 0, "a window is not a completed presentation");
+    const first = run("drain");
+    assert.equal(runnerReceipt(first.stdout), batch, first.stderr);
+    assert.match(first.stdout, /a-15\.turn-ended/);
+    assert.doesNotMatch(first.stdout, /a-16\.turn-ended/);
+    assert.match(run("ack", batch).stdout, /acknowledged/);
+    assert.equal(lines(queue).length, 3);
+    const tail = crypto.randomUUID();
+    assert.match(run("poll", tail, "a-15.turn-ended").stdout, new RegExp(tail));
+    assert.match(run("drain").stdout, /after status rotation/);
+    assert.match(run("ack", tail).stdout, /acknowledged/);
+    assert.deepEqual(lines(queue), []);
+
+    // An interrupted or over-limit render must leave its rows undelivered.
+    const row = `1795316400\t20\tcheck\tlong-fixture\t${"x".repeat(34 * 1024)}\n`;
+    writeFileSync(queue, row);
+    const overflow = crypto.randomUUID();
+    assert.match(run("poll", overflow, "a-15.turn-ended").stdout, new RegExp(overflow));
+    const large = run("drain");
+    assert.notEqual(large.status, 0);
+    assert.match(large.stderr, /incomplete|exceeds 32 KiB/);
+    assert.equal(runnerReceipt(large.stdout), undefined);
+    assert.notEqual(run("ack", overflow).status, 0);
+    assert.equal(readFileSync(queue, "utf8"), row);
+});
+
 test("runner helper fences legacy, unsafe and interrupted owners", { skip: !runnerCapable, timeout: 30_000 }, async () => {
     const fmHome = await home({ runner: true });
     const homeId = optIn(fmHome);
@@ -1627,10 +1868,30 @@ test("runner helper fences legacy, unsafe and interrupted owners", { skip: !runn
     assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "invalid-home\n", "never claim with an old startup script");
     assert.equal(existsSync(lock), false);
     writeFileSync(start, originalStart);
-    writeFileSync(lock, "2147483647\n");
+    const foreign = `${process.pid}\n`;
+    writeFileSync(lock, foreign);
     assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "foreign\n");
-    assert.equal(readFileSync(lock, "utf8"), "2147483647\n", "even a stale native lock is not converted");
-    rmSync(lock);
+    assert.equal(readFileSync(lock, "utf8"), foreign, "a live PID, including a reused PID, is not retired");
+    const probe = join(fmHome, "probe.cjs");
+    writeFileSync(probe, "process.kill = () => { throw Object.assign(new Error('permission denied'), {code: 'EPERM'}); };\n");
+    const exited = spawnSync("bash", ["-c", "exit 0"]);
+    assert.equal(exited.status, 0);
+    const legacy = `${exited.pid}\n`;
+    writeFileSync(lock, legacy);
+    assert.equal(callRunnerOwner(fmHome, "claim", first, undefined, { NODE_OPTIONS: `--require=${probe}` }).stdout, "foreign\n");
+    assert.equal(readFileSync(lock, "utf8"), legacy);
+    assert.equal(callRunnerOwner(fmHome, "claim", first, ["pi-pocket-runner-v1", ...next].join("\t")).stdout, "foreign\n", "an explicit handoff is not authority to retire a legacy lock");
+    writeFileSync(lock, `${exited.pid}\nforeign\n`);
+    assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "foreign\n");
+    writeFileSync(lock, legacy);
+    const claimed = callRunnerOwner(fmHome, "claim", first);
+    assert.match(claimed.stdout, /^started\n/);
+    const saved = readdirSync(join(fmHome, "state")).filter((name) => name.startsWith(".lock.legacy-dead-"));
+    assert.equal(saved.length, 1);
+    assert.match(saved[0], /^\.lock\.legacy-dead-[0-9]{8}T[0-9]{6}Z\./);
+    assert.equal(readFileSync(join(fmHome, "state", saved[0]), "utf8"), legacy);
+    assert.match(claimed.stdout, new RegExp(saved[0].replaceAll(".", "\\.")));
+    renameSync(lock, join(fmHome, "state", "initial-lock"));
     mkdirSync(lock);
     writeFileSync(owner, "unrecognized lock\n");
     assert.equal(callRunnerOwner(fmHome, "claim", first).stdout, "foreign\n");
@@ -1666,6 +1927,26 @@ test("runner helper fences legacy, unsafe and interrupted owners", { skip: !runn
     writeFileSync(join(fmHome, ".fm-secondmate-home"), "secondmate\n");
     assert.equal(callRunnerOwner(fmHome, "claim", next).stdout, "invalid-home\n");
     assert.equal(existsSync(lock), false);
+
+    // Exercise both acquisition paths against the same legacy lock and mutex.
+    const shared = await home({ runner: true });
+    const sharedId = optIn(shared);
+    const legacyPid = spawnSync("bash", ["-c", "exit 0"]).pid;
+    writeFileSync(fixtureLock(shared), `${legacyPid}\n`);
+    const racer = [install, sharedId, "44", crypto.randomUUID()];
+    const compete = (script: string, args: string[], env = {}) => new Promise<{ code: number; out: string }>((resolve) => {
+        execFile("bash", [join(shared, script), ...args], { cwd: shared, timeout: 12000,
+            env: { HOME: shared, PATH: process.env.PATH, FM_HOME: shared, ...env } },
+            (error, out) => resolve({ code: error === null ? 0 : typeof error.code === "number" ? error.code : -1, out }));
+    });
+    const [runner, native] = await Promise.all([
+        compete("pi-pocket/runner-owner.sh", [version, "claim", shared, ...racer]),
+        compete("bin/fm-lock.sh", [], { FM_PI_POCKET_SERVER_PID: String(process.pid), FM_PI_POCKET_CONVERSATION: "native-race" }),
+    ]);
+    const runnerWon = runner.code === 0 && runner.out.startsWith("started\n");
+    assert.notEqual(runnerWon, native.code === 0, "only one contender may claim the home");
+    assert.equal(runnerWon ? fixtureOwner(shared) : readFileSync(fixtureLock(shared), "utf8"),
+        runnerWon ? [version, ...racer].join("\t") + "\n" : `${process.pid}\n`);
 });
 
 test("Pocket Calm defaults to on and its shared toggle persists across a server restart", { timeout: 60_000 }, async () => {

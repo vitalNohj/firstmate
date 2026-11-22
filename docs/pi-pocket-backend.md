@@ -28,12 +28,13 @@ A spawn from anywhere else, or while the drop-in's bridge is not running, refuse
 
 Secondmates are not supported: Pi Pocket can start top-level sessions, but Firstmate has not implemented their isolated home, lock, parent-channel, and lifecycle integration.
 
-## Runner home preview
+## Runner home pilot
 
 Install the drop-in on the Pi Pocket server, not on the linked computer.
-Use a matching Firstmate checkout on the runner, with `pi-pocket/runner-owner.sh` and the runner startup support in `bin/`.
-This preview is for a trusted, private home: use a runner you control and do not share the Firstmate conversations.
-To opt in, the owner creates a gitignored `config/pi-pocket-home-id` in the Firstmate home on the runner.
+Use a matching Firstmate checkout on the runner, with `pi-pocket/runner-owner.sh`, `pi-pocket/runner-monitor.sh`, and the runner support in `bin/`.
+This pilot is for a trusted, private home: use a runner you control and do not share the Firstmate conversation.
+To opt in, the owner manually creates a gitignored `config/pi-pocket-home-id` in the Firstmate home on the runner.
+Sending `ok` in chat does not create it.
 It must be a regular file with one random UUID v4.
 Generate a new ID for each home on each computer; do not share, link, or copy the file between homes.
 From the runner home's root, create it once with Node:
@@ -50,9 +51,16 @@ A session opened before the add-on saw its creation can detect the home but need
 
 The add-on uses the session's runner environment to take the existing `state/.lock` slot on that computer.
 A native Firstmate or another Pi Pocket conversation cannot take the same slot while it is held.
+On an ordinary claim, the helper moves a legacy PID lock aside only if the runner can verify that the recorded process is gone.
+It retains the file as a dated `.lock.legacy-dead-…` sibling and reports the name; a live or uncertain owner stays untouched.
 On the first claim, `bin/fm-session-start.sh` runs the home-local bootstrap and prints a digest, capped at 48 KiB.
-It does not run network checks, drain wakes, start monitoring or launch supervision and workers.
-The same conversation can reconnect and read the saved result without running startup again.
+Startup does not run network checks or drain wakes.
+Only after startup completes does the add-on start one durable timer for that owner generation.
+It scans a bounded page of local status updates and turn-end records and notifies this conversation of queued work, including inbox notes.
+It does not start a native watcher, write a native heartbeat, run GitHub or Relay checks, or start a supervision session or workers.
+No work is monitored while the runner is offline or asleep.
+It checks again after the runner reconnects, without a new message and without rerunning startup.
+After the server restarts or the extension reloads, send a direct owner message in the same conversation to verify the binding and resume monitoring.
 A lost link, elapsed time, server restart, or removal of the opt-in does not clear the lock.
 The add-on never falls back to server files, even if two computers use the same path.
 
@@ -69,8 +77,19 @@ For that case only, verify on the runner that startup and its children have stop
 The IDs are in order after the version in `state/.lock/owner`.
 Do not delete the lock or its retired records by hand.
 
-The preview does not grant Firstmate supervision authority or restrict ordinary Pi Pocket tools.
+Pocket shows monitoring health and the most recent successful check; `fm-inbox.sh ready` does not infer live readiness from the lock.
+Existing away, quiet, catch-up, or native watcher state pauses automatic handling and is not changed by the pilot.
+The runner owner's tool profile supports scoped reads, context tools, and `fm_runner`; it has no shell, write, or lifecycle tools.
 Local server sessions do not need this marker and still use the existing supervision and worker backend.
+
+### Runner wake handling
+
+On an automatic runner wake, call `fm_runner` with `action: "drain"` and handle the returned batch, including open decisions and unread status.
+Then call `ack` with that batch's exact receipt.
+A submission, model answer, or incomplete drain does not acknowledge queued work.
+For an inbox note in the batch, use `inbox-read`, `inbox-reply` when a durable reply is due, and `inbox-ack` after handling it.
+Do not use a wake acknowledgement to mark a note handled.
+Use `status` to check the monitor and `repair` to restore its task if it failed while the current owner and runner are available.
 
 ## Pocket Calm
 
@@ -236,7 +255,7 @@ bin/fm-test-run.sh tests/fm-backend-pi-pocket.test.sh tests/fm-pi-pocket-dropin.
 [`tests/fm-backend-pi-pocket.test.sh`](../tests/fm-backend-pi-pocket.test.sh) covers the adapter, the bridge client, and the `fm-spawn`, `fm-control`, and `fm-teardown` paths against a [fake bridge](../tests/pi-pocket-fake-bridge.mjs) and fake Treehouse.
 [`tests/fm-pi-pocket-dropin.test.sh`](../tests/fm-pi-pocket-dropin.test.sh) runs the drop-in's side of the bridge in a real Pi Pocket app on temporary data directories with a scripted model.
 On a runner-capable checkout it links a separate temporary runner process.
-It checks local and runner homes, identical paths on separate filesystems, claim and startup, reconnect, archive and owner takeover, and the absence of runner supervision.
+It checks local and runner homes, identical paths on separate filesystems, claim and startup, runner monitor delivery and acknowledgement, reconnect, archive and owner takeover, and the absence of a native watcher, supervision branch, and workers on the runner.
 It also verifies the shared Calm setting across a server restart.
 It covers wake-delivery faults on both sides of an arm close, resumed-grant refusal, parallel reports, concurrent home discovery, slow-request heartbeats, surviving-schedule refusal, the unfenced brief, the task environment with `FM_HOME` but no supervisor identity, worker tool inventories and forced-call refusals without changing main or supervision sessions, supervision commands and their restricted bridge access, read-only launch preflight, the seatbelts, trust, the model-list and spend refusals, the run events and their reconcile, interrupt, both teardowns, and the restart nudge.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#pi-pocket-workers) records the dated results.

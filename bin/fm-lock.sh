@@ -76,7 +76,7 @@ if [ "${1:-}" = "status" ]; then
     free) echo "lock: free" ;;
     unreadable) echo "lock: unreadable" ;;
     held)
-      if [ -n "$FM_LOCK_INSPECT_RUNNER" ]; then echo "lock: held by Pi Pocket runner conversation (no monitoring)"
+      if [ -n "$FM_LOCK_INSPECT_RUNNER" ]; then echo "lock: held by Pi Pocket runner conversation"
       else echo "lock: held by live harness pid $FM_LOCK_INSPECT_PID"; fi ;;
     *) echo "lock: stale (pid $FM_LOCK_INSPECT_PID dead or not a harness)" ;;
   esac
