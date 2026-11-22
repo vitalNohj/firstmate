@@ -1802,6 +1802,60 @@ test("a failed runner wake turn leaves the batch pending for a bounded retry", {
     assert.notEqual(next?.requestId, active.requestId);
 });
 
+test("a real runner can finish a wake batch with no valid rows", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    const state = join(fmHome, "state");
+    const queue = join(state, ".wake-queue");
+    const marker = join(state, ".watcher-down");
+    rmSync(queue);
+    const app = await open(mkdtempSync(join(root, "runner-empty-wake-")), true);
+    apps.push(app);
+    const runner = await runnerFixture(app, fmHome);
+    t.after(runner.close);
+    await runner.connect();
+    const id = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: runner.link.id })).id;
+    await app.commands.configure(id, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    await say(app, id, "claim the runner home");
+    const run = (action: string, args = {}) => runnerToolCall(app, id, action, args);
+    const waitForWake = (n: number) => until(async () => count(await userTexts(app, id), RUNNER_WAKE) === n, `runner wake ${n}`, LONG);
+    const malformed = "legacy wake without a sequence";
+    const presentInvalid = async (n: number) => {
+        writeFileSync(queue, `${malformed}\n`);
+        await waitForWake(n);
+        assert.deepEqual(lines(queue), [malformed], "poll does not retire rows");
+        const drained = await run("drain");
+        const receipt = runnerReceipt(drained);
+        assert.ok(receipt, drained);
+        assert.match(drained, /retired 1 unusable queue row/);
+        assert.ok(drained.includes(malformed), "the existing repair still reports the row");
+        assert.deepEqual(lines(queue), []);
+        assert.equal(await run("drain", { receipt }), drained, "the completed presentation replays with its diagnostic");
+        return receipt;
+    };
+    assert.equal(existsSync(marker), false);
+    const first = await presentInvalid(1);
+    assert.match(await run("ack", { receipt: first }), /acknowledged runner wake/);
+    await until(async () => (await monitorTask(app, id))?.state.checkpoint?.delivery === undefined, "empty batch fully handled", LONG);
+    assert.match(readFileSync(marker, "utf8"), /^acked:handling:/);
+
+    const second = await presentInvalid(2);
+    assert.notEqual(second, first);
+    writeFileSync(join(state, "after-empty.turn-ended"), "valid wake after the empty presentation\n");
+    await until(() => lines(queue).some((row) => row.includes("\tafter-empty.turn-ended\t")), "later wake queued", LONG);
+    const later = lines(queue);
+    assert.match(await run("ack", { receipt: second }), /acknowledged runner wake/);
+    assert.deepEqual(lines(queue), later, "acknowledging cutoff 0 leaves the later row untouched");
+    await waitForWake(3);
+    const drained = await run("drain");
+    const receipt = runnerReceipt(drained);
+    assert.ok(receipt, drained);
+    assert.notEqual(receipt, second);
+    assert.match(drained, /after-empty\.turn-ended/);
+    assert.match(await run("ack", { receipt }), /acknowledged runner wake/);
+    assert.deepEqual(lines(queue), []);
+});
+
 test("runner helper pages records and refuses an incomplete or oversized drain", { skip: !runnerCapable, timeout: 60_000 }, async () => {
     const fmHome = await home({ runner: true });
     const fields = [crypto.randomUUID(), optIn(fmHome), "51", crypto.randomUUID()];

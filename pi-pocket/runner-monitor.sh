@@ -173,6 +173,23 @@ case "$operation" in
       fail 'runner drain refused: unsafe receipt path'
     fi
     if ! dir "$batch"; then
+      # The shared drain can retire every row in a cutoff-0 batch. Give that
+      # presentation a normal recovery generation so it can still be acked.
+      if [ "$cutoff" = 0 ]; then
+        fm_lock_acquire_wait_bounded "$FM_WAKE_QUEUE_LOCK" 1 || fail 'runner drain refused: queue lock busy'
+        queue_held=true
+        if ! fm_recovery_marker_read "$marker" && exists "$marker"; then
+          fail 'runner drain refused: invalid recovery state'
+        fi
+        case "$FM_RECOVERY_MARKER_TOKEN" in
+          ''|acked:*)
+            fm_recovery_transition "$marker" publish downtime '' 1 \
+              || fail 'runner drain refused: could not open a recovery generation'
+            ;;
+        esac
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        queue_held=false
+      fi
       if exists "$stage"; then
         # Preserve an interrupted or oversized rendering; none of it authorizes ack.
         dir "$stage" || fail 'runner drain refused: invalid staging directory'
