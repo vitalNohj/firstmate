@@ -77,9 +77,12 @@ For that case only, verify on the runner that startup and its children have stop
 The IDs are in order after the version in `state/.lock/owner`.
 Do not delete the lock or its retired records by hand.
 
-Pocket shows monitoring health and the most recent successful check; `fm-inbox.sh ready` does not infer live readiness from the lock.
+Pocket shows a notice when monitoring becomes healthy, paused, or offline.
+Use `fm_runner` with `action: "status"` to check monitoring; `fm-inbox.sh ready` does not infer live readiness from the lock.
 Existing away, quiet, catch-up, or native watcher state pauses automatic handling and is not changed by the pilot.
-The runner owner's tool profile supports scoped reads, context tools, and `fm_runner`; it has no shell, write, or lifecycle tools.
+Runner conversations keep their ordinary Pi Pocket tools, subject to Pi Pocket's settings and approvals.
+Only the bound owner can use `fm_runner`.
+If Pocket reports that Firstmate on the runner is out of date, update the Firstmate checkout on that computer; the monitor checks again on its own.
 Local server sessions do not need this marker and still use the existing supervision and worker backend.
 
 ### Runner wake handling
