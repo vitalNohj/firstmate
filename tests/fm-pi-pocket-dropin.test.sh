@@ -149,6 +149,7 @@ test_dropin_in_pi_pocket() {
   mkdir -p "$dir/tmp"
   (cd "$dir/run" && TMPDIR="$dir/tmp" FM_PI_POCKET_CHECKOUT="$CHECKOUT" FM_PI_POCKET_BIN="$ROOT/bin" \
     FM_PI_POCKET_DROPIN="$DROPIN" FM_PI_POCKET_RUNNER_OWNER="$ROOT/pi-pocket/runner-owner.sh" \
+    FM_PI_POCKET_RUNNER_MONITOR="$ROOT/pi-pocket/runner-monitor.sh" FM_POCKET_RUNNER_POLL_MS=350 \
     FM_POCKET_BRIDGE_RECONCILE_MS=300 \
     "$NODE" --test --test-reporter=spec --test-concurrency=1 ${FM_PI_POCKET_DROPIN_FILTER:+--test-name-pattern="$FM_PI_POCKET_DROPIN_FILTER"} dropin.test.ts)
   rc=$?

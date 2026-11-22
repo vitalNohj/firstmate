@@ -15,7 +15,11 @@
 # found while taking that lock was left by a drain that died mid-write; each
 # locked drain rotates such leftovers away before doing anything else.
 # FM_STATUS_PRESENTATION_LOCK_TIMEOUT sets the positive whole-second wait for
-# presentation-path locks (default 10); queue mutation locks remain blocking.
+# presentation-path locks (default 10); native queue mutation locks remain blocking.
+# The runner owner helper may pass --runner-through SEQUENCE. With the live
+# claim-mutex ancestry proof, present only that prefix and stage the status
+# receipt for the helper. In runner mode --ack-through uses the existing claim
+# instead of taking any unpresented rows, and requires the live recovery epoch.
 set -u
 
 SCRIPT_DIR="$(d=${BASH_SOURCE[0]%/*}; [ "$d" != "${BASH_SOURCE[0]}" ] || d=.; cd "${d:-/}" && pwd)"
@@ -222,8 +226,18 @@ presented_max_row() { # <rows-file>
   fi
 }
 
+RUNNER_THROUGH=
+RUNNER=false
+if [ -n "${FM_POCKET_RUNNER_COMMAND:-}" ] || [ "${1:-}" = --runner-through ]; then
+  _fm_wake_require_session_lock && fm_pocket_runner_command_owned "$FM_HOME" "$STATE" && [ "$ACTOR" = main ] || exit 2
+  RUNNER=true
+fi
 case "${1:-}" in
   '') ;;
+  --runner-through)
+    [ "$#" -eq 2 ] && [[ "$2" =~ ^(0|[1-9][0-9]{0,14})$ ]] || exit 2
+    RUNNER_THROUGH=$2
+    ;;
   --ack-through)
     ACK_THROUGH=${2:-}
     case "$ACK_THROUGH" in ''|*[!0-9]*) echo "wake drain: invalid acknowledgement sequence" >&2; exit 2 ;; esac
@@ -250,7 +264,8 @@ esac
 # Persistent-watcher models still require the live identity-matched watcher.
 # Never let a guard hiccup change the drain's exit status.
 assert_watcher_liveness() {
-  "$SCRIPT_DIR/fm-guard.sh" || true
+  # The runner helper checks the exact owner and the Pocket task supplies health.
+  [ "$RUNNER" = true ] || "$SCRIPT_DIR/fm-guard.sh" || true
 }
 
 # Mark presentation-stage inactive terminal outcomes only after the handling
@@ -624,6 +639,7 @@ EOF
 # (bin/fm-afk-return.sh) keeps its catch-up gated instead of clearing over
 # outcomes a later drain would present again.
 print_branch_outcomes_section() {
+  [ "$RUNNER" != true ] || return 0
   local config rows through captain routine line seq task task_line target i
   local text='' used=0 shown=0 held=0 bytes item_bytes=600 captain_bytes=4000 routine_bytes=2000
   local routine_lines='' routine_count=0 routine_shown=0
@@ -781,11 +797,25 @@ print_status_sections() {
     rm -f -- "$prepared"
     return 1
   fi
-  if ! status_commit_presentation_snapshot "$STATE" "$acknowledged"; then
+  if [ "$RUNNER" = true ]; then
+    # The helper commits this cursor only after the full presentation and ack.
+    printf '%s' "$acknowledged" > "$STATE/.lock/runner-stage/cursor" || { rm -f -- "$prepared"; return 1; }
+  elif ! status_commit_presentation_snapshot "$STATE" "$acknowledged"; then
     rm -f -- "$prepared"
     return 1
   fi
   rm -f -- "$prepared"
+}
+
+runner_annotation_rows() {  # <deduped-raw-rows>
+  local row _at _seq kind key _payload status_file
+  while IFS= read -r row; do
+    IFS=$'\t' read -r _at _seq kind key _payload <<< "$row"
+    if [ "$kind" != signal ] || ! fm_wake_status_key_map "$key"; then continue; fi
+    status_file="$STATE/$FM_WAKE_STATUS_KEY"
+    if [ ! -f "$status_file" ] || [ ! -r "$status_file" ] || [ -L "$status_file" ]; then continue; fi
+    printf '%s\n' "$row" || return 1
+  done <<< "$1"
 }
 
 print_status_presentation() {  # [<deduped-raw-rows>]
@@ -809,6 +839,11 @@ print_status_presentation() {  # [<deduped-raw-rows>]
     rc=1
   }
   if [ "$rc" -eq 0 ] && [ -n "$rows" ]; then
+    if [ "$RUNNER" = true ]; then
+      # A turn-end can exist without a status file. The raw row was shown;
+      # omit only its supplemental annotation so other status can be shown.
+      rows=$(runner_annotation_rows "$rows") || rc=1
+    fi
     fm_wake_print_annotations "$rows" "$snapshot" || rc=1
     if [ "$rc" -eq 0 ]; then
       annotation_manifest=$(fm_wake_annotation_manifest "$rows") || rc=1
@@ -835,7 +870,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if [ -n "$ACK_THROUGH" ]; then
+if [ -n "$ACK_THROUGH" ] && [ "$RUNNER" = false ]; then
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
 elif fm_lock_acquire_wait_bounded "$FM_WAKE_QUEUE_LOCK" "$PRESENTATION_LOCK_TIMEOUT"; then
   :
@@ -844,15 +879,26 @@ else
   if [ "$lock_rc" -eq 124 ]; then
     printf 'WAKE DRAIN SKIPPED: queue lock remains held by live pid %s after %ss; retry on the next drain.\n' \
       "${FM_LOCK_HELD_PID:-unknown}" "$PRESENTATION_LOCK_TIMEOUT"
+    [ "$RUNNER" = false ] || exit 1
     exit 0
   fi
   printf 'wake drain: queue lock could not be acquired safely\n' >&2
   exit 1
 fi
 DRAIN_LOCK_HELD=true
+if [ "$RUNNER" = true ]; then
+  # Prior branch state is not ours to repair. The runner profile has no branch.
+  [ ! -e "$ELIGIBLE_ROWS_FILE" ] && [ ! -L "$ELIGIBLE_ROWS_FILE" ] || exit 1
+  if [ -n "$ACK_THROUGH" ]; then
+    fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
+    [ "${FM_RECOVERY_MARKER_TOKEN##*:}" = "$ACK_GENERATION" ] || exit 1
+  fi
+fi
 rotate_scratch_locked
-reclaim_stale_branch_grant_locked || exit 1
-[ "$ACTOR" != main ] || retire_unconsumable_rows_locked
+[ "$RUNNER" = true ] || reclaim_stale_branch_grant_locked || exit 1
+if [ "$ACTOR" = main ] && { [ "$RUNNER" = false ] || [ -z "$ACK_THROUGH" ]; }; then
+  retire_unconsumable_rows_locked
+fi
 [ "$ACTOR" != branch ] || require_branch_eligible_rows || exit 1
 
 if [ -n "$ACK_THROUGH" ]; then
@@ -861,7 +907,7 @@ if [ -n "$ACK_THROUGH" ]; then
   else
     PRESENTED_MAX=$(presented_max_row "$MAIN_ROWS_FILE") || exit 1
   fi
-  if [ "$ACTOR" = main ]; then
+  if [ "$ACTOR" = main ] && [ "$RUNNER" = false ]; then
     # Preserve main's original whole-cutoff acknowledgement contract: a direct
     # or replayed main ack still owns every unreserved row through its cutoff,
     # so claim those again under the queue lock and none is stranded merely
@@ -898,8 +944,15 @@ if [ -n "$ACK_THROUGH" ]; then
     echo "wake drain: inactive outcome receipt could not be recorded safely" >&2
     exit 1
   fi
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
-  DRAIN_LOCK_HELD=true
+  if [ "$RUNNER" = true ]; then
+    fm_lock_acquire_wait_bounded "$FM_WAKE_QUEUE_LOCK" "$PRESENTATION_LOCK_TIMEOUT" || exit 1
+    DRAIN_LOCK_HELD=true
+    fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
+    [ "${FM_RECOVERY_MARKER_TOKEN##*:}" = "$ACK_GENERATION" ] || exit 1
+  else
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+    DRAIN_LOCK_HELD=true
+  fi
   DRAIN_TMP=$(mktemp "$STATE/.wake-queue.ack.XXXXXX") || exit 1
   chmod 0600 "$DRAIN_TMP" || exit 1
   if [ "$ACTOR" = branch ]; then
@@ -1009,7 +1062,7 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   esac
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
-  (print_status_presentation) || true
+  (print_status_presentation) || { [ "$RUNNER" = false ] || exit 1; }
   print_branch_outcomes_section || BRANCH_OUTCOMES_RC=1
   if [ "$RECOVERY_ACK_REQUIRED" = true ]; then
     printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation %s\n' "${RECOVERY_MARKER_TOKEN##*:}" >&2
@@ -1022,8 +1075,12 @@ if [ "$ACTOR" = main ]; then
   if [ -e "$ELIGIBLE_ROWS_FILE" ] || [ -L "$ELIGIBLE_ROWS_FILE" ]; then
     require_branch_eligible_rows || exit 1
   fi
-  claim_main_rows_locked || exit 1
-  if [ ! -s "$MAIN_ROWS_FILE" ]; then
+  if [ "$RUNNER" = true ]; then
+    claim_main_rows_locked "$RUNNER_THROUGH" || exit 1
+  else
+    claim_main_rows_locked || exit 1
+  fi
+  if [ ! -s "$MAIN_ROWS_FILE" ] && [ "$RUNNER" = false ]; then
     # Every remaining row is reserved by the live branch grant, which presents
     # and acknowledges them itself. Say so rather than exiting silently: a
     # drain that prints nothing while the queue is visibly non-empty reads as a
@@ -1067,11 +1124,14 @@ if [ "$ACTOR" = branch ]; then
 else
   ACTOR_ROWS_FILE=$MAIN_ROWS_FILE
 fi
-awk -F '\t' -v seqs="$ACTOR_ROWS_FILE" '
+awk -F '\t' -v seqs="$ACTOR_ROWS_FILE" -v cutoff="$RUNNER_THROUGH" '
   BEGIN { while ((getline line < seqs) > 0) keep[line]=1 }
-  NF >= 5 && ($2 in keep)
+  NF >= 5 && ($2 in keep) && (cutoff == "" || $2 + 0 <= cutoff + 0)
 ' "$FM_WAKE_QUEUE" > "$DRAIN_VIEW_TMP" || exit 1
 RAW_ROWS=$(fm_wake_print_deduped "$DRAIN_VIEW_TMP") || exit "$?"
+if [ "$RUNNER" = true ]; then
+  awk -F '\t' '$3 == "check" && $4 ~ /^inbox:/ {print substr($4,7)}' "$DRAIN_VIEW_TMP" > "$STATE/.lock/runner-stage/notes" || exit 1
+fi
 rm -f -- "$DRAIN_VIEW_TMP" || exit 1
 DRAIN_VIEW_TMP=
 ACK_THROUGH=$(printf '%s\n' "$RAW_ROWS" | awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > max { max=$2 } END { print (max == "" ? 0 : max) }') || exit 1
@@ -1094,7 +1154,7 @@ DRAIN_LOCK_HELD=false
 printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation %s\n' \
   "$ACK_THROUGH" "${RECOVERY_MARKER_TOKEN##*:}" >&2
 
-(print_status_presentation "$RAW_ROWS") || true
+(print_status_presentation "$RAW_ROWS") || { [ "$RUNNER" = false ] || exit 1; }
 print_branch_outcomes_section || BRANCH_OUTCOMES_RC=1
 assert_watcher_liveness
 exit "$BRANCH_OUTCOMES_RC"

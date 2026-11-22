@@ -1027,14 +1027,13 @@ fm_pocket_runner_lock_record() {  # <state> -> canonical owner line
   printf '%s\n' "$record"
 }
 
-# The preview caller must be below the live local holder of the same claim
-# mutex under which the exact runner owner was published. A copied generation
-# or an ordinary runner bash call is not authority to run preview startup.
-fm_pocket_runner_start_owned() {  # <home> <state> <config> <data>
-  local home=$1 state=$2 record mutex="$2/.lock.acquire" holder pid=$$
-  [ "$state" = "$home/state" ] && [ "$3" = "$home/config" ] && [ "$4" = "$home/data" ] || return 1
+# A runner command must be below the live local holder of the same claim
+# mutex. A copied generation is not authority and this proof never grants
+# the ordinary PID-based supervisor identity.
+_fm_pocket_runner_helper_owned() {  # <state> <generation>
+  local state=$1 record mutex="$1/.lock.acquire" holder pid=$$
   record=$(fm_pocket_runner_lock_record "$state") || return 1
-  [ "${record##*$'\t'}" = "${FM_POCKET_RUNNER_START:-}" ] || return 1
+  [ "${record##*$'\t'}" = "$2" ] || return 1
   holder=$(cat "$mutex/pid" 2>/dev/null) || return 1
   [ "$holder" = "${FM_POCKET_RUNNER_HELPER_PID:-}" ] && [[ "$holder" =~ ^[0-9]+$ ]] && [ "$holder" -gt 1 ] || return 1
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
@@ -1043,6 +1042,15 @@ fm_pocket_runner_start_owned() {  # <home> <state> <config> <data>
     [ "$pid" != "$holder" ] || return 0
   done
   return 1
+}
+
+fm_pocket_runner_start_owned() {  # <home> <state> <config> <data>
+  [ "$2" = "$1/state" ] && [ "$3" = "$1/config" ] && [ "$4" = "$1/data" ] || return 1
+  _fm_pocket_runner_helper_owned "$2" "${FM_POCKET_RUNNER_START:-}"
+}
+
+fm_pocket_runner_command_owned() {  # <home> <state>
+  [ "$2" = "$1/state" ] && _fm_pocket_runner_helper_owned "$2" "${FM_POCKET_RUNNER_COMMAND:-}"
 }
 
 # Read-only classification of state/.lock for machine-readable callers.

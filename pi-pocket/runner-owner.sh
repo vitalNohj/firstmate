@@ -5,6 +5,10 @@
 # Print a status line followed by an owner line (held) or digest (started).
 # Only pass a previous owner line for an observed archive or an explicit handoff.
 #
+# runner-owner.sh pi-pocket-runner-v1 <poll|verify|drain|ack|inbox-read|inbox-reply|inbox-ack|read>
+#     <home> <installation-uuid> <home-uuid> <conversation> <generation-uuid> [<operation args>...]
+# Verify the settled claim and delegate one finite operation while holding the claim mutex.
+#
 # runner-owner.sh pi-pocket-runner-v1 recover <home> <installation-uuid> <home-uuid>
 #     <conversation> <generation-uuid>
 # Attended recovery only: verify locally that all startup work has stopped
@@ -13,17 +17,19 @@ set -eu
 umask 077
 
 version=pi-pocket-runner-v1
-[ "$#" -ge 7 ] && [ "$#" -le 8 ] && [ "$1" = "$version" ] || exit 2
+[ "$#" -ge 7 ] && [ "$#" -le 10 ] && [ "$1" = "$version" ] || exit 2
 operation=$2
 home=$3
 installation=$4
 home_id=$5
 conversation=$6
 generation=$7
-previous=${8:-}
+shift 7
+previous=
 case "$operation" in
-  claim) ;;
-  recover) [ "$#" -eq 7 ] || exit 2 ;;
+  claim) [ "$#" -le 1 ] || exit 2; previous=${1:-} ;;
+  recover) [ "$#" -eq 0 ] || exit 2 ;;
+  poll|verify|drain|ack|inbox-read|inbox-reply|inbox-ack|read) ;;
   *) exit 2 ;;
 esac
 
@@ -63,8 +69,11 @@ STATE="$home/state"
 declare -F fm_pocket_runner_lock_record >/dev/null || refuse invalid-home
 fm_pocket_runner_uuid "$installation" && fm_pocket_runner_uuid "$home_id" && fm_pocket_runner_uuid "$generation" \
   && [[ "$conversation" =~ ^[A-Za-z0-9._:-]{1,128}$ ]] || exit 2
-marker=$(head -c 65 "$home/config/pi-pocket-home-id" | tr 'A-F' 'a-f')
-[ "$marker" = "$home_id" ] || refuse invalid-home
+valid_marker() {
+  [ -f "$home/config/pi-pocket-home-id" ] && [ ! -L "$home/config/pi-pocket-home-id" ] \
+    && [ "$(head -c 65 "$home/config/pi-pocket-home-id" | tr 'A-F' 'a-f')" = "$home_id" ]
+}
+valid_marker || refuse invalid-home
 # shellcheck source=bin/fm-wake-lib.sh
 . "$home/bin/fm-wake-lib.sh"
 
@@ -90,7 +99,11 @@ valid_mutex_path() {
 if ! valid_mutex_path "$mutex" || ! valid_mutex_path "$mutex.steal"; then
   refuse busy
 fi
-fm_lock_try_acquire "$mutex" || refuse busy
+case "$operation" in
+  recover|poll) fm_lock_try_acquire "$mutex" || refuse busy ;;
+  # Let a finite poll finish before claiming or comparing a predecessor.
+  *) fm_lock_acquire_wait_bounded "$mutex" 2 || refuse busy ;;
+esac
 stage_dir=
 cleanup() {
   if [ -n "$stage_dir" ]; then
@@ -114,6 +127,64 @@ settled() {
   [ -f "$lock/settled" ] && [ ! -L "$lock/settled" ] \
     && cmp -s "$lock/settled" <(printf '%s\n' "$1")
 }
+
+valid_marker || refuse invalid-home
+if [ "$operation" != claim ] && [ "$operation" != recover ]; then
+  [ "$(fm_pocket_runner_lock_record "$STATE")" = "$owner_line" ] || refuse changed
+  settled "$generation" && [ -f "$lock/digest" ] && [ ! -L "$lock/digest" ] || refuse incomplete
+  monitor="$home/pi-pocket/runner-monitor.sh"
+  [ -f "$monitor" ] && [ ! -L "$monitor" ] || refuse unavailable
+  export FM_POCKET_RUNNER_COMMAND="$generation" FM_POCKET_RUNNER_HELPER_PID="$$"
+  # Keep the holder in the child's ancestry until the operation finishes.
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$home/bin/fm-timeout-lib.sh"
+  fm_run_timed 8 bash "$monitor" "$operation" "$@"
+  exit "$?"
+fi
+
+retire_dead_legacy() {
+  command -v node >/dev/null 2>&1 || return 1
+  node - "$lock" <<'JS'
+const fs = require('node:fs');
+const { randomUUID } = require('node:crypto');
+const path = process.argv[2];
+if (!['linux', 'darwin'].includes(process.platform)) process.exit(1);
+const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+function snapshot() {
+  const fd = fs.openSync(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.size < 2n || stat.size > 11n) throw Error('not a native PID file');
+    const bytes = Buffer.alloc(12);
+    const n = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    return { stat, bytes: bytes.subarray(0, n) };
+  } finally { fs.closeSync(fd); }
+}
+function gone(pid) {
+  try { process.kill(pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; }
+}
+try {
+  const before = snapshot();
+  const pidText = before.bytes.toString('latin1');
+  if (!/^[1-9][0-9]{0,9}\n$/.test(pidText)) process.exit(1);
+  const pid = Number(pidText);
+  if (pid > 2147483647 || !gone(pid)) process.exit(1);
+  const after = snapshot();
+  if (!before.bytes.equals(after.bytes) || !['dev', 'ino', 'ctimeNs', 'mtimeNs', 'size'].every(k => before.stat[k] === after.stat[k]) || !gone(pid)) process.exit(1);
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const suffix = `.legacy-dead-${stamp}.${randomUUID()}`;
+  // Reserve a unique sibling without replacing any existing entry.
+  fs.closeSync(fs.openSync(path + suffix, 'wx', 0o600));
+  try { fs.renameSync(path, path + suffix); } catch (error) { fs.unlinkSync(path + suffix); throw error; }
+  process.stdout.write(`.lock${suffix}`);
+} catch { process.exit(1); }
+JS
+}
+legacy=
+if [ "$operation" = claim ] && [ -z "$previous" ] && [ -f "$lock" ] && [ ! -L "$lock" ]; then
+  [ ! -e "$STATE/.lock.runner-retired-$generation" ] && [ ! -L "$STATE/.lock.runner-retired-$generation" ] || refuse retired
+  legacy=$(retire_dead_legacy) || refuse foreign
+fi
 
 if [ -e "$lock" ] || [ -L "$lock" ]; then
   owner=$(fm_pocket_runner_lock_record "$STATE") || refuse foreign
@@ -153,7 +224,13 @@ export FM_POCKET_RUNNER_START="$generation" FM_POCKET_RUNNER_HELPER_PID="$$" FM_
 # Consume the entire stream even after reaching the storage limit. Closing the
 # pipe early would turn a partial digest into a spurious startup failure.
 "$home/bin/fm-session-start.sh" --source pi-pocket-runner 2>&1 | {
-  head -c 49152
+  # Keep the backup name in the startup receipt even if the link drops.
+  report=
+  if [ -n "$legacy" ]; then
+    report="Saved dead legacy lock: $legacy"
+    printf '%s\n' "$report"
+  fi
+  head -c "$((49152 - ${#report} - (${#report} > 0)))"
   cat >/dev/null
 } > "$lock/digest.pending" || refuse incomplete
 # A pipe's success is not the startup's success. Record quiescence separately

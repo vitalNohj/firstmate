@@ -874,7 +874,7 @@ cmd_ready() {
   # a missing path, and a home that never ran a watcher has no observation to
   # report an age for.
   local beat="$STATE/.last-watcher-beat" watch="$SELF_DIR/fm-watch.sh"
-  if [ -e "$beat" ] && command -v fm_path_age >/dev/null 2>&1; then
+  if [ -z "$FM_LOCK_INSPECT_RUNNER" ] && [ -e "$beat" ] && command -v fm_path_age >/dev/null 2>&1; then
     beacon_age=$(fm_path_age "$beat")
     case "$beacon_age" in
       ''|*[!0-9]*) beacon_age="" ;;
@@ -899,7 +899,10 @@ cmd_ready() {
       *) resolved_model=persistent ;;
     esac
   fi
-  if [ -z "$resolved_model" ]; then
+  if [ -n "$FM_LOCK_INSPECT_RUNNER" ]; then
+    consumer_state=unknown
+    consumer_reason="runner-monitor-readiness-in-pi-pocket"
+  elif [ -z "$resolved_model" ]; then
     consumer_state=unknown
     consumer_reason="supervision-model-unknown-for-home"
   elif ! command -v fm_watcher_supervision_verdict >/dev/null 2>&1; then
