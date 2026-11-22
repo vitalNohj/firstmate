@@ -227,13 +227,14 @@ const HOME_COMMAND_MS = 12000;
 const HOME_COMMAND_CHARS = 64 * 1024;
 const RUNNER_OWNER_VERSION = "pi-pocket-runner-v1";
 const RUNNER_OWNER_HELPER = "pi-pocket/runner-owner.sh";
+const RUNNER_MONITOR_HELPER = "pi-pocket/runner-monitor.sh";
+const RUNNER_UPDATE_REQUIRED = { kind: "paused", detail: "Firstmate on this computer is out of date. Update it to turn monitoring on." } as const;
 const RUNNER_DIGEST_BYTES = 49152;
 const RUNNER_TOOL = "fm_runner";
 const RUNNER_KIND = "x.firstmate.runner-monitor";
 const RUNNER_POLL_MS = positive("FM_POCKET_RUNNER_POLL_MS", 15_000);
 const RUNNER_RETRY_MS = positive("FM_POCKET_RUNNER_RETRY_MS", 90_000);
-const RUNNER_TOOLS = new Set([RUNNER_TOOL, ...CONTEXT_TOOLS]);
-const RUNNER_READ_ONLY = "Runner supervision is not enabled for this conversation.";
+const RUNNER_NO_SUPERVISION = "Runner supervision is not enabled for this conversation.";
 // FileSystem.id is a namespace, not a runner ID. Only the documented Node namespace admits legacy server I/O.
 const SERVER_FILES = new NodeExecutionEnv({ cwd: "/" }).id;
 
@@ -352,7 +353,7 @@ async function checkHome(source: EnvSource, context: Context): Promise<HomeCheck
 }
 
 function homeNotice(check: HomeCheck): string | undefined {
-    if (check.kind === "preview") return `Firstmate home found at ${JSON.stringify(check.home)} on the session's computer. ${RUNNER_READ_ONLY}`;
+    if (check.kind === "preview") return `Firstmate home found at ${JSON.stringify(check.home)} on the session's computer. ${RUNNER_NO_SUPERVISION}`;
     if (check.kind === "unavailable") return "Firstmate home check unavailable. No Firstmate supervision actions ran for this check.";
     if (check.kind === "not-home" && check.optInMissing) return `Not a Firstmate home: no valid ${HOME_OPT_IN} on the session's computer. To opt in, set up the UUID file manually on that computer.`;
     return undefined;
@@ -483,10 +484,15 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
     const isBound = async (id: ConversationId) => boundIds.has(Number(id)) || (await lookup(id).catch(() => undefined)) !== undefined;
     const active = (id: ConversationId, claim: RunnerClaim) => attended.has(Number(id)) && archive.get(Number(id)) !== true &&
         host.roleOf?.(claim.person) === "owner" && host.requesterOf?.(id) === claim.person;
+    const canUseTool = async (id: ConversationId) => {
+        if (!attended.has(Number(id))) return false;
+        const claim = await lookup(id).catch(() => undefined);
+        return claim !== undefined && active(id, claim);
+    };
     const noteHealth = (id: ConversationId, next: RunnerHealth) => {
         const previous = health.get(Number(id));
         health.set(Number(id), next);
-        if (previous?.state === next.state && previous?.detail === next.detail) return;
+        if (previous?.state === next.state) return;
         host.notice?.(next.state === "healthy" ? "info" : "warning", `Firstmate runner monitoring ${next.state}${next.detail === undefined ? "." : `: ${next.detail}`}`, id);
     };
     const command = async (id: ConversationId, claim: RunnerClaim, source: EnvSource, op: string, args: string[], context: Context) => {
@@ -502,6 +508,12 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
         const result = await checked.ops.exec(["bash", helper, RUNNER_OWNER_VERSION, op, claim.home, claim.installation,
             claim.homeId, String(id), claim.generation, ...args], {}, context);
         if (!(await authorized())) return { kind: "paused" as const, detail: "the conversation's authority changed." };
+        if (result.code === 0 && result.stdout === "unavailable\n") {
+            // The owner helper checks the claim before reporting the monitor unavailable.
+            // Only a missing file, not a link or other unsafe path, merits an update notice.
+            const probe = withAbortSignal(AbortSignal.timeout(HOME_PROBE_MS), context);
+            if (await checked.ops.info(RUNNER_MONITOR_HELPER, probe, false) === undefined) return RUNNER_UPDATE_REQUIRED;
+        }
         return { kind: "ran" as const, ...result };
     };
     const observe = async (id: ConversationId, claim: RunnerClaim, source: EnvSource, op: "poll" | "verify", args: string[], context: Context) => {
@@ -513,6 +525,10 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
             if (result.code === 0 && match && (match[2] === "-" || HOME_ID.test(match[2]))) {
                 return { kind: "ready" as const, cursor: match[1] === "-" ? "" : match[1], token: match[2], partial: match[3] === "true" };
             }
+            // Older helpers can reject the known monitor invocation or return a different ready format.
+            // Do not use such a response to present or acknowledge pending work.
+            if ((result.code === 2 && result.stdout === "" && result.stderr === "") ||
+                (result.code === 0 && result.stdout.startsWith("ready "))) return RUNNER_UPDATE_REQUIRED;
             const flag = /^paused (\.[a-z0-9.-]+)\n$/.exec(result.stdout)?.[1];
             const detail = flag === undefined ? "the runner could not complete a bounded observation; work remains pending." : `existing local state (${flag}) prevents automatic handling.`;
             return { kind: "paused" as const, detail };
@@ -622,7 +638,7 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
     const admit = async (checked: Extract<HomeCheck, { kind: "preview" }>, api: HookApi, context: Context): Promise<RunnerPreview | undefined> => {
         const { home, homeId, ops } = checked;
         const id = Number(api.conversationId);
-        const reply = (text: string): RunnerPreview => ({ notice: `Firstmate home at ${JSON.stringify(home)}. ${text} ${RUNNER_READ_ONLY}` });
+        const reply = (text: string): RunnerPreview => ({ notice: `Firstmate home at ${JSON.stringify(home)}. ${text} ${RUNNER_NO_SUPERVISION}` });
         try {
             const input = await ownerInput(api, context);
             if (input === undefined || archive.get(id) === true) return undefined;
@@ -700,7 +716,7 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
             return reply("Runner ownership or startup is unavailable. No startup is reported.");
         }
     };
-    return { admit, isBound, lookup, active, command, observe, ensure, monitor, health };
+    return { admit, isBound, lookup, canUseTool, command, observe, ensure, monitor, health };
 }
 
 function runnerHealthText(health: RunnerHealth | undefined) {
@@ -3153,15 +3169,13 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             wrapTool({ name: "codemode" } as ToolRegistration, (codemode) => ({
                 ...codemode,
                 execute: async (args, api, context) => {
-                    if (await runner?.isBound(api.conversationId) || (await checkHome(api, context)).kind === "preview") {
-                        return say("Runner tool denied: codemode is not part of the runner profile.", true);
-                    }
                     const assigned = await workers.worker(api.conversationId);
+                    const runnerAllowed = await runner?.canUseTool(api.conversationId);
                     return codemode.execute(args, {
                         ...api,
                         agent: async (context) => {
                             const agent = await api.agent(context);
-                            return { ...agent, callable: agent.callable.filter((tool) => tool.name !== RUNNER_TOOL &&
+                            return { ...agent, callable: agent.callable.filter((tool) => (tool.name !== RUNNER_TOOL || runnerAllowed) &&
                                 (assigned === undefined || workerBlock(assigned, tool.name) === undefined)) };
                         },
                     }, context);
@@ -3171,9 +3185,9 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             wrapSection("codemode", (inner) => ({
                 ...inner,
                 render: async (input, context) => {
-                    if (await runner?.isBound(input.conversationId) || (await checkHome(input, context)).kind === "preview") return undefined;
                     const assigned = await workers.worker(input.conversationId);
-                    const agent = { ...input.agent, callable: input.agent.callable.filter((tool) => tool.name !== RUNNER_TOOL &&
+                    const runnerAllowed = await runner?.canUseTool(input.conversationId);
+                    const agent = { ...input.agent, callable: input.agent.callable.filter((tool) => (tool.name !== RUNNER_TOOL || runnerAllowed) &&
                         (assigned === undefined || workerBlock(assigned, tool.name) === undefined)) };
 
                     return inner.render({ ...input, agent }, context);
@@ -3200,8 +3214,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 ...bash,
                 execute: async (args, api, context) => {
                     const checked = await checkHome(api, context);
-                    if (checked.kind === "preview" || await runner?.isBound(api.conversationId)) return say("Runner tool denied: bash is not part of the runner profile.", true);
-                    if (checked.kind !== "local") return bash.execute(args, api, context);
+                    if (checked.kind !== "local" || await runner?.isBound(api.conversationId)) return bash.execute(args, api, context);
                     const { home } = checked;
                     const main = await branchOf(home, api.conversationId);
                     if (main !== undefined) return branchBash(main).execute(args, api, context);
@@ -3219,13 +3232,14 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         hooks: [
             hook(ToolTask, {
                 beforeTool: async (call, api, context) => {
-                    const checked = await checkHome(api as HookApi & EnvSource, context);
-                    const bound = await runner?.isBound(api.conversationId);
-                    if (bound || checked.kind === "preview") {
-                        return RUNNER_TOOLS.has(call.name) && (call.name !== RUNNER_TOOL || bound) ? undefined :
-                            { block: `Runner tool denied: ${call.name} is not available in this runner profile.` };
+                    if (call.name === RUNNER_TOOL) {
+                        return await runner?.canUseTool(api.conversationId) ? undefined :
+                            { block: "Runner tool denied: only the bound Firstmate runner owner can use it." };
                     }
-                    if (call.name === RUNNER_TOOL) return { block: "Runner tool denied: no bound Firstmate runner home." };
+                    const checked = await checkHome(api as HookApi & EnvSource, context);
+                    if (checked.kind === "local" && await runner?.isBound(api.conversationId)) {
+                        return SUPERVISOR_TOOLS.has(call.name) ? { block: RUNNER_NO_SUPERVISION } : undefined;
+                    }
                     if (checked.placement === "server") {
                         const assigned = await workers.worker(api.conversationId);
                         if (assigned !== undefined) {
@@ -3278,9 +3292,10 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                         await runner.ensure(api as unknown as RunnerCommit, preview.claim, context).catch(() => undefined);
                     }
                     const scoped = bound || checked.kind === "preview";
-                    const messages = incoming.map((message) => {
+                    const runnerAllowed = bound && await runner?.canUseTool(api.conversationId);
+                    const messages = runnerAllowed ? incoming : incoming.map((message) => {
                         if (message.role !== "system" || message.toolsAdded === undefined) return message;
-                        const toolsAdded = message.toolsAdded.filter(({ name }) => scoped ? RUNNER_TOOLS.has(name) && (name !== RUNNER_TOOL || bound) : name !== RUNNER_TOOL);
+                        const toolsAdded = message.toolsAdded.filter(({ name }) => name !== RUNNER_TOOL);
                         return toolsAdded.length === message.toolsAdded.length ? message : { ...message, toolsAdded };
                     });
                     const notice = preview?.notice ?? (bound && checked.kind === "preview" ? undefined : homeNotice(checked));
@@ -3291,13 +3306,13 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     }
                     if (scoped) {
                         const health = runner?.health.get(Number(api.conversationId));
-                        const instruction = bound ? `${notice === undefined ? "" : `${notice} `}${runnerHealthText(health)} For runner wakes, call ${RUNNER_TOOL} to drain the batch first. Handle the shown work before acknowledging the exact receipt. Use inbox-read, inbox-reply and inbox-ack for notes; wake ack does not ack a note. Use status or repair only to check this monitor.` :
-                            (notice ?? RUNNER_READ_ONLY);
+                        const instruction = runnerAllowed ? `${notice === undefined ? "" : `${notice} `}${runnerHealthText(health)} For runner wakes, call ${RUNNER_TOOL} to drain the batch first. Handle the shown work before acknowledging the exact receipt. Use inbox-read, inbox-reply and inbox-ack for notes; wake ack does not ack a note. Use status or repair only to check this monitor.` :
+                            (notice ?? RUNNER_NO_SUPERVISION);
                         return { messages: [{ role: "system" as const, content: "", timestamp: Date.now(),
                             sections: { firstmate_runner: `${instruction} No native Firstmate startup, watcher, lifecycle, or posture commands apply here.${preview?.digest === undefined ? "" : `\n\n${preview.digest}`}` },
                         }, ...messages.map((message) => {
                             if (message.role !== "system" || message.sections === undefined) return message;
-                            const { firstmate, firstmate_runner, project_context, skills, codemode, ...sections } = message.sections;
+                            const { firstmate, firstmate_runner, project_context, skills, ...sections } = message.sections;
                             return { ...message, sections };
                         })] };
                     }
@@ -3358,19 +3373,9 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
 
                     return await postureRequest(home, messages, api, context) ?? (hiddenRunnerTool ? { messages } : undefined);
                 },
-                // The runner cannot arm a native watcher. Warn once, without forcing a model retry.
                 onYield: async (_answer, api, context) => {
-                    if (await runner?.isBound(api.conversationId)) {
-                        const health = runner?.health.get(Number(api.conversationId));
-                        if (health?.state !== "healthy" || api.now() - health.lastGood > RUNNER_POLL_MS * 3 + HOME_COMMAND_MS) {
-                            const key = "x.firstmate.runner-turn-end";
-                            if (!(await api.memo<boolean>(key, context))) {
-                                await api.memo(key, true, context);
-                                host.notice?.("warning", `Turn ended without a recent runner monitoring check. ${runnerHealthText(health)}`, api.conversationId);
-                            }
-                        }
-                        return undefined;
-                    }
+                    // The runner monitor reports health changes independently of model turns.
+                    if (await runner?.isBound(api.conversationId)) return undefined;
                     const runtime = api as Partial<Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "context">>;
                     const view = await runtime.context?.(api.conversationId, context);
                     const last = view?.messages.findLast((message) => message.role === "user");

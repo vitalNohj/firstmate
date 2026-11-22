@@ -301,6 +301,10 @@ const route = (request: unknown) => {
         return call("bash", { command: `${text.slice("run fixture command:\n".length)}\nrc=$?\nprintf '\\nfixture-exit=%s\\n' "$rc"` });
     }
     if (text.startsWith("runner fixture tool: ")) return call("fm_runner", JSON.parse(text.slice("runner fixture tool: ".length)));
+    if (text.startsWith("runner ordinary tool: ")) {
+        const { name, args } = JSON.parse(text.slice("runner ordinary tool: ".length));
+        return call(name, args);
+    }
     if (text.startsWith(RUNNER_WAKE) && failNextRunnerWake) {
         failNextRunnerWake = false;
         return fauxAssistantMessage([], { stopReason: "error", errorMessage: "fixture runner wake turn failed" });
@@ -1423,6 +1427,87 @@ async function runnerToolCall(app: App, id: unknown, action: string, args = {}) 
 
 const runnerReceipt = (text: string) => /^RUNNER_RECEIPT: (\S+)$/m.exec(text)?.[1];
 
+function runnerNotices(app: App, id: number, t: { after: (fn: () => void) => void }) {
+    const tab = fakeTab(id, owner(app));
+    app.attach(tab.client);
+    t.after(() => app.detach(tab.client));
+    return () => tab.events.filter((item: { event: string }) => item.event === "notice")
+        .map((item: { data: { message: string } }) => item.data.message) as string[];
+}
+
+test("a real runner owner and preview keep their ordinary tools", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    rmSync(join(fmHome, "state", ".wake-queue"));
+    const app = await open(mkdtempSync(join(root, "runner-ordinary-tools-")), true);
+    apps.push(app);
+    const runner = await runnerFixture(app, fmHome);
+    t.after(runner.close);
+    await runner.connect();
+    const id = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: runner.link.id })).id;
+    await app.commands.configure(id, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    await say(app, id, "claim the runner home");
+    const record = fixtureOwner(fmHome);
+    assert.ok(record.includes(`\t${id}\t`));
+    const preview = (await app.commands.fork(id, owner(app), { place: { runner: runner.link.id, cwd: fmHome } })).id;
+    for (const session of [id, preview]) {
+        const run = async (name: string, args: object) => {
+            await say(app, session, `runner ordinary tool: ${JSON.stringify({ name, args })}`);
+            return (await toolSaid(app, session)).at(-1)!;
+        };
+        const path = `ordinary-${session}.txt`;
+        const written = await run("write", { path, content: "first version\n" });
+        assert.ok(existsSync(join(fmHome, path)), `write must run on the runner: ${written}`);
+        assert.match(await run("read", { path }), /first version/);
+        await run("edit", { path, edits: [{ oldText: "first version", newText: "edited on the runner" }] });
+        assert.equal(readFileSync(join(fmHome, path), "utf8"), "edited on the runner\n");
+        assert.match(await run("bash", { command: `printf 'marker=%s\\n' "\${FM_PI_POCKET_CONVERSATION:-none}"; cat ${path}` }), /marker=none\nedited on the runner/);
+        assert.match(await run("codemode", { code: `return await tools.read({ path: ${JSON.stringify(path)} });` }), /edited on the runner/);
+        const offered = await offeredTools(app, session);
+        for (const tool of ["bash", "read", "edit", "write", "codemode"]) assert.ok(offered.includes(tool), tool);
+        assert.equal(offered.includes("fm_runner"), session === id, "only the bound owner is offered fm_runner");
+        const { listed, bindings } = await sandboxTools(app, session);
+        assert.equal(listed.some(({ name }) => name === "fm_runner"), session === id, "the sandbox lists fm_runner only for the bound owner");
+        assert.equal(bindings.includes("fm_runner"), session === id, "the sandbox uses the same owner check");
+        assert.equal(fixtureOwner(fmHome), record);
+    }
+    assert.match(await runnerToolCall(app, preview, "status"), /denied|no bound|not found/i);
+});
+
+test("a real runner reports missing or incompatible monitoring helpers once", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
+    for (const [label, body] of [
+        ["missing", undefined],
+        ["incompatible response", "printf 'ready - -\\n'\n"],
+        ["unsupported invocation", "exit 2\n"],
+    ] as const) await t.test(label, async (t) => {
+        const fmHome = await home({ runner: true });
+        optIn(fmHome);
+        rmSync(join(fmHome, "state", ".wake-queue"));
+        const helper = join(fmHome, "pi-pocket", "runner-monitor.sh");
+        if (body === undefined) rmSync(helper);
+        else writeFileSync(helper, `#!/usr/bin/env bash\n${body}`);
+        const app = await open(mkdtempSync(join(root, "runner-helper-update-")), true);
+        apps.push(app);
+        const runner = await runnerFixture(app, fmHome);
+        t.after(runner.close);
+        await runner.connect();
+        const id = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: runner.link.id })).id;
+        const notices = runnerNotices(app, id, t);
+        await app.commands.configure(id, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+        await say(app, id, "claim with the old runner checkout");
+        const pauses = () => notices().filter((notice) => notice.startsWith("Firstmate runner monitoring paused:"));
+        await until(() => pauses().length !== 0, "monitor notice for the old runner", LONG);
+        const old = /Firstmate on this computer is out of date.*update it/i;
+        assert.match(pauses()[0]!, old);
+        assert.match(await runnerToolCall(app, id, "status"), old);
+        await say(app, id, "ask another question with the old runner checkout");
+        assert.equal(notices().filter((notice) => old.test(notice)).length, 1);
+        copyFileSync(process.env.FM_PI_POCKET_RUNNER_MONITOR!, helper);
+        await until(() => notices().includes("Firstmate runner monitoring healthy."), "monitor resumes after the runner update", LONG);
+        assert.equal(pauses().length, 1);
+    });
+});
+
 test("a real runner owns and monitors its opted-in home without server path fallback", { skip: !runnerCapable, timeout: 90_000 }, async (t) => {
     const { app, id: local, fmHome: serverHome } = await started();
     const runnerHome = await home({ runner: true });
@@ -1444,10 +1529,7 @@ test("a real runner owns and monitors its opted-in home without server path fall
     await runner.connect();
     const { link } = runner;
     const remote = (await app.commands.createSession(owner(app), { cwd: runnerHome, runner: link.id })).id;
-    const tab = fakeTab(remote, owner(app));
-    app.attach(tab.client);
-    t.after(() => app.detach(tab.client));
-    const notices = () => tab.events.filter((item: { event: string }) => item.event === "notice").map((item: { data: { message: string } }) => item.data.message);
+    const notices = runnerNotices(app, remote, t);
 
     // Simulate an identical pathname on two computers. Only server filesystem calls are redirected; the actual runner
     // and its pi-env daemon have their own processes and still see the runner's separate fixture home.
@@ -1506,15 +1588,8 @@ test("a real runner owns and monitors its opted-in home without server path fall
     assert.equal(readFileSync(join(serverHome, "config", "calm"), "utf8"), "legacy server preference\n");
     assert.equal(readFileSync(join(runnerHome, "config", "calm"), "utf8"), "legacy runner preference\n");
 
-    for (const tool of ["bash", "codemode", "fm_watch_arm_pocket"]) {
-        const input = tool === "bash" ? "show the marker" : tool === "codemode" ? "run a script" : `force supervisor tool ${tool}`;
-        await say(app, remote, input);
-        assert.match((await toolSaid(app, remote)).at(-1)!, /runner.*(?:denied|not allowed|not available)/i);
-    }
-    await say(app, remote, "list the offered tools");
-    const offered = (await (await app.harness.conversation(remote, context))!.context(context)).messages;
-    assert.match(lastText({ messages: offered }).text, /offered tools: .*fm_runner/);
-    assert.doesNotMatch(lastText({ messages: offered }).text, /\b(?:bash|write|edit|codemode|subagent)\b/);
+    await say(app, remote, "force supervisor tool fm_watch_arm_pocket");
+    assert.match((await toolSaid(app, remote)).at(-1)!, /runner.*(?:denied|not allowed|not available)|Runner supervision is not enabled/i);
 
     const remoteState = join(runnerHome, "state");
     const localState = join(serverHome, "state");
@@ -1523,8 +1598,9 @@ test("a real runner owns and monitors its opted-in home without server path fall
     const pauseFlag = join(remoteState, ".afk-return-catchup");
     writeFileSync(pauseFlag, "fixture catch-up state\n");
     await until(() => notices().some((notice: string) => notice.includes(".afk-return-catchup")), "existing catch-up pauses monitoring");
-    await say(app, remote, "check while handling is paused");
-    assert.ok(notices().some((notice: string) => notice.includes("Turn ended without a recent runner monitoring check")));
+    for (const question of ["check while handling is paused", "another turn while paused"]) await say(app, remote, question);
+    assert.equal(count(notices(), "Turn ended without a recent runner monitoring check"), 0);
+    assert.equal(count(notices(), "Firstmate runner monitoring paused:"), 1);
     await recordCost(app, remote, 2);
     await app.spend.setSessionBudget(owner(app), remote, 1);
     assert.notEqual(app.spend.heldBack(remote), undefined);
@@ -1636,7 +1712,7 @@ test("a real runner owns and monitors its opted-in home without server path fall
     assert.match(await run("ack", { receipt: pending }), /refused|not available/i);
     assert.deepEqual(lines(queue), [late], "opt-out leaves work pending");
     await say(app, remote, "show the marker");
-    assert.match((await toolSaid(app, remote)).at(-1)!, /runner.*denied/i);
+    assert.match((await toolSaid(app, remote)).at(-1)!, /marker=none server=none/);
     assert.deepEqual(hostChecks, [], "runner admission, tools, monitor and Calm never consult host files at the matching path");
     assert.equal(fixtureOwner(runnerHome), runnerRecord);
     for (const name of [".lock-session", ".pocket-branch", ".last-watcher-beat", ".watch.lock", ".session-start-complete", ".session-start-agents-baseline", ".startup-network.lock"]) {
