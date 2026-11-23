@@ -231,9 +231,11 @@ try {
       const current = mine(task);
       if (current?.session !== Number(rawSession) || current.archived === true || !['busy', 'idle'].includes(busy)) break;
       const argv = ['apply', state, task, busy, '--current-gen', '--source', 'pi-pocket', '--event', 'runner-reconcile'];
-      if (busy === 'idle') argv.push('--turn-ended');
+      if (busy === 'idle') argv.push('--require-turn-ended');
       const changed = spawnSync('bash', [join(home, 'bin', 'fm-busy-event.sh'), ...argv], { cwd: home, encoding: 'utf8', timeout: 3500 });
-      if (changed.status === 0) save({ ...current, busy: busy === 'busy' });
+      if (changed.error !== undefined) throw changed.error;
+      if (changed.status !== 0) refuse(changed.stderr?.trim() || 'the runner busy event writer did not complete');
+      save({ ...current, busy: busy === 'busy' });
       break;
     }
     case 'worker-handoff': {

@@ -2925,11 +2925,17 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
             if (row === undefined || row.archived === true || typeof row.busy !== "boolean") continue;
             const event = runnerRunEvents.get(known.session);
             if (known.busy === row.busy && event === undefined) continue;
-            await lane(known.session, async () => {
-                await port.call("worker-busy", [known.task, String(known.session), row.busy ? "busy" : "idle"]);
-                const latest = bySession.get(known.session);
-                if (latest?.archived !== true && latest !== undefined) bySession.set(known.session, { ...latest, busy: row.busy === true });
-            });
+            try {
+                await lane(known.session, async () => {
+                    await port.call("worker-busy", [known.task, String(known.session), row.busy ? "busy" : "idle"]);
+                    const latest = bySession.get(known.session);
+                    if (latest?.archived !== true && latest !== undefined) bySession.set(known.session, { ...latest, busy: row.busy === true });
+                });
+            } catch {
+                context.abortSignal?.throwIfAborted();
+                // Keep this event pending without blocking other workers' notifications.
+                continue;
+            }
             if (event === runnerRunEvents.get(known.session)) runnerRunEvents.delete(known.session);
         }
     }

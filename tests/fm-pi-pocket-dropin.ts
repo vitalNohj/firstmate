@@ -1782,6 +1782,73 @@ test("a runner main starts, steers, interrupts and tears down a worker through r
     assert.ok(!existsSync(join(remote.runnerData, "fixture-process-scan")), "runner cleanup does not scan the process table");
 });
 
+test("a runner retries a failed worker lifecycle notification without a new run", { skip: !runnerCapable, timeout: 120_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    const state = join(fmHome, "state");
+    rmSync(join(state, ".wake-queue"));
+    copyFileSync(join(bin, "..", "pi-pocket", "runner-worker.mjs"), join(fmHome, "pi-pocket", "runner-worker.mjs"));
+    writeFileSync(join(fmHome, "config", "backend"), "pi-pocket\n");
+    const task = "runner-notify";
+    const writer = join(fmHome, "bin", "fm-busy-event.sh");
+    renameSync(writer, join(fmHome, "bin", "fm-busy-event-real.sh"));
+    // Record each real write result, including the failure before the marker is touched.
+    writeFileSync(writer, `#!/usr/bin/env bash
+real="$(dirname "$0")/fm-busy-event-real.sh"
+if [ "$1:$3:$4" != 'apply:${task}:idle' ]; then exec bash "$real" "$@"; fi
+phase=ready
+if [ ! -f "$2/$3.busy-gen" ]; then phase=unarmed
+elif [ -L "$2/$3.turn-ended" ]; then phase=unwritable; fi
+bash "$real" "$@"
+rc=$?
+printf '%s %s\\n' "$phase" "$rc" >> "$2/../stub/idle-write-status"
+exit "$rc"
+`, { mode: 0o700 });
+    const app = await open(mkdtempSync(join(root, "runner-notifications-")), true);
+    const remote = await runnerFixture(app, fmHome);
+    t.after(async () => { await remote.close(); await app.close(); });
+    await remote.connect();
+    const main = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: remote.link.id })).id;
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await app.commands.configure(main, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    const project = join(fmHome, "projects", "fixture-notification-project");
+    mkdirSync(project, { recursive: true });
+    assert.equal(spawnSync("git", ["init", "-q", "-b", "main", project]).status, 0);
+    assert.equal(spawnSync("git", ["-C", project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]).status, 0);
+    mkdirSync(join(fmHome, "data", task), { recursive: true });
+    writeFileSync(join(fmHome, "data", task, "brief.md"), "# Task\n\nCheck the fixture.\n");
+    await say(app, main, "start the runner home for a lifecycle notification test");
+    const launched = await runnerToolCall(app, main, "worker", { operation: "spawn", task, args: [project, "--scout", "--model", "faux/faux-1"] });
+    const record = workerRecord(fmHome, task);
+    assert.ok(record?.session > 0, launched);
+    const ended = join(state, `${task}.turn-ended`);
+    await until(() => workerRecord(fmHome, task)?.busy === false && existsSync(ended), "the initial worker turn to settle", LONG);
+    await app.commands.submit(record.session, owner(app), { text: "work for a long time", requestId: crypto.randomUUID() });
+    await until(() => workerRecord(fmHome, task)?.busy === true && busyRecord(fmHome, task)?.state === "busy", "the runner to record the busy worker", LONG);
+
+    const gen = join(state, `${task}.busy-gen`);
+    const heldGen = join(fmHome, "stub", "held-gen");
+    renameSync(gen, heldGen);
+    rmSync(ended);
+    symlinkSync(join(fmHome, "stub", "missing-parent", "turn-ended"), ended);
+    const attempts = () => lines(join(fmHome, "stub", "idle-write-status"));
+    const previous = attempts().length;
+    const stopped = await app.linkedSessions.stop(main, { to: record.address }, crypto.randomUUID());
+    assert.equal(stopped.busy, true);
+    await until(() => attempts().slice(previous).includes("unarmed 1"), "the real idle writer to fail with no armed generation", LONG);
+    assert.equal(workerRecord(fmHome, task)?.busy, true, "a failed writer must not confirm idle");
+    renameSync(heldGen, gen);
+    await until(() => attempts().slice(previous).some((line) => line.startsWith("unwritable ")), "the monitor to retry the failed idle write", LONG).catch((error) => {
+        assert.fail(`${String(error)}; writer results: ${attempts().slice(previous).join(", ")}`);
+    });
+    assert.equal(attempts().slice(previous).find((line) => line.startsWith("unwritable ")), "unwritable 1", "a failed notification must also refuse the write");
+    assert.equal(workerRecord(fmHome, task)?.busy, true, "idle is not confirmed without the notification");
+    rmSync(ended);
+    await until(() => workerRecord(fmHome, task)?.busy === false && existsSync(ended), "the same worker to settle and notify after both failures clear", LONG);
+    assert.equal(busyRecord(fmHome, task)?.state, "idle");
+    assert.equal(attempts().slice(previous).filter((line) => line === "ready 0").length, 1, "one successful retry without starting another run");
+});
+
 test("a real runner owner and preview receive the home rules and skills", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
     const fmHome = await home({ runner: true });
     const rule = "# Runner home supervisor contract";
