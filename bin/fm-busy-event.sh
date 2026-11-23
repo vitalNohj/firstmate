@@ -14,16 +14,17 @@
 #       the old gen are rejected as stale from then on.
 #
 #   apply <state-dir> <id> <busy|idle|unknown> (--gen G | --current-gen)
-#         --source S --event E [--turn-ended]
+#         --source S --event E [--turn-ended | --require-turn-ended]
 #       Append one lifecycle event: validate the gen against the armed
 #       sidecar, advance seq under the lock, atomically replace the record.
 #       A non-busy event also clears active stream evidence and closes any
 #       request ordering record, so a settled or unknown worker never leaves
 #       an observation standing.
 #       --turn-ended also touches state/<id>.turn-ended, the watcher
-#       notification, under the same lock, so a writer whose gen was refused,
-#       or whose incarnation is replaced right after, never signals the
-#       replacement.
+#       notification, under the same lock, so a writer whose gen was refused
+#       never signals a replacement. The touch is best effort.
+#       --require-turn-ended refuses an unsafe marker or a failed touch, even
+#       if the busy record was already written.
 #       Adapter wiring passes the exact --gen embedded at arm time, so a
 #       hook that outlives its incarnation fails closed here. The legacy
 #       Claude fm-send --key Escape path (fm-interrupt) and firstmate recovery
@@ -58,7 +59,7 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   fm-busy-event.sh arm <state-dir> <id> [--state busy|idle|unknown] [--source S] [--event E]
-  fm-busy-event.sh apply <state-dir> <id> <busy|idle|unknown> (--gen G | --current-gen) --source S --event E [--turn-ended]
+  fm-busy-event.sh apply <state-dir> <id> <busy|idle|unknown> (--gen G | --current-gen) --source S --event E [--turn-ended | --require-turn-ended]
   fm-busy-event.sh progress <state-dir> <id> --gen G
   fm-busy-event.sh stream <state-dir> <id> <open|progress|close> --gen G --request N
   fm-busy-event.sh retire <state-dir> <id> (--gen G | --current-gen)
@@ -87,7 +88,7 @@ case "$ID" in *[!A-Za-z0-9._-]*) echo "error: invalid task id" >&2; exit 1 ;; es
 NEW_STATE=
 GEN=
 USE_CURRENT_GEN=0
-TURN_ENDED=0
+TURN_ENDED=
 SOURCE=
 EVENT=
 STREAM_OP=
@@ -110,7 +111,10 @@ while [ $# -gt 0 ]; do
     --current-gen) USE_CURRENT_GEN=1; shift ;;
     --source) SOURCE=${2:-}; shift 2 || usage ;;
     --event) EVENT=${2:-}; shift 2 || usage ;;
-    --turn-ended) [ "$CMD" = apply ] || usage; TURN_ENDED=1; shift ;;
+    --turn-ended|--require-turn-ended)
+      [ "$CMD" = apply ] || usage
+      [ -z "$TURN_ENDED" ] || [ "$TURN_ENDED" = "$1" ] || usage
+      TURN_ENDED=$1; shift ;;
     --request) REQUEST=${2:-}; shift 2 || usage ;;
     *) usage ;;
   esac
@@ -347,7 +351,16 @@ if [ "$NEW_STATE" != busy ]; then
   clear_stream || { lock_release; exit 1; }
 fi
 umask "$old_umask"
-# Best effort: the record already settled, so a failed touch never refuses it.
-[ "$TURN_ENDED" = 0 ] || touch "$STATE/$ID.turn-ended" 2>/dev/null || true
+case "$TURN_ENDED" in
+  --turn-ended) touch "$STATE/$ID.turn-ended" 2>/dev/null || true ;;
+  --require-turn-ended)
+    signal="$STATE/$ID.turn-ended"
+    if [ -L "$signal" ] || { [ -e "$signal" ] && [ ! -f "$signal" ]; } || ! touch -- "$signal"; then
+      lock_release
+      echo "error: turn-ended notification write failed for $ID" >&2
+      exit 1
+    fi
+    ;;
+esac
 lock_release
 exit 0

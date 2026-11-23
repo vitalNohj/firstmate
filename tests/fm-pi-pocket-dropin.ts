@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import childProcess, { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import {
+    appendFileSync,
     chmodSync,
     copyFileSync,
     cpSync,
@@ -131,6 +132,8 @@ async function home({ runner = false } = {}): Promise<string> {
         if (existsSync(helper)) copyFileSync(helper, join(home, "pi-pocket", "runner-owner.sh"));
         const monitor = process.env.FM_PI_POCKET_RUNNER_MONITOR!;
         if (existsSync(monitor)) copyFileSync(monitor, join(home, "pi-pocket", "runner-monitor.sh"));
+        const posture = join(bin, "..", "pi-pocket", "runner-posture-lib.sh");
+        if (existsSync(posture)) copyFileSync(posture, join(home, "pi-pocket", "runner-posture-lib.sh"));
         mkdirSync(join(home, "config"));
         mkdirSync(join(home, "data"));
         writeFileSync(join(home, "config", "backlog-backend"), "manual\n");
@@ -299,6 +302,28 @@ const route = (request: unknown) => {
     if (role === "toolResult" && text.startsWith("recorded seq") && whole.some((message) => JSON.stringify(message.content).includes("task-report-concurrent"))) {
         return call("read", { path: "state/.pocket-branch-turn" });
     }
+    const branchWake = all.findLast((message) => message.role === "user" && lastText({ messages: [message] }).text.includes(BRANCH_WAKE));
+    const branchInput = branchWake === undefined ? "" : lastText({ messages: [branchWake] }).text;
+    const workerBranch = /^FIRSTMATE SUPERVISION WAKE: signal: runner-worker\.(status|turn-ended)$/m.test(branchInput);
+    const lateRowBranch = /^FIRSTMATE SUPERVISION WAKE: signal: task-late-row\.(status|turn-ended)$/m.test(branchInput);
+    if (role === "toolResult" && workerBranch && text.includes("only a worker named in its active grant")) {
+        return call("fm_runner", { action: "worker", operation: "send", task: "runner-worker", args: ["Steered from the granted runner turn."] });
+    }
+    if (role === "toolResult" && workerBranch && !text.startsWith("Runner worker operation refused")) {
+        const caller = all.slice(0, tail).findLast((message) => message.role === "assistant");
+        if (JSON.stringify(caller?.content)?.includes("Steered from the granted runner turn.")) return call("fm_runner", { action: "drain" });
+    }
+    if (role === "toolResult" && (lateRowBranch || workerBranch || branchInput.includes("RUNNER BRANCH HANDLING FIXTURE"))) {
+        const receipt = /^RUNNER_RECEIPT: (\S+)$/m.exec(text)?.[1];
+        if (receipt !== undefined) return call("fm_branch_report", lateRowBranch ? { task: "task-late-row", verdict: "routine", summary: "Handled the granted row." } :
+            workerBranch ? { task: "runner-worker", verdict: "routine", summary: "Handled the runner worker update." } :
+            { task: "task-report", verdict: "captain", summary: "Runner work requires a decision." });
+        if (text.startsWith("Recorded runner outcome")) {
+            const prior = whole.map((message) => JSON.stringify(message.content)).join("\n");
+            const token = [...prior.matchAll(/RUNNER_RECEIPT: ([0-9a-f-]{36})/g)].at(-1)?.[1];
+            return call("fm_runner", { action: "ack", receipt: token });
+        }
+    }
     if (role === "toolResult") return fauxAssistantMessage([fauxText("noted the tool result")]);
     if (text.startsWith("/afk")) return call("fm_posture_pocket", { mode: "away", words: text.slice(4).trim() });
     if (text === "/quiet") return call("fm_posture_pocket", { mode: "quiet" });
@@ -357,11 +382,21 @@ const route = (request: unknown) => {
     if (text.endsWith("show the task env")) {
         return call("bash", { command: `printf 'task=%s inbox=%s home=%s marker=%s server=%s token=%s' "$FM_TASK_ID" "$FM_TASK_INBOX" "\${FM_HOME:-none}" "\${FM_PI_POCKET_CONVERSATION:-none}" "\${FM_PI_POCKET_SERVER_PID:-none}" "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
     }
-    if (text.endsWith("work for a long time")) return call("bash", { command: "sleep 20" });
+    if (text.endsWith("work for a long time") || (text.includes("Firstmate instruction waiting:") && text.includes("'runner-worker.inbox'"))) {
+        return call("bash", { command: "sleep 20" });
+    }
     if (text.endsWith("show the bridge token")) return call("bash", { command: `printf 'token=%s' "\${FM_PI_POCKET_BRIDGE_TOKEN:-none}"` });
     if (text.endsWith("check the worker bridge")) return call("bash", { command: `node bin/fm-pi-pocket-bridge.mjs status --state "$FM_HOME/state"` });
     if (text.endsWith("report from main")) return call("fm_branch_report", { task: "task-a", verdict: "routine", summary: "main reporting" });
     // The supervision session: a wake for a task it reports on, and one it leaves without an outcome.
+    if (text === branchInput && workerBranch) {
+        if (text.includes(`${BRANCH_WAKE}signal: runner-worker.status`) && text.includes("RUNNER BRANCH WORKER GO")) {
+            return call("fm_runner", { action: "worker", operation: "send", task: "not-in-the-grant", args: ["Do not deliver."] });
+        }
+        return call("fm_runner", { action: "drain" });
+    }
+    if (text === branchInput && lateRowBranch) return call("fm_runner", { action: "drain" });
+    if (text.includes(`${BRANCH_WAKE}signal: task-report.status`) && text.includes("RUNNER BRANCH HANDLING FIXTURE")) return call("fm_runner", { action: "drain" });
     if (text.includes(`${BRANCH_WAKE}signal: task-report-concurrent.status`)) {
         return fauxAssistantMessage([
             fauxToolCall("fm_branch_report", { task: "task-report-concurrent", verdict: "routine", summary: "First report." }),
@@ -1399,7 +1434,7 @@ async function readCalm(app: App, base: string) {
 
 const runnerCapable = existsSync(join(checkout, "src/runner/runner.ts")) && existsSync(join(checkout, "src/runner/secure-link.ts"));
 
-async function runnerFixture(app: App, runnerHome: string) {
+async function runnerFixture(app: App, runnerHome: string, pathPrefix?: string) {
     const server = await serveFixture(app);
     const { linkInProcess } = await import(join(checkout, "src/runner/secure-link.ts"));
     const link = linkInProcess((request: unknown) => app.runners.redeem(request), app.runners.makeCode("Fixture laptop", owner(app).id).code);
@@ -1420,7 +1455,7 @@ async function runnerFixture(app: App, runnerHome: string) {
         listener ??= await serveFixture(next);
         const runner = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", "--input-type=module", "-e", source], {
             cwd: runnerHome,
-            env: { PATH: process.env.PATH, HOME: runnerData, TMPDIR: runnerData, PI_POCKET_DIR: runnerData,
+            env: { PATH: pathPrefix === undefined ? process.env.PATH : `${pathPrefix}:${process.env.PATH ?? ""}`, HOME: runnerData, TMPDIR: runnerData, PI_POCKET_DIR: runnerData,
                 FIXTURE_LINK: JSON.stringify({ server: listener.base, ...link }) },
             stdio: ["pipe", "ignore", "inherit"],
         });
@@ -1441,6 +1476,18 @@ async function runnerToolCall(app: App, id: unknown, action: string, args = {}) 
 
 const runnerReceipt = (text: string) => /^RUNNER_RECEIPT: (\S+)$/m.exec(text)?.[1];
 
+function loseFirstLinkedStartReply(app: App, prefix: string, t: { after: (fn: () => void) => void }) {
+    const start = app.linkedSessions.start.bind(app.linkedSessions);
+    const keys: string[] = [];
+    const probe = mock.method(app.linkedSessions, "start", async (...args: Parameters<typeof start>) => {
+        const reply = await start(...args);
+        if (typeof args[2] === "string" && args[2].startsWith(prefix) && keys.push(args[2]) === 1) throw new Error("fixture lost the first linked start reply");
+        return reply;
+    });
+    t.after(() => probe.mock.restore());
+    return keys;
+}
+
 function runnerNotices(app: App, id: number, t: { after: (fn: () => void) => void }) {
     const tab = fakeTab(id, owner(app));
     app.attach(tab.client);
@@ -1448,6 +1495,359 @@ function runnerNotices(app: App, id: number, t: { after: (fn: () => void) => voi
     return () => tab.events.filter((item: { event: string }) => item.event === "notice")
         .map((item: { data: { message: string } }) => item.data.message) as string[];
 }
+
+test("a runner supervision branch handles a granted runner wake without using the server home", { skip: !runnerCapable, timeout: 90_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    rmSync(join(fmHome, "state", ".wake-queue"));
+    copyFileSync(join(bin, "fm-branch-outcome.sh"), join(fmHome, "bin", "fm-branch-outcome.sh"));
+    const helper = join(bin, "..", "pi-pocket", "runner-supervision.sh");
+    const trace = existsSync(helper) ? traceRunnerBranch(fmHome) : () => [];
+    writeFileSync(join(fmHome, "config", "backend"), "pi-pocket\n");
+    const app = await open(mkdtempSync(join(root, "runner-supervision-")), true);
+    t.after(() => app.close());
+    const remote = await runnerFixture(app, fmHome);
+    t.after(remote.close);
+    await remote.connect();
+    const main = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: remote.link.id })).id;
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await app.commands.configure(main, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    const notices = runnerNotices(app, Number(main), t);
+    const startKeys = loseFirstLinkedStartReply(app, "firstmate-runner-supervision-", t);
+    await say(app, main, "start the runner home: RUNNER BRANCH HANDLING FIXTURE");
+    writeFileSync(join(fmHome, "state", "task-report.meta"), "project=fixture\nkind=ship\n");
+    writeFileSync(join(fmHome, "state", "task-report.status"), "ready: RUNNER BRANCH ONLY\n");
+    const linkedBranch = () => app.sessions().find((row: { title?: string }) => row.title === "Firstmate supervision")?.id;
+    await until(() => linkedBranch() !== undefined, "the linked runner supervision branch", LONG);
+    const branch = linkedBranch();
+    await until(async () => (await userTexts(app, branch)).some((line) => line.includes(BRANCH_WAKE)), "the branch wake on the runner", LONG).catch(async (error) => {
+        assert.fail([String(error), ...notices(), ...trace(), ...await userTexts(app, branch), ...lines(join(fmHome, "state", ".wake-queue"))].join("\n"));
+    });
+    await until(async () => (await toolSaid(app, main)).some((line) => line.includes("Processed runner outcomes through seq 1")), "only main acknowledges the runner outcome", LONG).catch(async (error) => {
+        assert.fail([String(error), ...notices(), ...trace(), ...await toolSaid(app, branch), ...await toolSaid(app, main)].join("\n"));
+    });
+    assert.equal(startKeys.length, 2, "the branch start got a lost reply and a replay");
+    assert.equal(startKeys[0], startKeys[1]);
+    assert.equal((await app.linkedSessions.list(main)).length, 1, "replay did not start a second branch");
+    assert.ok(!(await userTexts(app, main)).some((line) => line.includes(BRANCH_WAKE)), "the main session must not receive branch work");
+    assert.ok(!(await userTexts(app, main)).some((line) => line.includes(RUNNER_WAKE)), "main does not receive an acknowledged branch batch");
+    assert.equal(lines(join(fmHome, "state", ".wake-queue")).length, 0, "the runner queue is acknowledged");
+    await say(app, branch, "runner ordinary tool: {\"name\":\"bash\",\"args\":{\"command\":\"echo unexpected\"}}");
+    assert.ok((await toolSaid(app, branch)).some((line) => line.includes("does not allow bash")), "runner branch cannot execute arbitrary commands");
+});
+
+/** Trace the real helper's verdict without changing the helper's exit code or result. */
+function traceRunnerBranch(home: string) {
+    const helper = join(home, "pi-pocket", "runner-supervision.sh");
+    const trace = join(home, "stub", "runner-branch-trace");
+    copyFileSync(join(bin, "..", "pi-pocket", "runner-supervision.sh"), `${helper}.real`);
+    writeFileSync(helper, String.raw`#!/usr/bin/env bash
+real="$FM_HOME/pi-pocket/runner-supervision.sh.real"
+case "$1" in
+  branch-offer|branch-grant|branch-ack|branch-drain|branch-render|branch-record|branch-release|branch-posture|branch-posture-return) ;;
+  *) exec bash "$real" "$@" ;;
+esac
+state="$FM_HOME/state"
+cutoff=- queued=
+if [ -f "$state/.lock/runner-window" ]; then
+    IFS=$'\t' read -r receipt cutoff < "$state/.lock/runner-window"
+fi
+if [ -f "$state/.wake-queue" ]; then
+    queued=$(awk -F '\t' '{ print $2 ":" $4 }' "$state/.wake-queue" | paste -sd ' ' -)
+fi
+if [ "$1" = branch-posture-return ]; then
+    printf '%s cutoff=%s start\n' "$1" "$cutoff" >> "$FM_HOME/stub/runner-branch-trace"
+fi
+out=$(bash "$real" "$@")
+rc=$?
+verdict=
+case "$1" in
+  branch-offer|branch-grant|branch-ack|branch-posture)
+    verdict=$(printf '%s' "$out" | tr '\n' ',') ;;
+esac
+if [ "$rc" -ne 0 ] && { [ "$1" = branch-offer ] || [ "$1" = branch-grant ]; }; then
+    reason=$(awk -F '\t' 'NR == 1 { print $3 ": " $4 }' "$state/.wake-queue")
+    verdict="refused; live scan: $(printf '%s\n' "$reason" | node "$FM_HOME/bin/fm-branch-dispatch.mjs" offer | tr '\n' ',')"
+fi
+printf '%s cutoff=%s queue=[%s] exit=%s verdict=[%s]\n' "$1" "$cutoff" "$queued" "$rc" "$verdict" >> "$FM_HOME/stub/runner-branch-trace"
+if [ -n "$out" ]; then printf '%s\n' "$out"; fi
+exit "$rc"
+`);
+    return () => lines(trace);
+}
+
+test("a runner routes a status wake followed by a later turn-ended row without expanding the grant", { skip: !runnerCapable, timeout: 120_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    const state = join(fmHome, "state");
+    const queue = join(state, ".wake-queue");
+    rmSync(queue);
+    copyFileSync(join(bin, "fm-branch-outcome.sh"), join(fmHome, "bin", "fm-branch-outcome.sh"));
+    const trace = traceRunnerBranch(fmHome);
+    writeFileSync(join(fmHome, "config", "backend"), "pi-pocket\n");
+    const app = await open(mkdtempSync(join(root, "runner-late-row-")), true);
+    t.after(() => app.close());
+    const remote = await runnerFixture(app, fmHome);
+    t.after(remote.close);
+    await remote.connect();
+    const main = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: remote.link.id })).id;
+    const notices = runnerNotices(app, Number(main), t);
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await app.commands.configure(main, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    const start = app.linkedSessions.start.bind(app.linkedSessions);
+    let branch: Awaited<ReturnType<typeof start>>["session"] | undefined;
+    const advance = mock.method(app.linkedSessions, "start", async (...args: Parameters<typeof start>) => {
+        const started = await start(...args);
+        if (branch === undefined && args[1].title === "Firstmate supervision") {
+            // Let the neutral first turn finish, so the monitor proceeds straight to grant instead of re-offering.
+            await until(async () => (await app.linkedSessions.list(main)).some((row) => row.address === started.address && row.busy === false), "the new branch to become idle", LONG);
+            // Publish after the first offer, before grant. The monitor cannot widen this receipt to include the append.
+            const env = { PATH: process.env.PATH, HOME: remote.runnerData, FM_HOME: fmHome, FM_STATE_OVERRIDE: state };
+            execFileSync("bash", ["-c", '. "$FM_HOME/bin/fm-wake-lib.sh"; fm_wake_append signal task-late-row.turn-ended "signal: task-late-row.turn-ended"'], { cwd: fmHome, env, timeout: 5000 });
+            branch = started.session;
+        }
+        return started;
+    });
+    t.after(() => advance.mock.restore());
+    let passed = false;
+    try {
+        await say(app, main, "start the runner home for the late-row test");
+        writeFileSync(join(state, "task-late-row.meta"), "project=fixture\nkind=ship\n");
+        writeFileSync(join(state, "task-late-row.status"), "ready: First runner status row\n");
+        // Each receipt crosses the runner for grant, render, drain, report, and acknowledgement.
+        await until(() => trace().filter((line) => /^branch-ack .*exit=0/.test(line)).length >= 2, "two separate runner wake acknowledgements", 2 * LONG);
+        assert.notEqual(branch, undefined);
+        assert.ok(trace().some((line) => /^branch-offer cutoff=1 queue=\[1:task-late-row.status\] exit=0/.test(line)), "the first offer sees only the status row");
+        assert.ok(trace().some((line) => /^branch-grant cutoff=1 queue=\[1:task-late-row.status 2:task-late-row.turn-ended\] exit=0/.test(line)), "the late row is queued while grant still uses the first cutoff");
+        assert.ok(trace().some((line) => /^branch-grant cutoff=2 queue=\[2:task-late-row.turn-ended\] exit=0/.test(line)), "only the first row was acknowledged with the first grant");
+        assert.deepEqual((await userTexts(app, branch)).flatMap((text) => text.split("\n").filter((line) => line.startsWith(BRANCH_WAKE))), [
+            `${BRANCH_WAKE}signal: task-late-row.status`, `${BRANCH_WAKE}signal: task-late-row.turn-ended`,
+        ]);
+        assert.deepEqual(lines(queue), []);
+        assert.ok(!(await userTexts(app, main)).some((text) => text.startsWith(RUNNER_WAKE)), "both valid windows reached the branch");
+        passed = true;
+    } finally {
+        const fallback = (await userTexts(app, main)).filter((text) => text.startsWith(RUNNER_WAKE));
+        t.diagnostic([...trace(), `main fallback deliveries: ${fallback.length}`, ...fallback, ...notices(),
+            ...(passed || branch === undefined ? [] : await toolSaid(app, branch))].join("\n"));
+    }
+});
+
+test("runner quiet and away use the runner posture record and only authenticated return input clears it", { skip: !runnerCapable, timeout: 120_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    rmSync(join(fmHome, "state", ".wake-queue"));
+    const state = join(fmHome, "state");
+    writeFileSync(join(fmHome, "config", "backend"), "pi-pocket\n");
+    const trace = traceRunnerBranch(fmHome);
+    copyFileSync(join(bin, "fm-branch-outcome.sh"), join(fmHome, "bin", "fm-branch-outcome.sh"));
+    const app = await open(mkdtempSync(join(root, "runner-posture-")), true);
+    t.after(() => app.close());
+    const remote = await runnerFixture(app, fmHome);
+    t.after(remote.close);
+    await remote.connect();
+    const main = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: remote.link.id })).id;
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await app.commands.configure(main, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    await say(app, main, "/quiet");
+    assert.equal(lines(join(state, ".afk"))[0], "quiet", (await toolSaid(app, main)).at(-1));
+    await say(app, main, "A regular message while quiet.");
+    assert.equal(lines(join(state, ".afk"))[0], "quiet");
+    await say(app, main, "/quiet off");
+    assert.ok(!existsSync(join(state, ".afk")) && !existsSync(join(state, ".afk-return-catchup")),
+        `explicit return clears a quiet record:\n${[...trace(), ...await toolSaid(app, main), ...await userTexts(app, main)].join("\n")}`);
+    await say(app, main, "/afk Store the result for my return.");
+    assert.equal(lines(join(state, ".afk"))[0], "away");
+    await (await app.harness.conversation(main, context))!.submit({ type: "input", content: "[scheduled] check", whenBusy: "followUp", requestId: "fixture-runner-away-auto" }, context).then((turn) => turn.wait(context));
+    assert.equal(lines(join(state, ".afk"))[0], "away", "an automatic input does not exit away");
+    await say(app, main, "I have returned.");
+    assert.ok(!existsSync(join(state, ".afk")) && !existsSync(join(state, ".afk-return-catchup")), "authenticated human input runs the return procedure");
+    assert.ok(systemPrompts.some((text) => text.includes("AUTOMATIC INPUT WHILE AWAY")), "the main prompt distinguishes away mode");
+});
+
+test("a runner main starts, steers, interrupts and tears down a worker through runner-local scripts", { skip: !runnerCapable, timeout: 240_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    rmSync(join(fmHome, "state", ".wake-queue"));
+    copyFileSync(join(bin, "..", "pi-pocket", "runner-worker.mjs"), join(fmHome, "pi-pocket", "runner-worker.mjs"));
+    const trace = traceRunnerBranch(fmHome);
+    for (const name of ["fm-branch-outcome.sh", "fm-arm-pretool-check.sh"]) copyFileSync(join(bin, name), join(fmHome, "bin", name));
+    writeFileSync(join(fmHome, "config", "backend"), "pi-pocket\n");
+    const app = await open(mkdtempSync(join(root, "runner-workers-")), true);
+    const commands = mkdtempSync(join(root, "runner-commands-"));
+    writeFileSync(join(commands, "lsof"), `#!/usr/bin/env bash\nif [ "$*" = '-a -d cwd -Fpn' ]; then touch "$HOME/fixture-process-scan"; exit 1; fi\nexport PATH="\${PATH#*:}"\nexec lsof "$@"\n`, { mode: 0o700 });
+    const remote = await runnerFixture(app, fmHome, commands);
+    t.after(async () => {
+        // Disconnect the runner before shutting down the app that serves its link.
+        await remote.close();
+        await app.close();
+    });
+    await remote.connect();
+    const main = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: remote.link.id })).id;
+    const notices = runnerNotices(app, Number(main), t);
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await app.commands.configure(main, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    const project = join(fmHome, "projects", "fixture-worker-project");
+    mkdirSync(project, { recursive: true });
+    assert.equal(spawnSync("git", ["init", "-q", "-b", "main", project]).status, 0);
+    assert.equal(spawnSync("git", ["-C", project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]).status, 0);
+    const task = "runner-worker";
+    mkdirSync(join(fmHome, "data", task), { recursive: true });
+    writeFileSync(join(fmHome, "data", task, "brief.md"), "# Task\n\nInspect this worktree only.\n");
+    await say(app, main, "start the runner home before workers: RUNNER BRANCH WORKER FIXTURE");
+    // Sequence the branch test after main's lifecycle calls. They share one runner command slot.
+    const monitoringHold = join(fmHome, "state", ".watch.lock");
+    mkdirSync(monitoringHold);
+    const run = (operation: string, args: string[]) => runnerToolCall(app, main, "worker", { operation, task, args });
+    const startKeys = loseFirstLinkedStartReply(app, "fm-runner-worker-", t);
+    const launched = await run("spawn", [project, "--scout", "--model", "faux/faux-1"]);
+    assert.match(launched, /runner-worker/);
+    const record = workerRecord(fmHome, task);
+    assert.ok(record?.session > 0, `the runner has the worker receipt: ${launched}`);
+    assert.equal(startKeys.length, 2, "a lost reply exercised the worker start replay");
+    assert.equal(startKeys[0], startKeys[1]);
+    assert.equal((await app.linkedSessions.list(main)).filter((row) => row.title === `fm-${task}`).length, 1);
+    assert.ok(record.cwd !== project && record.cwd.startsWith(remote.runnerData), "the worker starts in a runner-local Treehouse lease");
+    await until(async () => (await userTexts(app, record.session)).some((line) => line.includes("Inspect this worktree only.")), "the real scout brief in its linked child");
+    await say(app, record.session, "show the task env");
+    const result = (await toolSaid(app, record.session)).join("\n");
+    assert.ok(result.includes(`task=${task} inbox=${join(fmHome, "state", `${task}.inbox`)} home=${fmHome} marker=none server=none token=none`), result);
+    await say(app, record.session, "start a subagent");
+    assert.ok((await toolSaid(app, record.session)).some((line) => line.includes("[pocket-worker]")), "runner workers cannot launch children");
+    const steered = await run("send", ["work for a long time"]);
+    assert.doesNotMatch(steered, /doorbell did not reach|error:/);
+    assert.ok(lines(join(fmHome, "state", `${task}.inbox`, "001.msg")).some((line) => line.includes("work for a long time")), steered);
+    const linked = app.linkedSessions;
+    const workerStatus = async () => (await linked.list(main)).find((row: { address: string }) => row.address === record.address);
+    await until(async () => (await workerStatus())?.busy === true, "the worker's steer starts its turn");
+    const interrupted = await run("control", ["interrupt"]);
+    assert.equal((await workerStatus())?.busy, false, interrupted);
+    await say(app, main, "RUNNER BRANCH WORKER FIXTURE: RUNNER BRANCH WORKER GO");
+    appendFileSync(join(fmHome, "state", `${task}.status`), `done [at=${Math.floor(Date.now() / 1000)}]: fixture worker work is ready\n`);
+    rmdirSync(monitoringHold);
+    const branchNote = join(fmHome, "state", `${task}.inbox`, "002.msg");
+    await until(() => existsSync(branchNote), "the granted branch steers only the named worker", LONG).catch(async (error) => {
+        const branch = app.sessions().find((row: { title?: string }) => row.title === "Firstmate supervision")?.id;
+        const fallback = (await userTexts(app, main)).filter((text) => text.startsWith(RUNNER_WAKE));
+        assert.fail([String(error), ...trace(), `main fallback deliveries: ${fallback.length}`, ...fallback, ...notices(),
+            ...(branch === undefined ? ["No supervision session"] : (await userTexts(app, branch)).concat(await toolSaid(app, branch))),
+            ...lines(join(fmHome, "state", ".wake-queue"))].join("\n"));
+    });
+    assert.ok(lines(branchNote).includes("Steered from the granted runner turn."));
+    assert.ok(!existsSync(join(fmHome, "state", "not-in-the-grant.inbox")));
+    // Let the steered turn and its notifications settle before asking main to clean up.
+    // An inbox write alone does not acknowledge either the status or turn-ended row.
+    const state = join(fmHome, "state");
+    const lock = join(state, ".lock");
+    const ended = () => fs.stat(join(state, `${task}.turn-ended`));
+    await until(async () => {
+        const acknowledgements = trace().filter((line) => /^branch-ack .*exit=0/.test(line)).join("\n");
+        if (!acknowledgements.includes(`${task}.status`) || !acknowledgements.includes(`${task}.turn-ended`)) return false;
+        if (lines(join(state, ".wake-queue")).length !== 0 || existsSync(join(lock, "runner-branch-grant")) || existsSync(join(lock, "runner-worker-command"))) return false;
+        if ((await workerStatus())?.busy !== false) return false;
+        const delivered = (await userTexts(app, record.session)).filter((line) => line.includes("Firstmate instruction waiting:") && line.includes(`'${task}.inbox'`));
+        if (delivered.length < 2) return false;
+        return (await fs.stat(join(state, `.seen-${task}_turn-ended`))).mtimeMs >= (await ended()).mtimeMs;
+    }, "the worker status and turn-ended wakes are acknowledged and the branch releases its grant", 65_000).catch((error) => {
+        assert.fail([String(error), ...trace(), ...notices(), ...lines(join(state, ".wake-queue"))].join("\n"));
+    });
+    mkdirSync(monitoringHold);
+    writeFileSync(join(fmHome, "data", task, "report.md"), "Isolated scout report.\n");
+    const inventory = spawnSync("bash", [join(fmHome, "bin", "fm-captain-hold.sh"), "complete", task, "--none"], {
+        cwd: fmHome, env: { ...process.env, FM_HOME: fmHome }, encoding: "utf8",
+    });
+    assert.equal(inventory.status, 0, inventory.stderr);
+    function leasedToTask() {
+        const pool = spawnSync("treehouse", ["status", "--json"], {
+            cwd: project, env: { HOME: remote.runnerData, PATH: process.env.PATH }, encoding: "utf8", timeout: 5000,
+        });
+        assert.equal(pool.status, 0, pool.stderr);
+        return (JSON.parse(pool.stdout) as Array<{ path: string; status: string; lease_holder: string }>).some(
+            (row) => row.path === record.cwd && row.status === "leased" && row.lease_holder === task);
+    }
+    const archive = linked.archive.bind(linked);
+    const repeating = mock.method(linked, "archive", async (...args: Parameters<typeof archive>) => ({ ...await archive(...args), repeating: 1 }));
+    try {
+        const refused = await run("teardown", []);
+        assert.match(refused, /repeating schedule/);
+        assert.ok(leasedToTask() && existsSync(join(fmHome, "state", `${task}.meta`)), "unclean archive keeps the lease and task");
+        assert.notEqual(workerRecord(fmHome, task)?.archived, true, "unclean archive is not a cleanup receipt");
+    } finally {
+        repeating.mock.restore();
+    }
+    const closed = await run("teardown", []);
+    assert.ok(!existsSync(join(fmHome, "state", `${task}.meta`)), `the runner task retired after verified archive: ${closed}`);
+    assert.equal(workerRecord(fmHome, task)?.archived, true);
+    assert.ok(!leasedToTask(), "confirmed archive releases the lease");
+    assert.ok(!existsSync(join(remote.runnerData, "fixture-process-scan")), "runner cleanup does not scan the process table");
+});
+
+test("a runner retries a failed worker lifecycle notification without a new run", { skip: !runnerCapable, timeout: 120_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    const state = join(fmHome, "state");
+    rmSync(join(state, ".wake-queue"));
+    copyFileSync(join(bin, "..", "pi-pocket", "runner-worker.mjs"), join(fmHome, "pi-pocket", "runner-worker.mjs"));
+    writeFileSync(join(fmHome, "config", "backend"), "pi-pocket\n");
+    const task = "runner-notify";
+    const writer = join(fmHome, "bin", "fm-busy-event.sh");
+    renameSync(writer, join(fmHome, "bin", "fm-busy-event-real.sh"));
+    // Record each real write result, including the failure before the marker is touched.
+    writeFileSync(writer, `#!/usr/bin/env bash
+real="$(dirname "$0")/fm-busy-event-real.sh"
+if [ "$1:$3:$4" != 'apply:${task}:idle' ]; then exec bash "$real" "$@"; fi
+phase=ready
+if [ ! -f "$2/$3.busy-gen" ]; then phase=unarmed
+elif [ -L "$2/$3.turn-ended" ]; then phase=unwritable; fi
+bash "$real" "$@"
+rc=$?
+printf '%s %s\\n' "$phase" "$rc" >> "$2/../stub/idle-write-status"
+exit "$rc"
+`, { mode: 0o700 });
+    const app = await open(mkdtempSync(join(root, "runner-notifications-")), true);
+    const remote = await runnerFixture(app, fmHome);
+    t.after(async () => { await remote.close(); await app.close(); });
+    await remote.connect();
+    const main = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: remote.link.id })).id;
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await app.commands.configure(main, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    const project = join(fmHome, "projects", "fixture-notification-project");
+    mkdirSync(project, { recursive: true });
+    assert.equal(spawnSync("git", ["init", "-q", "-b", "main", project]).status, 0);
+    assert.equal(spawnSync("git", ["-C", project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"]).status, 0);
+    mkdirSync(join(fmHome, "data", task), { recursive: true });
+    writeFileSync(join(fmHome, "data", task, "brief.md"), "# Task\n\nCheck the fixture.\n");
+    await say(app, main, "start the runner home for a lifecycle notification test");
+    const launched = await runnerToolCall(app, main, "worker", { operation: "spawn", task, args: [project, "--scout", "--model", "faux/faux-1"] });
+    const record = workerRecord(fmHome, task);
+    assert.ok(record?.session > 0, launched);
+    const ended = join(state, `${task}.turn-ended`);
+    await until(() => workerRecord(fmHome, task)?.busy === false && existsSync(ended), "the initial worker turn to settle", LONG);
+    await app.commands.submit(record.session, owner(app), { text: "work for a long time", requestId: crypto.randomUUID() });
+    await until(() => workerRecord(fmHome, task)?.busy === true && busyRecord(fmHome, task)?.state === "busy", "the runner to record the busy worker", LONG);
+
+    const gen = join(state, `${task}.busy-gen`);
+    const heldGen = join(fmHome, "stub", "held-gen");
+    renameSync(gen, heldGen);
+    rmSync(ended);
+    symlinkSync(join(fmHome, "stub", "missing-parent", "turn-ended"), ended);
+    const attempts = () => lines(join(fmHome, "stub", "idle-write-status"));
+    const previous = attempts().length;
+    const stopped = await app.linkedSessions.stop(main, { to: record.address }, crypto.randomUUID());
+    assert.equal(stopped.busy, true);
+    await until(() => attempts().slice(previous).includes("unarmed 1"), "the real idle writer to fail with no armed generation", LONG);
+    assert.equal(workerRecord(fmHome, task)?.busy, true, "a failed writer must not confirm idle");
+    renameSync(heldGen, gen);
+    await until(() => attempts().slice(previous).some((line) => line.startsWith("unwritable ")), "the monitor to retry the failed idle write", LONG).catch((error) => {
+        assert.fail(`${String(error)}; writer results: ${attempts().slice(previous).join(", ")}`);
+    });
+    assert.equal(attempts().slice(previous).find((line) => line.startsWith("unwritable ")), "unwritable 1", "a failed notification must also refuse the write");
+    assert.equal(workerRecord(fmHome, task)?.busy, true, "idle is not confirmed without the notification");
+    rmSync(ended);
+    await until(() => workerRecord(fmHome, task)?.busy === false && existsSync(ended), "the same worker to settle and notify after both failures clear", LONG);
+    assert.equal(busyRecord(fmHome, task)?.state, "idle");
+    assert.equal(attempts().slice(previous).filter((line) => line === "ready 0").length, 1, "one successful retry without starting another run");
+});
 
 test("a real runner owner and preview receive the home rules and skills", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
     const fmHome = await home({ runner: true });
@@ -1476,8 +1876,9 @@ test("a real runner owner and preview receive the home rules and skills", { skip
             assert.ok(prompt?.includes(rule), `${label} must receive the runner home's AGENTS.md`);
             assert.ok(prompt.includes("<skills>") && prompt.includes(skill), `${label} must receive the runner home's skills`);
             assert.ok(prompt.includes("a Firstmate home on a linked computer"));
-            assert.ok(prompt.includes("The server-only watcher, session-start digest machinery, turn-end guard, fm-spawn workers, and posture commands are not available here."));
-            assert.ok(prompt.includes("step 4") && prompt.includes("delegate project work") && prompt.includes("Pi Pocket subagents or linked sessions on the same computer"));
+            assert.ok(prompt.includes("The server-only watcher, session-start digest machinery, turn-end guard, and posture commands are not available here."));
+            assert.equal(prompt.includes("For managed workers use fm_runner"), session === id);
+            assert.equal(prompt.includes("Use Pi Pocket subagents or linked sessions on the same computer"), session !== id);
             assert.ok(prompt.includes("design decisions") && prompt.includes("review their work"));
             assert.ok(prompt.includes("Every bash call starts a new shell"), "ordinary shell guidance still applies");
             assert.ok(!prompt.includes("No native Firstmate startup, watcher, lifecycle, or posture commands apply here."));

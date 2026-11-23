@@ -25,6 +25,8 @@ private_dir() { if ! exists "$1"; then mkdir -- "$1"; fi; dir "$1"; }
 lock="$STATE/.lock"
 window="$lock/runner-window"
 batches="$lock/runner-batches"
+actor=${FM_SUPERVISION_ACTOR:-main}
+if [ "$actor" = branch ]; then batches="$lock/runner-branch-batches"; fi
 marker="$STATE/.watcher-down"
 stage="$lock/runner-stage"
 queue_held=false
@@ -52,7 +54,29 @@ if [ "$operation" = read ]; then
   exit
 fi
 
+# An older Step 3 checkout has no posture owner; keep all legacy holds intact.
+posture=foreign
+posture_lib="$FM_HOME/pi-pocket/runner-posture-lib.sh"
+if file "$posture_lib"; then
+  # shellcheck source=pi-pocket/runner-posture-lib.sh
+  . "$posture_lib"
+  posture=$(runner_posture)
+fi
+if [ "$operation" = return-poll ]; then
+  [ "$posture" = catchup ] && [ "$actor" = main ] || exit 2
+  operation=poll
+  posture=attended
+fi
 for flag in .afk .afk-contract .afk-return-catchup .watch.lock .branch-eligible-rows .supervision-handoff-pending; do
+  case "$flag:$posture:$operation" in
+    .afk:away:*|.afk-contract:away:*|.afk:quiet:*|.afk-contract:quiet:*) continue ;;
+    .afk*:catchup:drain|.afk*:catchup:ack|.afk*:catchup:inbox-*) [ "$actor" != main ] || continue ;;
+    .afk*:attended:*) continue ;;
+  esac
+  if [ "$flag" = .branch-eligible-rows ] && [ "$actor" = branch ]; then continue; fi
+  if [ "$flag" = .branch-eligible-rows ] && { [ "$operation" = poll ] || [ "$operation" = verify ]; } \
+    && file "$lock/runner-branch-grant" \
+    && fm_wake_branch_grant_live "$STATE/.branch-eligible-rows" "$STATE/.branch-eligible-owner"; then continue; fi
   if exists "$STATE/$flag"; then
     if [ "$operation" = poll ] || [ "$operation" = verify ]; then printf 'paused %s\n' "$flag"; exit; fi
     fail "runner operation refused: automatic handling is paused ($flag)"
@@ -117,7 +141,7 @@ observe() {
 if [ "$operation" = verify ]; then
   [ "$#" -eq 0 ] || exit 2
   get_window || fail 'runner verification: invalid window'
-  if [ -n "$token" ] && file "$batches/$token/acked"; then token=; fi
+  if [ -n "$token" ] && { file "$batches/$token/acked" || { ! exists "$lock/runner-branch-grant" && file "$lock/runner-branch-batches/$token/acked"; }; }; then token=; fi
   printf 'ready - %s false\n' "${token:--}"
   exit
 fi
@@ -139,7 +163,7 @@ if [ "$operation" = poll ]; then
     observe "$path" || incomplete=true
   done
   get_window || fail 'runner observation: invalid window'
-  if [ -z "$token" ] || file "$batches/$token/acked"; then
+  if [ -z "$token" ] || { { file "$batches/$token/acked" || file "$lock/runner-branch-batches/$token/acked"; } && ! exists "$lock/runner-branch-grant"; }; then
     token='' cutoff=''
     if [ -s "$FM_WAKE_QUEUE" ]; then
       # Take the oldest 16 valid rows, not the tail or a number of bytes.
@@ -163,6 +187,9 @@ fi
 get_window || fail 'runner operation refused: invalid window'
 receipt=${1:-$token}
 fm_pocket_runner_uuid "$receipt" || fail 'runner operation refused: no matching receipt'
+if [ "$actor" != branch ] && file "$lock/runner-branch-batches/$receipt/acked"; then
+  fail 'runner operation refused: the supervision session already acknowledged this batch'
+fi
 batch="$batches/$receipt"
 reader="$FM_HOME/bin/fm-wake-drain.sh"
 

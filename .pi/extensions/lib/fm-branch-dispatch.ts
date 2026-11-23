@@ -370,7 +370,8 @@ function spanIsDecisionOwned(
   return false;
 }
 
-export function scopeForUnreadWake(state: string, heartbeat: boolean, afk = false, attendedHost = false): UnreadWakeScope {
+// A bounded host can cap what it grants without ignoring decision or corruption vetoes in later rows.
+export function scopeForUnreadWake(state: string, heartbeat: boolean, afk = false, attendedHost = false, through?: number): UnreadWakeScope {
   let queue = "";
   try {
     queue = readFileSync(`${state}/.wake-queue`, "utf8");
@@ -430,12 +431,13 @@ export function scopeForUnreadWake(state: string, heartbeat: boolean, afk = fals
     const fields = line.split("\t");
     if (fields.length < 5 || !/^[0-9]+$/.test(fields[1])) return UNSAFE_SCOPE;
     const seq = fields[1];
+    const inWindow = through === undefined || Number(seq) <= through;
     const kind = fields[2];
     const key = fields[3];
     if (kind === "heartbeat") {
       // Attended, a heartbeat row is claimed only by a heartbeat review; away,
       // no main drain will ever take it, so any wake claims it.
-      if (heartbeat || afk) {
+      if (inWindow && (heartbeat || afk)) {
         eligibleSeqs.push(seq);
         heartbeatSeqs.push(seq);
       }
@@ -446,7 +448,7 @@ export function scopeForUnreadWake(state: string, heartbeat: boolean, afk = fals
       // never a reason to reject the rest of the queue and never a reason to
       // send an otherwise-eligible heartbeat review to main. Away, the branch
       // is the only actor, so the row is claimed unscoped.
-      if (afk) {
+      if (inWindow && afk) {
         eligibleSeqs.push(seq);
         checkSeqs.push(seq);
       }
@@ -547,9 +549,11 @@ export function scopeForUnreadWake(state: string, heartbeat: boolean, afk = fals
         if (!afk) continue;
       }
     }
-    projects.add(project);
-    eligibleTasks.add(task);
-    eligibleSeqs.push(seq);
+    if (inWindow) {
+      projects.add(project);
+      eligibleTasks.add(task);
+      eligibleSeqs.push(seq);
+    }
   }
   const eligible = eligibleSeqs.length > 0;
   // Reached only after every row passed classification without a veto. A scan
@@ -608,10 +612,10 @@ export interface BranchOfferVerdict {
 // The away posture collapses that partition: every actionable row is
 // branch-eligible and the trigger class no longer forces anything to main
 // (scopeForUnreadWake owns the per-row rule).
-export function branchOfferForWake(state: string, message: string, afk: boolean, attendedHost = false): BranchOfferVerdict {
+export function branchOfferForWake(state: string, message: string, afk: boolean, attendedHost = false, through?: number): BranchOfferVerdict {
   const heartbeat = /^heartbeat($|:)/.test(message);
   const isCheckTrigger = /^check:/.test(message);
-  const scope = scopeForUnreadWake(state, heartbeat, afk, attendedHost && !afk);
+  const scope = scopeForUnreadWake(state, heartbeat, afk, attendedHost && !afk, through);
   const triggerKeys = /^signal:/.test(message)
     ? message
       .slice("signal:".length)
@@ -626,7 +630,7 @@ export function branchOfferForWake(state: string, message: string, afk: boolean,
   const needsDecisionTasks = new Set(scope.needsDecisionKeys.map(taskIdentity));
   const isNeedsDecisionTrigger = triggerKeys.some((key) => needsDecisionTasks.has(taskIdentity(key)));
   const attendedEligible = !isCheckTrigger && !isNeedsDecisionTrigger && (
-    afk ? scopeForUnreadWake(state, heartbeat, false).eligible : scope.eligible
+    afk ? scopeForUnreadWake(state, heartbeat, false, false, through).eligible : scope.eligible
   );
   const eligible = afk ? scope.eligible : attendedEligible;
   return { scope, heartbeat, eligible, awayOnly: Boolean(eligible && !attendedEligible) };

@@ -48,6 +48,25 @@ case "${1:-}" in
     _fm_atomic_replace "$TMP" "$BRANCH_OWNER" || exit 1
     TMP=
     ;;
+  activate-runner)
+    [ "$#" -eq 1 ] || exit 2
+    _fm_wake_require_session_lock
+    fm_pocket_runner_command_owned "$FM_HOME" "$STATE" || exit 1
+    identity=$(fm_pocket_runner_lock_record "$STATE") || exit 1
+    generation=${identity##*$'\t'}
+    fm_lock_acquire_wait_bounded "$FM_WAKE_QUEUE_LOCK" 1 || exit 1
+    LOCK_HELD=true
+    if ! owner_matches '' "$generation"; then
+      # A native or stale grant is not this helper's to replace.
+      [ ! -e "$BRANCH_ROWS" ] && [ ! -L "$BRANCH_ROWS" ] || exit 1
+      [ ! -e "$BRANCH_OWNER" ] && [ ! -L "$BRANCH_OWNER" ] || exit 1
+      TMP=$(mktemp "$STATE/.branch-eligible-owner.tmp.XXXXXX") || exit 1
+      printf '%s\n%s\n%s\n%s\n' fm-branch-eligible-owner-pocket-runner-v1 - "$identity" "$generation" > "$TMP" || exit 1
+      chmod 0600 "$TMP" || exit 1
+      _fm_atomic_replace "$TMP" "$BRANCH_OWNER" || exit 1
+      TMP=
+    fi
+    ;;
   publish)
     generation=${2:-}
     [ "$#" -gt 2 ] || exit 2
@@ -57,7 +76,13 @@ case "${1:-}" in
     printf '%s\n' "$@" > "$TMP" || exit 1
     chmod 0600 "$TMP" || exit 1
     rows_valid "$TMP" || exit 2
-    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 1
+    if [ -n "${FM_POCKET_RUNNER_COMMAND:-}" ]; then
+      _fm_wake_require_session_lock
+      fm_pocket_runner_command_owned "$FM_HOME" "$STATE" || exit 1
+      fm_lock_acquire_wait_bounded "$FM_WAKE_QUEUE_LOCK" 1 || exit 1
+    else
+      fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 1
+    fi
     LOCK_HELD=true
     owner_matches '' "$generation" || exit 1
     replace=1
@@ -91,6 +116,19 @@ case "${1:-}" in
     owner_matches '' "$generation" || exit 1
     rm -f -- "$BRANCH_ROWS" || exit 1
     ;;
+  deactivate-runner)
+    [ "$#" -eq 1 ] || exit 2
+    _fm_wake_require_session_lock
+    fm_pocket_runner_command_owned "$FM_HOME" "$STATE" || exit 1
+    generation=$FM_POCKET_RUNNER_COMMAND
+    fm_lock_acquire_wait_bounded "$FM_WAKE_QUEUE_LOCK" 1 || exit 1
+    LOCK_HELD=true
+    if owner_matches '' "$generation"; then
+      rm -f -- "$BRANCH_ROWS" "$BRANCH_OWNER" || exit 1
+    else
+      [ ! -e "$BRANCH_ROWS" ] && [ ! -L "$BRANCH_ROWS" ] && [ ! -e "$BRANCH_OWNER" ] && [ ! -L "$BRANCH_OWNER" ] || exit 1
+    fi
+    ;;
   deactivate)
     pid=${2:-}
     generation=${3:-}
@@ -102,6 +140,7 @@ case "${1:-}" in
     ;;
   *)
     echo "usage: fm-wake-grant.sh activate PID GENERATION | publish GENERATION SEQUENCE... | release GENERATION | deactivate PID GENERATION" >&2
+    echo "            or: activate-runner | deactivate-runner (only within the Pocket runner owner helper)" >&2
     exit 2
     ;;
 esac

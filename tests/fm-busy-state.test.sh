@@ -754,6 +754,25 @@ test_turn_ended_notification_is_generation_bound() {
   pass "the turn-ended notification rides the apply generation check"
 }
 
+test_required_turn_ended_notification_can_retry() {
+  local state gen fakebin
+  state=$(new_state_dir required-turn-ended)
+  gen=$("$EV" arm "$state" t1) || fail "arm failed"
+  fakebin=$(fm_fakebin "$TMP_ROOT/required-turn-ended")
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$fakebin/touch"
+  chmod +x "$fakebin/touch"
+  PATH="$fakebin:$PATH" "$EV" apply "$state" t1 idle --gen "$gen" --source pi-pocket --event run-end --turn-ended \
+    || fail "a best-effort notification refusal changed the existing apply contract"
+  if PATH="$fakebin:$PATH" "$EV" apply "$state" t1 idle --gen "$gen" --source pi-pocket --event run-end --require-turn-ended 2>/dev/null; then
+    fail "a failed required notification reported success"
+  fi
+  [ ! -e "$state/t1.turn-ended" ] || fail "a refused touch emitted a notification"
+  "$EV" apply "$state" t1 idle --gen "$gen" --source pi-pocket --event run-end --require-turn-ended \
+    || fail "retry after notification failure was refused"
+  [ -f "$state/t1.turn-ended" ] || fail "the retry did not emit its notification"
+  pass "required turn-ended notification reports a touch failure and can retry"
+}
+
 test_model_stream_lifecycle_is_fenced() {
   local state gen next before snapshot
   state=$(new_state_dir model-stream)
@@ -820,6 +839,7 @@ test_model_stream_close_failure_invalidates_observation
 test_model_stream_lifecycle_is_fenced
 test_progress_is_generation_bound_and_not_semantic_state
 test_turn_ended_notification_is_generation_bound
+test_required_turn_ended_notification_can_retry
 
 test_arm_seeds_busy_spawn
 test_apply_advances_seq_and_source

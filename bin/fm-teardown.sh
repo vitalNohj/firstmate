@@ -3536,6 +3536,12 @@ endpoint_close_refusal() {  # <subject> <backend> <target> <honors-force>
   return 1
 }
 
+teardown_close_pocket_worker() {
+  fm_backend_kill pi-pocket "$T" && return 0
+  echo "error: could not stop the Pi Pocket worker session $T for $ID; reload the Firstmate drop-in in Pi Pocket (or stop the session there) and re-run teardown" >&2
+  endpoint_close_refusal "$ID" pi-pocket "$T" 0
+}
+
 cleanup_firstmate_home_children() {
   local home=$1 archive_parent=${2:-$ID} sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_rex_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_owner_rc child_pool_slot
   sub_state="$home/state"
@@ -3947,7 +3953,14 @@ if [ "$BACKEND" = herdr ]; then
   fi
 fi
 
-if [ "$KIND" != secondmate ] && teardown_owns_worktree; then
+pocket_closed=0
+if [ "$BACKEND" = pi-pocket ] && [ -n "${FM_PI_POCKET_RUNNER_BRIDGE:-}" ]; then
+  # The runner bridge checks the exact writer, task, and endpoint before it
+  # issues a stop/archive receipt. Require that proof before post-stop checks,
+  # instead of scanning the host for processes by working directory.
+  teardown_close_pocket_worker || exit 1
+  pocket_closed=1
+elif [ "$KIND" != secondmate ] && teardown_owns_worktree; then
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 elif [ "$KIND" != secondmate ]; then
   reap_task_worktree_processes tasktmp "$TASK_TMP"
@@ -4112,11 +4125,8 @@ fi
 # A Pocket worker session likewise stops before its slot goes back: stop +
 # archive with an archived read-back where Pi Pocket offers them, else an
 # abort and a retired mark the drop-in then honors by refusing every send.
-if [ "$BACKEND" = pi-pocket ]; then
-  fm_backend_kill pi-pocket "$T" || {
-    echo "error: could not stop the Pi Pocket worker session $T for $ID; reload the Firstmate drop-in in Pi Pocket (or stop the session there) and re-run teardown" >&2
-    endpoint_close_refusal "$ID" pi-pocket "$T" 0 || exit 1
-  }
+if [ "$BACKEND" = pi-pocket ] && [ "$pocket_closed" = 0 ]; then
+  teardown_close_pocket_worker || exit 1
 fi
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
