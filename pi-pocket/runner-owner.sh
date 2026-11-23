@@ -29,7 +29,7 @@ previous=
 case "$operation" in
   claim) [ "$#" -le 1 ] || exit 2; previous=${1:-} ;;
   recover) [ "$#" -eq 0 ] || exit 2 ;;
-  poll|verify|drain|ack|inbox-read|inbox-reply|inbox-ack|read) ;;
+  poll|verify|drain|ack|inbox-read|inbox-reply|inbox-ack|read|branch-*) ;;
   *) exit 2 ;;
 esac
 
@@ -133,6 +133,9 @@ if [ "$operation" != claim ] && [ "$operation" != recover ]; then
   [ "$(fm_pocket_runner_lock_record "$STATE")" = "$owner_line" ] || refuse changed
   settled "$generation" && [ -f "$lock/digest" ] && [ ! -L "$lock/digest" ] || refuse incomplete
   monitor="$home/pi-pocket/runner-monitor.sh"
+  case "$operation" in
+    branch-*) monitor="$home/pi-pocket/runner-supervision.sh" ;;
+  esac
   [ -f "$monitor" ] && [ ! -L "$monitor" ] || refuse unavailable
   export FM_POCKET_RUNNER_COMMAND="$generation" FM_POCKET_RUNNER_HELPER_PID="$$"
   # Keep the holder in the child's ancestry until the operation finishes.

@@ -299,6 +299,15 @@ const route = (request: unknown) => {
     if (role === "toolResult" && text.startsWith("recorded seq") && whole.some((message) => JSON.stringify(message.content).includes("task-report-concurrent"))) {
         return call("read", { path: "state/.pocket-branch-turn" });
     }
+    if (role === "toolResult" && whole.some((message) => JSON.stringify(message.content).includes("RUNNER BRANCH HANDLING FIXTURE"))) {
+        const receipt = /^RUNNER_RECEIPT: (\S+)$/m.exec(text)?.[1];
+        if (receipt !== undefined) return call("fm_branch_report", { task: "task-report", verdict: "captain", summary: "Runner work requires a decision." });
+        if (text.startsWith("Recorded runner outcome")) {
+            const prior = whole.map((message) => JSON.stringify(message.content)).join("\n");
+            const token = /RUNNER_RECEIPT: ([0-9a-f-]{36})/.exec(prior)?.[1];
+            return call("fm_runner", { action: "ack", receipt: token });
+        }
+    }
     if (role === "toolResult") return fauxAssistantMessage([fauxText("noted the tool result")]);
     if (text.startsWith("/afk")) return call("fm_posture_pocket", { mode: "away", words: text.slice(4).trim() });
     if (text === "/quiet") return call("fm_posture_pocket", { mode: "quiet" });
@@ -362,6 +371,7 @@ const route = (request: unknown) => {
     if (text.endsWith("check the worker bridge")) return call("bash", { command: `node bin/fm-pi-pocket-bridge.mjs status --state "$FM_HOME/state"` });
     if (text.endsWith("report from main")) return call("fm_branch_report", { task: "task-a", verdict: "routine", summary: "main reporting" });
     // The supervision session: a wake for a task it reports on, and one it leaves without an outcome.
+    if (text.includes(`${BRANCH_WAKE}signal: task-report.status`) && text.includes("RUNNER BRANCH HANDLING FIXTURE")) return call("fm_runner", { action: "drain" });
     if (text.includes(`${BRANCH_WAKE}signal: task-report-concurrent.status`)) {
         return fauxAssistantMessage([
             fauxToolCall("fm_branch_report", { task: "task-report-concurrent", verdict: "routine", summary: "First report." }),
@@ -1448,6 +1458,40 @@ function runnerNotices(app: App, id: number, t: { after: (fn: () => void) => voi
     return () => tab.events.filter((item: { event: string }) => item.event === "notice")
         .map((item: { data: { message: string } }) => item.data.message) as string[];
 }
+
+test("a runner supervision branch handles a granted runner wake without using the server home", { skip: !runnerCapable, timeout: 90_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    optIn(fmHome);
+    rmSync(join(fmHome, "state", ".wake-queue"));
+    copyFileSync(join(bin, "fm-branch-outcome.sh"), join(fmHome, "bin", "fm-branch-outcome.sh"));
+    const helper = join(bin, "..", "pi-pocket", "runner-supervision.sh");
+    if (existsSync(helper)) copyFileSync(helper, join(fmHome, "pi-pocket", "runner-supervision.sh"));
+    writeFileSync(join(fmHome, "config", "backend"), "pi-pocket\n");
+    const app = await open(mkdtempSync(join(root, "runner-supervision-")), true);
+    t.after(() => app.close());
+    const remote = await runnerFixture(app, fmHome);
+    t.after(remote.close);
+    await remote.connect();
+    const main = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: remote.link.id })).id;
+    await app.setSubagentModels(owner(app), ["faux/faux-1"]);
+    await app.commands.configure(main, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    const notices = runnerNotices(app, Number(main), t);
+    await say(app, main, "start the runner home: RUNNER BRANCH HANDLING FIXTURE");
+    writeFileSync(join(fmHome, "state", "task-report.meta"), "project=fixture\nkind=ship\n");
+    writeFileSync(join(fmHome, "state", "task-report.status"), "ready: RUNNER BRANCH ONLY\n");
+    const linkedBranch = () => app.sessions().find((row: { title?: string }) => row.title === "Firstmate supervision")?.id;
+    await until(() => linkedBranch() !== undefined, "the linked runner supervision branch");
+    const branch = linkedBranch();
+    await until(async () => (await userTexts(app, branch)).some((line) => line.includes(BRANCH_WAKE)), "the branch wake on the runner").catch(async (error) => {
+        assert.fail(`${String(error)}\n${notices().join("\n")}\n${(await userTexts(app, branch)).join("\n")}\n${lines(join(fmHome, "state", ".wake-queue")).join("\n")}`);
+    });
+    await until(async () => (await toolSaid(app, main)).some((line) => line.includes("Processed runner outcomes through seq 1")), "only main acknowledges the runner outcome");
+    assert.ok(!(await userTexts(app, main)).some((line) => line.includes(BRANCH_WAKE)), "the main session must not receive branch work");
+    assert.ok(!(await userTexts(app, main)).some((line) => line.includes(RUNNER_WAKE)), "main does not receive an acknowledged branch batch");
+    assert.equal(lines(join(fmHome, "state", ".wake-queue")).length, 0, "the runner queue is acknowledged");
+    await say(app, branch, "runner ordinary tool: {\"name\":\"bash\",\"args\":{\"command\":\"echo unexpected\"}}");
+    assert.ok((await toolSaid(app, branch)).some((line) => line.includes("does not allow bash")), "runner branch cannot execute arbitrary commands");
+});
 
 test("a real runner owner and preview receive the home rules and skills", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
     const fmHome = await home({ runner: true });

@@ -372,10 +372,24 @@ type RunnerBinding = {
     homeId: string;
     generation: string;
     archived?: { value: boolean; observer: string };
+    retiring?: boolean;
+    branch?: RunnerBranch;
+};
+type RunnerBranch = {
+    key: string;
+    model?: string;
+    thinking?: string;
+    session?: number;
+    address?: string;
+    closed?: boolean;
+    startedAt?: number;
+    mirror?: number;
+    processing?: { through: number; next: number };
+    turn?: { token: string; rows: string[]; tasks: string[]; unscoped: boolean; start: number; reported: boolean };
 };
 type RunnerIndex = { installation: string; sessions: Record<string, RunnerBinding> };
 type RunnerInput = { person: string; text: string };
-type RunnerClaim = Omit<RunnerBinding, "archived"> & { installation: string };
+type RunnerClaim = Pick<RunnerBinding, "person" | "home" | "homeId" | "generation"> & { installation: string };
 type RunnerPreview = { notice: string; digest?: string; claim?: RunnerClaim };
 type RunnerDelivery = { token: string; attempt: number; requestId: string; retryAt: number };
 type RunnerPhase = {
@@ -406,7 +420,7 @@ function runnerOwner(installation: string, conversation: string, binding: Runner
 }
 
 /** Only a current, directly authenticated input may authorize a runner startup or handoff. */
-function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: PocketSurface) {
+function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervision: ReturnType<typeof createSupervision>, web?: PocketSurface) {
     const path = typeof host.dataDir === "string" ? join(host.dataDir, "firstmate-runner-owners.json") : undefined;
     if (path === undefined || host.on === undefined) return undefined;
     const observer = randomUUID();
@@ -414,9 +428,13 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
     const inputs = new Map<string, RunnerInput>();
     const archive = new Map<number, boolean>();
     const attended = new Set<number>();
+    const retiring = new Set<number>();
     const boundIds = new Set<number>();
     const health = new Map<number, RunnerHealth>();
     const inputWaiters = new Map<number, () => void>();
+    const branches = new Map<number, number>();
+    const requestFor = requests(host);
+    const branchNotices = new Map<number, string>();
 
     const load = async (): Promise<RunnerIndex> => {
         const file = await lstat(path).catch((error: NodeJS.ErrnoException) => {
@@ -482,6 +500,7 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
         const binding = index.sessions[Number(id)];
         if (binding === undefined) return undefined;
         boundIds.add(Number(id));
+        if (binding.retiring === true) retiring.add(Number(id));
         const { home, homeId, generation, person } = binding;
         if (typeof home !== "string" || typeof person !== "string" || !HOME_ID.test(homeId) || !HOME_ID.test(generation)) {
             throw new Error("invalid runner binding");
@@ -489,10 +508,37 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
         return { home, homeId, generation, person, installation: index.installation };
     };
     const isBound = async (id: ConversationId) => boundIds.has(Number(id)) || (await lookup(id).catch(() => undefined)) !== undefined;
-    const active = (id: ConversationId, claim: RunnerClaim) => attended.has(Number(id)) && archive.get(Number(id)) !== true &&
+    const branchOfRunner = async (id: ConversationId) => {
+        const child = Number(id);
+        const index = await load();
+        for (const [main, binding] of Object.entries(index.sessions)) {
+            if (binding.branch?.session === child) branches.set(child, Number(main));
+        }
+        const main = branches.get(child);
+        const branch = main === undefined ? undefined : index.sessions[main]?.branch;
+        return main === undefined ? undefined : { main: main as unknown as ConversationId, branch: branch?.session === child ? branch : undefined };
+    };
+    const changeBranch = (main: ConversationId, claim: RunnerClaim, update: (previous: RunnerBranch | undefined) => RunnerBranch | undefined) => changeRecord(path, async () => {
+        const index = await load();
+        const binding = index.sessions[Number(main)];
+        if (binding?.generation !== claim.generation || binding.retiring === true || index.installation !== claim.installation) throw new Error("runner branch binding changed");
+        const next = update(binding.branch);
+        if (next === undefined) delete binding.branch;
+        else binding.branch = next;
+        await writeJson(path, index);
+        if (next?.session !== undefined) branches.set(next.session, Number(main));
+        return next;
+    });
+    const active = (id: ConversationId, claim: RunnerClaim) => attended.has(Number(id)) && !retiring.has(Number(id)) && archive.get(Number(id)) !== true &&
         host.roleOf?.(claim.person) === "owner" && host.requesterOf?.(id) === claim.person;
+    const branchActor = async (id: ConversationId) => {
+        const assigned = await branchOfRunner(id);
+        if (assigned?.branch === undefined || assigned.branch.closed === true || archive.get(Number(id)) === true) return undefined;
+        const claim = await lookup(assigned.main);
+        return claim !== undefined && active(assigned.main, claim) && host.requesterOf?.(id) === claim.person ? { ...assigned, claim } : undefined;
+    };
     const canUseTool = async (id: ConversationId) => {
-        if (!attended.has(Number(id))) return false;
+        if (!attended.has(Number(id))) return (await branchActor(id).catch(() => undefined))?.branch?.turn !== undefined;
         const claim = await lookup(id).catch(() => undefined);
         return claim !== undefined && active(id, claim);
     };
@@ -503,7 +549,7 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
         host.notice?.(next.state === "healthy" ? "info" : "warning", `Firstmate runner monitoring ${next.state}${next.detail === undefined ? "." : `: ${next.detail}`}`, id);
     };
     const command = async (id: ConversationId, claim: RunnerClaim, source: EnvSource, op: string, args: string[], context: Context) => {
-        const authorized = async () => active(id, claim) && sameClaim(await lookup(id), claim);
+        const authorized = async () => sameClaim(await lookup(id), claim) && active(id, claim);
         if (!(await authorized())) return { kind: "paused" as const, detail: "return to this conversation as its owner to check the binding." };
         const checked = await checkHome(source, context);
         if (checked.kind === "unavailable") return { kind: "offline" as const };
@@ -545,6 +591,129 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
         }
     };
 
+    type BranchRuntime = Pick<TaskRuntime<RunnerClaim, RunnerPhase, null, object>, "conversationId" | "context" | "conversation"> & EnvSource;
+    const resultOk = (ran: Awaited<ReturnType<typeof command>>) => ran.kind === "ran" && ran.code === 0 && !/^(changed|incomplete|busy|invalid-home|unavailable)\n$/.test(ran.stdout);
+    const runnerBranchPrompt = async (actor: NonNullable<Awaited<ReturnType<typeof branchActor>>>, env: EnvSource, context: Context) => {
+        const ran = await command(actor.main, actor.claim, env, "branch-prompt", [], context);
+        return ran.kind === "ran" && resultOk(ran) ? ran.stdout : "This runner supervision session cannot verify its Firstmate home. Do not handle work.";
+    };
+    const runBranchWake = async (runtime: BranchRuntime, claim: RunnerClaim, token: string, context: Context) => {
+        const main = runtime.conversationId;
+        const run = (op: string, ...args: string[]) => command(main, claim, runtime, op, args, context);
+        const ok = resultOk;
+        let branch = (await load()).sessions[Number(main)]?.branch;
+        const warn = (message: string) => {
+            if (branchNotices.get(Number(main)) !== message) host.notice?.("warning", message, main);
+            branchNotices.set(Number(main), message);
+        };
+        try {
+            if (branch?.turn?.token === token && ok(await run("branch-acked", token))) {
+                if (!ok(await run("branch-release", token))) return "wait";
+                await changeBranch(main, claim, (old) => old && { ...old, turn: undefined });
+                return "handled";
+            }
+            if (branch?.turn !== undefined && branch.turn.token !== token) return "wait";
+            const offered = branch?.turn === undefined ? await run("branch-offer", token) : undefined;
+            if (offered !== undefined && (!ok(offered) || offered.kind !== "ran")) return "main";
+            const linked = host.linkedSessions;
+            if (typeof linked?.start !== "function" || typeof linked.stop !== "function" || typeof linked.archive !== "function" || typeof linked.list !== "function") return "main";
+            if (branch?.session === undefined || branch.closed === true) {
+                const configured = await run("branch-config");
+                if (!ok(configured) || configured.kind !== "ran") return "main";
+                const pins = fields(configured.stdout);
+                const chosen = await supervision.supervisionStart(claim.home, async (name) => pins.get(name));
+                if (!chosen.ok || host.heldBack?.(main) !== undefined) return "main";
+                branch = await changeBranch(main, claim, (old) => old !== undefined && old.closed !== true ? old : {
+                    key: `firstmate-runner-supervision-${claim.generation}-${randomUUID()}`,
+                    model: chosen.model, thinking: chosen.thinking,
+                });
+                if (branch === undefined || !active(main, claim)) return "main";
+                const { key, model, thinking } = branch;
+                const started = await linked.start(main, { title: BRANCH_TITLE, cwd: claim.home, message: "This is the Firstmate supervision session. No work is pending. Reply only with ready.",
+                    report: "none", ...(model === undefined ? {} : { model }), ...(thinking === undefined ? {} : { thinking }) }, key);
+                branch = await changeBranch(main, claim, (old) => old?.key === key ? { ...old, session: Number(started.session), address: started.address, startedAt: Date.now() } : old);
+            }
+            if (branch?.session === undefined || branch.address === undefined || branch.closed === true) return "main";
+            const row = (await linked.list(main)).find((candidate) => candidate.address === branch?.address);
+            if (row?.archived === true || row === undefined) {
+                const closed = await stopAndArchiveLinked(linked, main, branch.address, branch.key, randomUUID(), "runner supervision session", true);
+                if (!closed?.ok) {
+                    warn(closed !== undefined && !closed.ok ? closed.error : "The runner supervision session could not be reconciled.");
+                    return branch.turn === undefined ? "main" : "wait";
+                }
+                if (branch.turn !== undefined && !ok(await run("branch-release", token))) return "wait";
+                await changeBranch(main, claim, (old) => old && ({ ...old, closed: true, turn: undefined }));
+                return "main";
+            }
+            if (row.busy !== false && branch.turn === undefined) return Date.now() - (branch.startedAt ?? 0) < 10_000 ? "wait" : "main";
+            const branchId = branch.session as unknown as ConversationId;
+            const offer = fields(offered?.kind === "ran" ? offered.stdout : "");
+            const current = branch.turn ?? { token, rows: words(offer.get("rows")), tasks: words(offer.get("tasks")),
+                unscoped: offer.get("unscoped") === "1", start: Date.now(), reported: false };
+            if (current.rows.length === 0 || current.rows.length > 16) return "main";
+            await changeBranch(main, claim, (old) => old && ({ ...old, turn: current }));
+            if (!ok(await run("branch-grant", token, current.rows.join(" ")))) {
+                if (!ok(await run("branch-release", token))) return "wait";
+                await changeBranch(main, claim, (old) => old && ({ ...old, turn: undefined }));
+                return "main";
+            }
+            const view = await runtime.context(main, context);
+            let newest = branch.mirror ?? 0;
+            const items: string[] = [];
+            view.entries.forEach((entry, index) => {
+                const id = Number(entry.id);
+                newest = Math.max(newest, id);
+                if (id <= (branch?.mirror ?? 0)) return;
+                for (const message of view.contributions[index] ?? []) {
+                    const item = mirrorItem(message as never);
+                    if (item !== undefined) items.push(item);
+                }
+            });
+            const ready = await run("branch-render", token, items.slice(-MIRROR_ITEMS).join("\n").slice(-16000));
+            if (ok(ready) && ready.kind === "ran" && active(main, claim) && host.heldBack?.(main) === undefined && host.heldBack?.(branchId) === undefined) {
+                const child = await runtime.conversation(branchId, context);
+                if (child !== undefined) {
+                    const requestId = requestFor(branchId, `fm-runner-branch-${claim.generation}-${token}`);
+                    const submission = await child.submit({ type: "input", content: ready.stdout, whenBusy: "followUp", requestId }, context);
+                    const deadline = withAbortSignal(AbortSignal.timeout(Math.max(1, current.start + BRANCH_TURN_TIMEOUT_MS - Date.now())), context);
+                    try { await awaitWithContext(submission.wait(deadline), deadline); }
+                    catch (error) {
+                        context.abortSignal?.throwIfAborted();
+                        await linked.stop(main, { to: branch.address }, `${branch.key}-turn-stop-${token}`);
+                        throw error;
+                    }
+                }
+            }
+            const acked = ok(await run("branch-acked", token));
+            if (!ok(await run("branch-release", token))) return "wait";
+            await changeBranch(main, claim, (old) => old && ({ ...old, turn: undefined, ...(acked ? { mirror: newest } : {}) }));
+            if (acked) branchNotices.delete(Number(main));
+            return acked ? "handled" : "main";
+        } catch (error) {
+            context.abortSignal?.throwIfAborted();
+            warn(`Runner supervision did not complete: ${(error as Error).message}`);
+            return (await load()).sessions[Number(main)]?.branch?.turn === undefined ? "main" : "wait";
+        }
+    };
+
+    const presentBranchOutcomes = async (runtime: BranchRuntime, claim: RunnerClaim, context: Context) => {
+        const main = runtime.conversationId;
+        const branch = (await load()).sessions[Number(main)]?.branch;
+        if (branch === undefined || (branch.processing?.next ?? 0) > Date.now() || host.heldBack?.(main) !== undefined) return;
+        const result = await command(main, claim, runtime, "branch-outcomes", [], context);
+        if (result.kind !== "ran" || !resultOk(result) || result.stdout.trim() === "") return;
+        const rows = result.stdout.trimEnd().split("\n").map((line) => JSON.parse(line) as { seq: number; task: string; summary: string; recordedAgo: string });
+        if (!rows.every(({ seq, task, summary }) => Number.isSafeInteger(seq) && validTask(task) && typeof summary === "string")) return;
+        const through = rows.at(-1)!.seq;
+        const text = `${PROCESSING_INSTRUCTION.replace("{N}", String(through))}\n\n${rows.map((row) => `[seq ${row.seq}] ${row.task}: ${row.summary}`).join("\n")}`;
+        const now = Date.now();
+        const latest = await changeBranch(main, claim, (old) => old === undefined || (old.processing?.next ?? 0) > now ? old : { ...old, processing: { through, next: now + RUNNER_RETRY_MS } });
+        if (latest?.processing?.next !== now + RUNNER_RETRY_MS || !active(main, claim) || host.heldBack?.(main) !== undefined) return;
+        const conversation = await runtime.conversation(main, context);
+        if (active(main, claim)) await conversation?.submit({ type: "input", whenBusy: "followUp", requestId: requestFor(main, `fm-runner-outcomes-${claim.generation}-${through}-${now}`),
+            content: `FIRSTMATE RUNNER OUTCOMES:\n${text}`, ...mainEntry(presented, "branch-outcome") }, context);
+    };
+
     const monitor = defineTask<RunnerClaim, RunnerPhase, null>({
         name: RUNNER_KIND,
         version: 1,
@@ -566,6 +735,7 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
                     return;
                 }
                 const now = runtime.now();
+                await presentBranchOutcomes(runtime, task.input, context).catch(() => context.abortSignal?.throwIfAborted());
                 let delivery = old.delivery?.token === next.token ? old.delivery : undefined;
                 if (delivery === undefined && next.token !== "-") {
                     delivery = { token: next.token, attempt: 0, requestId: runnerRequest(task.input, next.token, 0), retryAt: 0 };
@@ -598,6 +768,14 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
                     await runtime.commit(() => sleep(pending), context);
                     if (verified.kind === "offline") noteHealth(id, { state: "offline", lastGood: checkpoint.lastGood });
                     return;
+                }
+                // Do not offer a batch to the branch after main has been told to handle it.
+                if (pending.attempt === 0 && pending.retryAt === 0) {
+                    const routed = await runBranchWake(runtime, input, pending.token, context);
+                    if (routed !== "main") {
+                        await runtime.commit(() => sleep(routed === "handled" ? undefined : pending), context);
+                        return;
+                    }
                 }
                 const bounded = withAbortSignal(AbortSignal.timeout(HOME_PROBE_MS), context);
                 try {
@@ -640,6 +818,43 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
             await tx.createTask(monitor, claim, { conversationId: api.conversationId, ownership: { kind: "conversation" }, background: true, abandonOnRestart: false });
             return undefined;
         }, context);
+    };
+
+    // The runner lock is still the predecessor's here. Use only its exact recorded children and keep its generation fenced on refusal.
+    const closeBranchForHandoff = async (prior: string, record: string, installation: string, authorized: () => boolean,
+        ops: HomeOps, helper: string, context: Context): Promise<string | undefined> => {
+        const old = await changeRecord(path, async () => {
+            const index = await load();
+            const binding = index.sessions[prior];
+            if (!authorized() || binding === undefined || index.installation !== installation ||
+                runnerOwner(installation, prior, binding) !== record || binding.branch === undefined || binding.branch.closed === true) return undefined;
+            if (binding.branch.session === undefined || binding.branch.address === undefined) return binding;
+            binding.retiring = true;
+            retiring.add(Number(prior));
+            await writeJson(path, index);
+            return binding;
+        });
+        const branch = old?.branch;
+        if (old === undefined || branch === undefined) return undefined;
+        if (branch.address === undefined || branch.session === undefined) return "The previous supervision start is unconfirmed. No handoff occurred.";
+        if (!authorized()) return "Owner authority changed. No handoff occurred.";
+        const oldSource = Number(prior) as unknown as ConversationId;
+        const closed = await stopAndArchiveLinked(host.linkedSessions, oldSource, branch.address, branch.key, randomUUID(), "the previous runner supervision session", true);
+        if (!closed?.ok) return closed !== undefined && !closed.ok ? closed.error : "This Pi Pocket cannot verify linked-session cleanup.";
+        if (!authorized()) return "Owner authority changed. No handoff occurred.";
+        if (branch.turn !== undefined) {
+            const released = await ops.exec(["bash", helper, RUNNER_OWNER_VERSION, "branch-release", old.home, installation,
+                old.homeId, prior, old.generation, branch.turn.token], {}, context);
+            if (released.code !== 0 || released.stdout !== "") return "The previous supervision grant was not released. No handoff occurred.";
+        }
+        await changeRecord(path, async () => {
+            const index = await load();
+            const binding = index.sessions[prior];
+            if (binding?.branch?.key !== branch.key || runnerOwner(installation, prior, binding) !== record) throw new Error("runner predecessor changed");
+            binding.branch = { ...branch, closed: true, turn: undefined };
+            await writeJson(path, index);
+        });
+        return undefined;
     };
 
     const admit = async (checked: Extract<HomeCheck, { kind: "preview" }>, api: HookApi, context: Context): Promise<RunnerPreview | undefined> => {
@@ -700,8 +915,13 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
                     const sameBinding = old !== undefined && old.home === home && old.homeId === homeId &&
                         runnerOwner(installation, ownerId, old) === record;
                     const archived = sameBinding && old.archived?.observer === observer && old.archived.value && archive.get(Number(ownerId)) === true;
-                    if (archive.get(id) !== true && (takeover === undefined ? archived : takeover === generation)) outcome = await invoke(record);
-                    else return reply(`This runner home belongs to conversation ${ownerId}. Archive it or send exactly: take over ${generation}`);
+                    const authorized = () => archive.get(id) !== true && host.roleOf?.(input.person) === "owner" &&
+                        host.requesterOf?.(api.conversationId) === input.person && (takeover === undefined ? archived && archive.get(Number(ownerId)) === true : takeover === generation);
+                    if (!authorized()) return reply(`This runner home belongs to conversation ${ownerId}. Archive it or send exactly: take over ${generation}`);
+                    const refused = await closeBranchForHandoff(ownerId, record, installation, authorized, ops, helperPath, context);
+                    if (refused !== undefined) return reply(refused);
+                    if (!authorized()) return undefined;
+                    outcome = await invoke(record);
                 }
             }
             if (outcome.status === "started") {
@@ -723,7 +943,7 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, web?: Po
             return reply("Runner ownership or startup is unavailable. No startup is reported.");
         }
     };
-    return { admit, isBound, lookup, canUseTool, command, observe, ensure, monitor, health };
+    return { admit, isBound, lookup, canUseTool, command, observe, ensure, monitor, health, branchOfRunner, branchActor, changeBranch, runnerBranchPrompt, resultOk, load };
 }
 
 function runnerHealthText(health: RunnerHealth | undefined) {
@@ -1149,10 +1369,10 @@ function createSupervision(host: Partial<Host>) {
      * An empty list, or a host that does not list models, is `ok` with no model: Pi Pocket then uses the main
      * session's model, which is today's behavior when the owner has not restricted the list.
      */
-    async function supervisionStart(home: string): Promise<{ ok: true; model?: string; thinking?: string } | { ok: false }> {
+    async function supervisionStart(home: string, pin = (name: string) => pinLine(home, name)): Promise<{ ok: true; model?: string; thinking?: string } | { ok: false }> {
         const allowed = typeof host.subagentModels === "function" ? host.subagentModels() : [];
         const levels = host.thinkingLevels ?? THINKING_LEVELS;
-        const effort = await pinLine(home, "supervision-branch-effort");
+        const effort = await pin("supervision-branch-effort");
         const effortLevel = effort !== undefined && (levels as readonly string[]).includes(effort) ? effort : undefined;
         // Omit an effort the chosen model does not support. Passing it makes Pi Pocket refuse the start, which
         // latches the branch off over a level rather than over the model.
@@ -1176,9 +1396,9 @@ function createSupervision(host: Partial<Host>) {
             return { ok: true as const, ...(model === undefined ? {} : { model }), ...(thinking === undefined ? {} : { thinking }) };
         };
         if (allowed.length === 0) return chosen();
-        const stored = await pinLine(home, "supervision-branch-model");
+        const stored = await pin("supervision-branch-model");
         const slash = stored?.indexOf("/") ?? -1;
-        const pin = stored !== undefined && slash > 0 && slash < stored.length - 1 ? stored : undefined;
+        const pinned = stored !== undefined && slash > 0 && slash < stored.length - 1 ? stored : undefined;
         const usable = async (spec: string): Promise<boolean> => {
             if (typeof host.resolveModel !== "function") return false;
             try {
@@ -1192,7 +1412,7 @@ function createSupervision(host: Partial<Host>) {
         };
         // The pin wins only when the owner listed it and Pi Pocket can use it. A pin that is absent, unlisted, or
         // unusable falls through to the first listed model that resolves and has no model problem.
-        if (pin !== undefined && allowed.includes(pin) && (await usable(pin))) return chosen(pin);
+        if (pinned !== undefined && allowed.includes(pinned) && (await usable(pinned))) return chosen(pinned);
         for (const candidate of allowed) {
             if (await usable(candidate)) return chosen(candidate);
         }
@@ -1476,7 +1696,7 @@ function createSupervision(host: Partial<Host>) {
         }
     }
 
-    return { ensure, route, present, reconcile };
+    return { ensure, route, present, reconcile, supervisionStart };
 }
 
 type Supervision = ReturnType<typeof createSupervision>;
@@ -2001,6 +2221,30 @@ type LinkedApi = {
     archive?: (source: ConversationId, request: { to: string; archived?: boolean }, key: string) => Promise<{ archived: boolean; repeating?: number }>;
 };
 
+/** Stop and archive a linked child, not its independent background jobs. Keep this as the Pocket cleanup boundary. */
+async function stopAndArchiveLinked(
+    api: LinkedApi | undefined, source: ConversationId, address: string, key: string, attempt: string, label: string, requireReadback: boolean,
+): Promise<BridgeResult | undefined> {
+    if (typeof api?.stop !== "function" || typeof api.archive !== "function") return undefined;
+    try {
+        await api.stop(source, { to: address }, `${key}-stop-${attempt}`);
+        const archived = await api.archive(source, { to: address, archived: true }, `${key}-archive-${attempt}`);
+        if ((archived.repeating ?? 0) > 0) {
+            return refuse("unconfirmed", `${label} still has ${String(archived.repeating)} repeating schedule(s); cancel them in Pi Pocket before retrying exit or relaunch`);
+        }
+        if (typeof api.list !== "function") throw new Error("this Pi Pocket does not list linked sessions");
+        const row = (await api.list(source)).find((each) => each.address === address);
+        if (row !== undefined && row.archived !== true) return refuse("unconfirmed", `${label} did not read back archived`);
+        if (row?.busy === true) return refuse("unconfirmed", `${label} still reads busy after its stop`);
+        if (requireReadback && (archived.archived !== true || row?.archived !== true || row.busy !== false || archived.repeating !== 0)) {
+            return refuse("unconfirmed", `${label} did not read back archived and idle with zero repeating schedules`);
+        }
+        return { ok: true, archived: true };
+    } catch (error) {
+        return refuse("kill", `Pi Pocket could not stop and archive ${label}: ${(error as Error).message}`);
+    }
+}
+
 function bridgeDir(home: string): string {
     return join(stateOf(home), BRIDGE_DIR);
 }
@@ -2405,23 +2649,11 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
     async function killWorker(record: WorkerRecord, runtime: Runtime, context: Context, attempt: string): Promise<BridgeResult> {
         const api = linked();
         if (record.retired === true) return { ok: true, archived: record.archived === true, retired: true };
-        // Archive does not cancel repeating schedules, including on records written by an older drop-in.
-        if (typeof api?.stop === "function" && typeof api.archive === "function") {
-            try {
-                await api.stop(record.main as unknown as ConversationId, { to: record.address }, `${record.key}-stop-${attempt}`);
-                const archived = await api.archive(record.main as unknown as ConversationId, { to: record.address, archived: true }, `${record.key}-archive-${attempt}`);
-                if ((archived.repeating ?? 0) > 0) {
-                    return refuse("unconfirmed", `the worker session ${String(record.session)} still has ${String(archived.repeating)} repeating schedule(s); cancel them in Pi Pocket before retrying exit or relaunch`);
-                }
-                const row = await rowOf(record);
-                if (row !== undefined && row.archived !== true) return refuse("unconfirmed", `the worker session ${String(record.session)} did not read back archived`);
-                if (row?.busy === true) return refuse("unconfirmed", `the worker session ${String(record.session)} still reads busy after its stop`);
-            } catch (error) {
-                return refuse("kill", `Pi Pocket could not stop and archive the worker session: ${(error as Error).message}`);
-            }
-            await lane(record.session, () => save({ ...record, archived: true, busy: false }));
-
-            return { ok: true, archived: true };
+        const closed = await stopAndArchiveLinked(api, record.main as unknown as ConversationId,
+            record.address, record.key, attempt, `the worker session ${String(record.session)}`, false);
+        if (closed !== undefined) {
+            if (closed.ok) await lane(record.session, () => save({ ...record, archived: true, busy: false }));
+            return closed;
         }
         // No stop or archive in this Pi Pocket: abort its run and retire it, so Firstmate never sends to it again.
         const conversation = await runtime.conversation(record.session as unknown as ConversationId, context);
@@ -2831,12 +3063,13 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
     const presented = registerPresentations(web);
     registerCalm(host, web);
     registerClient(web);
-    const runner = registerRunnerPreview(host, presented, web);
     const supervision = createSupervision(host);
+    const runner = registerRunnerPreview(host, presented, supervision, web);
     const watch = createWatchTask(host, supervision, presented);
     const workers = createWorkers(host, web);
     registerWorkerEvents(host, web, workers);
     const lastHomeNotice = new Map<ConversationId, string>();
+    const runnerBranchTools = new Set(["read", RUNNER_TOOL, REPORT_TOOL, ...CONTEXT_TOOLS]);
 
     const runnerTool = defineTool({
         name: RUNNER_TOOL,
@@ -2852,6 +3085,16 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         execute: async ({ action, receipt, path, note, text }, api, context) => {
             const id = api.conversationId;
             try {
+                const actor = await runner?.branchActor(id);
+                if (runner !== undefined && actor !== undefined) {
+                    const turn = actor.branch?.turn;
+                    if (turn === undefined || !["drain", "ack"].includes(action) || (receipt !== undefined && receipt !== turn.token)
+                        || (action === "ack" && (receipt !== turn.token || !turn.reported))) {
+                        return say("Runner supervision may drain only its granted batch. Record its outcome before acknowledging the exact receipt.", true);
+                    }
+                    const ran = await runner.command(actor.main, actor.claim, api, `branch-${action}`, [turn.token], context);
+                    return ran.kind === "ran" && runner.resultOk(ran) ? say(ran.stdout) : say("Runner supervision could not complete this action. The work remains pending.", true);
+                }
                 const claim = await runner?.lookup(id);
                 if (runner === undefined || claim === undefined) return say("Runner operation refused: no bound Firstmate runner home.", true);
                 if (action === "repair" || action === "status") {
@@ -2959,6 +3202,18 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             ),
         }),
         execute: async (args, api, context) => {
+            const actor = await runner?.branchActor(api.conversationId);
+            if (runner !== undefined && actor !== undefined) {
+                const task = args.task.trim();
+                const summary = args.summary.trim();
+                const turn = actor.branch?.turn;
+                if (turn === undefined || (!turn.unscoped && !turn.tasks.includes(task))) return say("Report refused: only report on the current runner wake's tasks.", true);
+                if (!validTask(task) || summary === "" || summary.length > 8192 || (args.silent === true && args.verdict !== "routine")) return say("Report refused: invalid task, summary, or verdict.", true);
+                const ran = await runner.command(actor.main, actor.claim, api, "branch-record", [turn.token, args.verdict, `${task}\t${summary.replace(/[\t\r\n]/g, " ")}`], context);
+                if (!(ran.kind === "ran" && runner.resultOk(ran) && /^[1-9][0-9]*$/.test(ran.stdout.trim()))) return say("Report refused: the runner outcome store did not confirm the result.", true);
+                await runner.changeBranch(actor.main, actor.claim, (old) => old?.turn?.token === turn.token ? { ...old, turn: { ...old.turn, reported: true } } : old);
+                return say(`Recorded runner outcome ${ran.stdout.trim()}. Acknowledge the runner batch after all handling is complete.`);
+            }
             const checked = await checkHome(api, context);
             const refused = "report refused: only the Firstmate supervision session records outcomes";
             if (checked.kind !== "local") return say(homeNotice(checked) ?? refused, true);
@@ -3004,10 +3259,15 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         }),
         replay: "safe",
         execute: async (args, api, context) => {
+            const recent = typeof args.recent === "number" && args.recent >= 1 ? String(Math.floor(args.recent)) : "20";
+            const claim = await runner?.lookup(api.conversationId);
+            if (runner !== undefined && claim !== undefined) {
+                const listed = await runner.command(api.conversationId, claim, api, "branch-list", [recent], context);
+                return listed.kind === "ran" && runner.resultOk(listed) ? say(listed.stdout.trim() || "(no branch outcomes recorded)") : say("Could not read the runner outcome store.", true);
+            }
             const checked = await checkHome(api, context);
             if (checked.kind !== "local") return say(homeNotice(checked) ?? "could not read the outcome store: this session does not work in a Firstmate home", true);
             const { home } = checked;
-            const recent = typeof args.recent === "number" && args.recent >= 1 ? String(Math.floor(args.recent)) : "20";
             const listed = await script(home, "fm-branch-outcome.sh", ["list", "--recent", recent]);
             if (listed.code !== 0) return say(`could not read the outcome store: ${listed.stderr.trim() || `exit ${String(listed.code)}`}`, true);
 
@@ -3025,6 +3285,15 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         execute: async (args, api, context) => {
             const through = Number.isSafeInteger(args.through) && args.through >= 1 ? args.through : undefined;
             if (through === undefined) return say("acknowledgement refused: through must be a positive outcome sequence number", true);
+            const claim = await runner?.lookup(api.conversationId);
+            if (runner !== undefined && claim !== undefined) {
+                const branch = (await runner.load()).sessions[Number(api.conversationId)]?.branch;
+                if (branch?.processing?.through !== through) return say("Acknowledgement refused: this sequence was not presented in the current request.", true);
+                const marked = await runner.command(api.conversationId, claim, api, "branch-processed", [String(through)], context);
+                if (!runner.resultOk(marked)) return say("Acknowledgement refused: the runner did not confirm outcome processing.", true);
+                await runner.changeBranch(api.conversationId, claim, (old) => old?.processing?.through === through ? { ...old, processing: undefined } : old);
+                return say(`Processed runner outcomes through seq ${through}.`);
+            }
             const checked = await checkHome(api, context);
             if (checked.kind !== "local") return say(homeNotice(checked) ?? "acknowledgement refused: this session does not own the fleet lock", true);
             const { home } = checked;
@@ -3245,6 +3514,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             wrapSection("codemode", (inner) => ({
                 ...inner,
                 render: async (input, context) => {
+                    if ((await runner?.branchOfRunner(input.conversationId).catch(() => undefined)) !== undefined) return undefined;
                     const assigned = await workers.worker(input.conversationId);
                     const runnerAllowed = await runner?.canUseTool(input.conversationId);
                     const agent = { ...input.agent, callable: input.agent.callable.filter((tool) => (tool.name !== RUNNER_TOOL || runnerAllowed) &&
@@ -3260,7 +3530,8 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     ...inner,
                     render: async (input, context) => {
                         const checked = await checkHome(input, context);
-                        if (checked.kind === "local" && (await branchOf(checked.home, input.conversationId)) !== undefined) return undefined;
+                        if ((await runner?.branchOfRunner(input.conversationId).catch(() => undefined)) !== undefined ||
+                            (checked.kind === "local" && (await branchOf(checked.home, input.conversationId)) !== undefined)) return undefined;
                         return inner.render(input, context);
                     },
                 })),
@@ -3291,6 +3562,12 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         hooks: [
             hook(ToolTask, {
                 beforeTool: async (call, api, context) => {
+                    const managedBranch = await runner?.branchOfRunner(api.conversationId).catch(() => undefined);
+                    if (managedBranch !== undefined) {
+                        if (!(await runner?.branchActor(api.conversationId).catch(() => undefined))) return { block: "The runner supervision role is not active." };
+                        if (runnerBranchTools.has(call.name)) return undefined;
+                        return { block: `The runner supervision role does not allow ${call.name}.` };
+                    }
                     if (call.name === RUNNER_TOOL) {
                         return await runner?.canUseTool(api.conversationId) ? undefined :
                             { block: "Runner tool denied: only the bound Firstmate runner owner can use it." };
@@ -3307,6 +3584,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                         }
                     }
                     if (checked.kind !== "local") {
+                        if ((call.name === OUTCOMES_TOOL || call.name === PROCESSED_TOOL) && await runner?.canUseTool(api.conversationId)) return undefined;
                         const block = SUPERVISOR_TOOLS.has(call.name) ? homeNotice(checked) : undefined;
                         return block === undefined ? undefined : { block };
                     }
@@ -3344,6 +3622,16 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 // A fresh conversation's first request runs the session start, and after a compaction the digest is
                 // gone from context: either way the hook runs it once and gives the model the whole digest.
                 beforeRequest: async ({ messages: incoming }, api, context) => {
+                    if (runner !== undefined && (await runner.branchOfRunner(api.conversationId).catch(() => undefined)) !== undefined) {
+                        const actor = await runner.branchActor(api.conversationId).catch(() => undefined);
+                        const prompt = actor === undefined ? "This runner supervision session is not active. Do not handle work." :
+                            await runner.runnerBranchPrompt(actor, api as HookApi & EnvSource, context).catch(() => "The runner supervision prompt is unavailable. Do not handle work.");
+                        return { messages: [{ role: "system", content: "", timestamp: Date.now(), sections: { firstmate: prompt } }, ...incoming.map((message) => {
+                            if (message.role !== "system") return message;
+                            const { firstmate, firstmate_runner, project_context, skills, codemode, ...sections } = message.sections ?? {};
+                            return { ...message, sections, ...(message.toolsAdded === undefined ? {} : { toolsAdded: message.toolsAdded.filter(({ name }) => runnerBranchTools.has(name)) }) };
+                        })] };
+                    }
                     const checked = await checkHome(api as HookApi & EnvSource, context);
                     const preview = checked.kind === "preview" ? await runner?.admit(checked, api, context) : undefined;
                     const bound = await runner?.isBound(api.conversationId);
@@ -3435,7 +3723,7 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 },
                 onYield: async (_answer, api, context) => {
                     // The runner monitor reports health changes independently of model turns.
-                    if (await runner?.isBound(api.conversationId)) return undefined;
+                    if (await runner?.isBound(api.conversationId) || (await runner?.branchOfRunner(api.conversationId).catch(() => undefined)) !== undefined) return undefined;
                     const runtime = api as Partial<Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "context">>;
                     const view = await runtime.context?.(api.conversationId, context);
                     const last = view?.messages.findLast((message) => message.role === "user");

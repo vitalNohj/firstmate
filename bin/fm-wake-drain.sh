@@ -229,7 +229,8 @@ presented_max_row() { # <rows-file>
 RUNNER_THROUGH=
 RUNNER=false
 if [ -n "${FM_POCKET_RUNNER_COMMAND:-}" ] || [ "${1:-}" = --runner-through ]; then
-  _fm_wake_require_session_lock && fm_pocket_runner_command_owned "$FM_HOME" "$STATE" && [ "$ACTOR" = main ] || exit 2
+  _fm_wake_require_session_lock && fm_pocket_runner_command_owned "$FM_HOME" "$STATE" || exit 2
+  [ "$ACTOR" = main ] || fm_wake_branch_owner_matches "$ELIGIBLE_OWNER_FILE" '' "$FM_POCKET_RUNNER_COMMAND" || exit 2
   RUNNER=true
 fi
 case "${1:-}" in
@@ -887,8 +888,12 @@ else
 fi
 DRAIN_LOCK_HELD=true
 if [ "$RUNNER" = true ]; then
-  # Prior branch state is not ours to repair. The runner profile has no branch.
-  [ ! -e "$ELIGIBLE_ROWS_FILE" ] && [ ! -L "$ELIGIBLE_ROWS_FILE" ] || exit 1
+  # Main does not cross an outstanding grant. The branch must present only its own grant.
+  if [ "$ACTOR" = main ]; then
+    [ ! -e "$ELIGIBLE_ROWS_FILE" ] && [ ! -L "$ELIGIBLE_ROWS_FILE" ] || exit 1
+  else
+    fm_wake_branch_owner_matches "$ELIGIBLE_OWNER_FILE" '' "$FM_POCKET_RUNNER_COMMAND" || exit 1
+  fi
   if [ -n "$ACK_THROUGH" ]; then
     fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
     [ "${FM_RECOVERY_MARKER_TOKEN##*:}" = "$ACK_GENERATION" ] || exit 1
