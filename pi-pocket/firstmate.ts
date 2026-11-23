@@ -2025,6 +2025,29 @@ async function privateDir(path: string): Promise<boolean> {
     return info !== undefined && info.isDirectory() && !info.isSymbolicLink() && info.uid === process.getuid?.() && (info.mode & 0o077) === 0;
 }
 
+type WriterProcLink = { pid: number; parent: number; startTime: string };
+const WRITER_ANCESTRY_TTL_MS = 10_000;
+const WRITER_ANCESTRY_LIMIT = 256;
+const writerAncestry = new Map<number, { writer: WriterProcLink; ancestors: WriterProcLink[]; expiresAt: number }>();
+
+async function readWriterStat(pid: number): Promise<WriterProcLink | undefined> {
+    const stat = await readFile(`/proc/${String(pid)}/stat`, "latin1").catch(() => undefined);
+    if (stat === undefined) return undefined;
+    // comm can contain spaces and ')'. After its last ')' the fields start at field 3 (state).
+    const end = stat.lastIndexOf(")");
+    if (end < 0) return undefined;
+    const fields = stat.slice(end + 1).trim().split(/\s+/, 20);
+    const parent = Number(fields[1]);
+    const startTime = fields[19]; // Field 22, kept as text so the identity comparison cannot round it.
+    if (!Number.isSafeInteger(parent) || startTime === undefined || !/^\d+$/.test(startTime)) return undefined;
+
+    return { pid, parent, startTime };
+}
+
+function sameWriterLink(before: WriterProcLink, after: WriterProcLink | undefined): boolean {
+    return after?.startTime === before.startTime && after.parent === before.parent;
+}
+
 /**
  * The writer of a request is a process this server started for the conversation that holds the lock: it is alive, its
  * parent chain reaches this server, and, where /proc shows it, its environment carries that conversation's Pi Pocket
@@ -2040,12 +2063,42 @@ async function trustedWriter(pid: number, conversation: string, token: unknown):
         if (!vars.has(`FM_PI_POCKET_CONVERSATION=${conversation}`) || !vars.has(`FM_PI_POCKET_SERVER_PID=${SERVER_PID}`)) return false;
         if (token === BRANCH_BRIDGE_TOKEN && !vars.has("FM_SUPERVISION_ACTOR=branch")) return false;
     }
+    if (String(pid) === SERVER_PID) return true;
+    const writer = await readWriterStat(pid);
+    const memo = writerAncestry.get(pid);
+    if (memo !== undefined) {
+        if (performance.now() < memo.expiresAt && sameWriterLink(memo.writer, writer)) {
+            // The same writer can be orphaned, even if its own PPID did not change. The memo lets us verify the
+            // known links in parallel instead of discovering each PID in turn. Losing any link requires a fresh walk.
+            const matches = await Promise.all(memo.ancestors.map(async (link) => sameWriterLink(link, await readWriterStat(link.pid))));
+            if (matches.every(Boolean) && performance.now() < memo.expiresAt) return true;
+        }
+        writerAncestry.delete(pid);
+    }
+
+    let ancestors: WriterProcLink[] | undefined = [];
     let current = pid;
     for (let hop = 0; hop < 32; hop += 1) {
-        if (String(current) === SERVER_PID) return true;
-        const ran = await run("ps", ["-o", "ppid=", "-p", String(current)], { cwd: "/" });
-        const parent = Number(ran.stdout.trim());
-        if (ran.code !== 0 || !Number.isSafeInteger(parent) || parent <= 1) return false;
+        if (String(current) === SERVER_PID) {
+            if (writer !== undefined && ancestors !== undefined) {
+                if (writerAncestry.size >= WRITER_ANCESTRY_LIMIT) writerAncestry.delete(writerAncestry.keys().next().value!);
+                writerAncestry.set(pid, { writer, ancestors, expiresAt: performance.now() + WRITER_ANCESTRY_TTL_MS });
+            }
+            return true;
+        }
+        const link = hop === 0 ? writer : await readWriterStat(current);
+        let parent: number;
+        if (link !== undefined) {
+            parent = link.parent;
+            if (hop !== 0) ancestors?.push(link);
+        } else {
+            // No proc identity for this link. Keep the old ps check, but do not retain the result.
+            ancestors = undefined;
+            const ran = await run("ps", ["-o", "ppid=", "-p", String(current)], { cwd: "/" });
+            if (ran.code !== 0) return false;
+            parent = Number(ran.stdout.trim());
+        }
+        if (!Number.isSafeInteger(parent) || parent <= 1) return false;
         current = parent;
     }
 

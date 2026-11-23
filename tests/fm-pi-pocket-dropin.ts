@@ -7,7 +7,7 @@
 //   FM_PI_POCKET_RUNNER_OWNER  the helper from the same checkout, run in fixture homes
 // Run with `--child <dataDir> <home>`, the file is instead the server that experiment (b) kills mid-delivery.
 import assert from "node:assert/strict";
-import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
+import childProcess, { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import {
     chmodSync,
@@ -2184,6 +2184,109 @@ async function workerMain() {
 async function idle(app: App, session: number): Promise<void> {
     await (await app.harness.conversation(session, context))!.waitForIdle(context);
 }
+
+test("the Pocket bridge uses proc stat, revalidates memoized ancestry, and falls back to ps", { timeout: 90_000 }, async (t) => {
+    const { id, fmHome } = await workerMain();
+    // Keep one writer alive for multiple requests. Model PID reuse and ancestor exit in the proc reader so the
+    // fixture does not depend on forcing a real PID to recycle or timing a real process tree change.
+    const writer = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+    const exited = new Promise<void>((resolve) => writer.once("close", () => resolve()));
+    const pid = writer.pid!;
+    const parent = 10_000_001;
+    const grandparent = parent + 1;
+    const identity = `FM_PI_POCKET_CONVERSATION=${String(id)}\0FM_PI_POCKET_SERVER_PID=${String(process.pid)}\0`;
+    let environ = identity;
+    const stats = new Map([
+        [pid, { parent, startTime: "101" }],
+        [parent, { parent: grandparent, startTime: "102" }],
+        [grandparent, { parent: process.pid, startTime: "103" }],
+    ]);
+    const dir = join(fmHome, "state", "pocket-bridge");
+    let sequence = 0;
+    let activeReads = 0;
+    let peakReads = 0;
+    const request = async (token = bridgeToken) => {
+        peakReads = 0;
+        const idForRequest = `ancestry-${++sequence}`;
+        const name = `${idForRequest}.json`;
+        const staged = join(dir, "requests", `.${name}.tmp`);
+        const result = join(dir, "results", name);
+        writeFileSync(staged, JSON.stringify({ v: 1, id: idForRequest, verb: "status", server: String(process.pid), conversation: String(id), pid, token }), { mode: 0o600 });
+        renameSync(staged, join(dir, "requests", name));
+        await until(() => existsSync(result), "the ancestry request's answer", LONG);
+        const answer = readJsonFile(result);
+        return answer?.ok === true ? "ok" : answer?.code;
+    };
+
+    let procUnavailable = false;
+    const readFile = fs.readFile;
+    const procProbe = t.mock.method(fs, "readFile", async (...args: Parameters<typeof readFile>) => {
+        const file = args[0];
+        if (file === `/proc/${pid}/environ`) return environ;
+        const readPid = Number(/^\/proc\/(\d+)\/stat$/.exec(String(file))?.[1]);
+        const entry = stats.get(readPid);
+        if (entry === undefined) return readFile(...args);
+        if (procUnavailable) throw Object.assign(new Error("proc stat unavailable"), { code: "ENOENT" });
+        activeReads += 1;
+        peakReads = Math.max(peakReads, activeReads);
+        await Promise.resolve(); // Make concurrent stat reads observable, without a wall-time assertion.
+        activeReads -= 1;
+        // State is field 3, parent is field 4, and the 17 intervening fields precede starttime (field 22).
+        return `${readPid} (name ) with space) S ${entry.parent} ${"0 ".repeat(17)}${entry.startTime} 0\n`;
+    });
+    let psSpawns = 0;
+    const spawnProcess = childProcess.spawn;
+    const spawnProbe = t.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawnProcess>) => {
+        if (args[0] === "ps" && args[1]?.[0] === "-o" && args[1]?.[1] === "ppid=" && args[1]?.[2] === "-p" && stats.has(Number(args[1][3]))) psSpawns += 1;
+        return spawnProcess(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+        assert.equal(await request(), "ok", "read the parent after the last closing parenthesis");
+        for (let repeat = 0; repeat < 3; repeat += 1) assert.equal(await request(), "ok");
+        assert.equal(psSpawns, 0, "the Linux stat path spawns no ps on one cold and three repeated requests");
+        assert.equal(peakReads, 2, "the same writer's memo lets the bridge verify both ancestor links in parallel");
+        environ = "";
+        assert.equal(await request(), "untrusted", "a memo does not replace the environment marker");
+        environ = identity.replace(`=${String(id)}\0`, "=wrong\0");
+        assert.equal(await request(), "untrusted", "a wrong marker is refused on a memo hit");
+        environ = identity;
+        assert.equal(await request("wrong-token"), "untrusted");
+        assert.equal(peakReads, 0, "a wrong token is refused before stat reads");
+
+        stats.get(pid)!.startTime = "201";
+        stats.get(parent)!.parent = 1;
+        assert.equal(await request(), "untrusted", "the reused PID has no path back to the server");
+        assert.equal(peakReads, 1, "the new start time requires a fresh walk even with the same immediate parent PID");
+        stats.get(parent)!.parent = grandparent;
+        assert.equal(await request(), "ok", "a refusal does not cache the negative result");
+        stats.get(grandparent)!.parent = 1;
+        assert.equal(await request(), "untrusted", "a higher ancestor can be reparented without changing the writer's PID or start time");
+
+        const chain = [pid, ...Array.from({ length: 31 }, (_, i) => parent + i)];
+        for (const [i, member] of chain.entries()) stats.set(member, { parent: chain[i + 1] ?? process.pid, startTime: String(300 + i) });
+        assert.equal(await request(), "untrusted", "the original walk does not accept the server at hop 32");
+        stats.get(chain[30]!)!.parent = process.pid;
+        assert.equal(await request(), "ok", "the server at hop 31 is within the original bound");
+        assert.equal(psSpawns, 0, "stat-based refusals do not spawn ps either");
+        t.diagnostic(`Linux stat path: ${psSpawns} ps spawns before simulating unavailable proc stat`);
+
+        procUnavailable = true;
+        assert.equal(await request(), "ok", "unreadable proc stat falls back to the real ps parent lookup");
+        assert.equal(await request(), "ok");
+        assert.equal(psSpawns, 2, "each request without a readable stat needs a new ps lookup");
+        writer.stdin.end();
+        await exited;
+        assert.equal(await request(), "untrusted", "the writer must still be alive");
+        assert.equal(psSpawns, 2, "the liveness check runs before the fallback");
+    } finally {
+        procProbe.mock.restore();
+        spawnProbe.mock.restore();
+        syncBuiltinESMExports();
+        if (!writer.stdin.writableEnded) writer.stdin.end();
+        await exited;
+    }
+});
 
 test("hot reload keeps the worker bridge trusted for marked main commands", { timeout: 90_000 }, async () => {
     const { app, id, fmHome } = await workerMain();
