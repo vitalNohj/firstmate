@@ -17,7 +17,7 @@ set -eu
 umask 077
 
 version=pi-pocket-runner-v1
-[ "$#" -ge 7 ] && [ "$#" -le 10 ] && [ "$1" = "$version" ] || exit 2
+[ "$#" -ge 7 ] && [ "$#" -le 14 ] && [ "$1" = "$version" ] || exit 2
 operation=$2
 home=$3
 installation=$4
@@ -29,7 +29,8 @@ previous=
 case "$operation" in
   claim) [ "$#" -le 1 ] || exit 2; previous=${1:-} ;;
   recover) [ "$#" -eq 0 ] || exit 2 ;;
-  poll|verify|drain|ack|inbox-read|inbox-reply|inbox-ack|read|branch-*) ;;
+  branch-posture-enter) [ "$#" -ge 1 ] && [ "$#" -le 7 ] || exit 2 ;;
+  poll|verify|drain|ack|inbox-read|inbox-reply|inbox-ack|read|handoff-check|branch-*|worker-*) [ "$#" -le 3 ] || exit 2 ;;
   *) exit 2 ;;
 esac
 
@@ -128,16 +129,56 @@ settled() {
     && cmp -s "$lock/settled" <(printf '%s\n' "$1")
 }
 
+workers_settled() {
+  local worker="$home/pi-pocket/runner-worker.mjs"
+  [ ! -e "$lock/runner-worker-command" ] && [ ! -L "$lock/runner-worker-command" ] || refuse busy
+  if [ -e "$lock/runner-workers" ] || [ -L "$lock/runner-workers" ]; then
+    [ -f "$worker" ] && [ ! -L "$worker" ] || refuse busy
+    node "$worker" worker-handoff "" "$1" || refuse workers-pending
+  fi
+}
+
 valid_marker || refuse invalid-home
 if [ "$operation" != claim ] && [ "$operation" != recover ]; then
   [ "$(fm_pocket_runner_lock_record "$STATE")" = "$owner_line" ] || refuse changed
   settled "$generation" && [ -f "$lock/digest" ] && [ ! -L "$lock/digest" ] || refuse incomplete
+  export FM_POCKET_RUNNER_COMMAND="$generation" FM_POCKET_RUNNER_HELPER_PID="$$"
+  case "$operation" in
+    handoff-check)
+      [ "$#" -eq 0 ] || exit 2
+      workers_settled "$generation"
+      exit 0
+      ;;
+    worker-*)
+      worker="$home/pi-pocket/runner-worker.mjs"
+      [ -f "$worker" ] && [ ! -L "$worker" ] || refuse unavailable
+      slot="$lock/runner-worker-command"
+      if [ "$operation" = worker-run ]; then
+        if [ "$#" -eq 3 ]; then node "$worker" worker-authorize "$conversation" "$@" || exit 1; fi
+        identity=$(fm_pid_identity "$$") || refuse unavailable
+        mkdir -m 700 -- "$slot" || refuse busy
+        trap 'rm -f -- "$slot/holder" "$slot/scope"; rmdir -- "$slot"' EXIT
+        printf '%s\n%s\n' "$$" "$identity" > "$slot/holder"
+        # The command waits for bridge requests to be served by bounded, separately verified calls.
+        fm_lock_release "$mutex"
+        node "$worker" "$operation" "$conversation" "$@"
+      else
+        if [ "$operation" = worker-next ]; then
+          [ -f "$slot/holder" ] && [ ! -L "$slot/holder" ] || exit 0
+          { read -r worker_pid; read -r worker_identity; } < "$slot/holder" || exit 1
+          [[ "$worker_pid" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$(fm_pid_identity "$worker_pid")" = "$worker_identity" ] || exit 1
+          export FM_POCKET_RUNNER_WRITER_ROOT="$worker_pid"
+        fi
+        node "$worker" "$operation" "$conversation" "$@"
+      fi
+      exit "$?"
+      ;;
+  esac
   monitor="$home/pi-pocket/runner-monitor.sh"
   case "$operation" in
     branch-*) monitor="$home/pi-pocket/runner-supervision.sh" ;;
   esac
   [ -f "$monitor" ] && [ ! -L "$monitor" ] || refuse unavailable
-  export FM_POCKET_RUNNER_COMMAND="$generation" FM_POCKET_RUNNER_HELPER_PID="$$"
   # Keep the holder in the child's ancestry until the operation finishes.
   # shellcheck source=bin/fm-timeout-lib.sh
   . "$home/bin/fm-timeout-lib.sh"
@@ -211,6 +252,7 @@ if [ -e "$lock" ] || [ -L "$lock" ]; then
   # Never retire another installation's lock, even with a supplied old record.
   case "$owner" in "$version"$'\t'"$installation"$'\t'"$home_id"$'\t'*) ;; *) refuse foreign ;; esac
   settled "${owner##*$'\t'}" || refuse incomplete
+  workers_settled "${owner##*$'\t'}"
 elif [ "$operation" = recover ] || [ -n "$previous" ]; then
   refuse changed
 fi

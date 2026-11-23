@@ -54,7 +54,25 @@ if [ "$operation" = read ]; then
   exit
 fi
 
+# An older Step 3 checkout has no posture owner; keep all legacy holds intact.
+posture=foreign
+posture_lib="$FM_HOME/pi-pocket/runner-posture-lib.sh"
+if file "$posture_lib"; then
+  # shellcheck source=pi-pocket/runner-posture-lib.sh
+  . "$posture_lib"
+  posture=$(runner_posture)
+fi
+if [ "$operation" = return-poll ]; then
+  [ "$posture" = catchup ] && [ "$actor" = main ] || exit 2
+  operation=poll
+  posture=attended
+fi
 for flag in .afk .afk-contract .afk-return-catchup .watch.lock .branch-eligible-rows .supervision-handoff-pending; do
+  case "$flag:$posture:$operation" in
+    .afk:away:*|.afk-contract:away:*|.afk:quiet:*|.afk-contract:quiet:*) continue ;;
+    .afk*:catchup:drain|.afk*:catchup:ack|.afk*:catchup:inbox-*) [ "$actor" != main ] || continue ;;
+    .afk*:attended:*) continue ;;
+  esac
   if [ "$flag" = .branch-eligible-rows ] && [ "$actor" = branch ]; then continue; fi
   if [ "$flag" = .branch-eligible-rows ] && { [ "$operation" = poll ] || [ "$operation" = verify ]; } \
     && file "$lock/runner-branch-grant" \

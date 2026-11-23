@@ -25,7 +25,9 @@
 // (FM_PI_POCKET_CONVERSATION and FM_PI_POCKET_SERVER_PID, the same marker
 // bin/fm-session-lock-lib.sh's fm_pi_pocket_trusted_server_pid reads) and the
 // server's role-specific bridge secret, FM_PI_POCKET_BRIDGE_TOKEN. No worker
-// gets a secret; docs/pi-pocket-backend.md owns the trust and verb limits.
+// gets a secret. On a runner, a typed foreground operation supplies instead
+// a short-lived command id. The runner helper verifies the writer against its
+// live local ancestor and exact task scope before serving it.
 //
 // Prints the result as one JSON object (capture prints its text). Exit codes:
 //   0 ok; 2 usage; 3 refused by the drop-in (its reason on stderr, prefixed
@@ -66,23 +68,26 @@ if (!opts.state) die(2, "error: --state is required");
 const conversation = process.env.FM_PI_POCKET_CONVERSATION || "";
 const server = process.env.FM_PI_POCKET_SERVER_PID || "";
 const token = process.env.FM_PI_POCKET_BRIDGE_TOKEN || "";
-if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversation) || !/^[0-9]+$/.test(server) || token === "") {
+const runner = process.env.FM_PI_POCKET_RUNNER_BRIDGE || "";
+if (!/^[A-Za-z0-9._:-]{1,128}$/.test(conversation) || (runner === "" ? !/^[0-9]+$/.test(server) || token === "" : !/^[0-9a-f-]{36}$/.test(runner))) {
   die(5, "error: backend=pi-pocket needs a command of the Firstmate Pi Pocket session; this command carries no Pi Pocket identity");
 }
 
 const dir = join(opts.state, "pocket-bridge");
-let heartbeat;
-try {
-  heartbeat = JSON.parse(readFileSync(join(dir, "heartbeat.json"), "utf8"));
-} catch {
-  heartbeat = undefined;
-}
-if (heartbeat?.server !== server || heartbeat?.conversation !== conversation || !(Date.now() - Number(heartbeat?.at) < HEARTBEAT_MAX_MS)) {
-  die(5, "error: the Firstmate Pi Pocket drop-in's worker bridge is not running for this session (update the drop-in with bin/fm-pi-pocket-install.sh and reload Pi Pocket, or run bin/fm-session-start.sh in the main Firstmate session)");
+if (runner === "") {
+  let heartbeat;
+  try {
+    heartbeat = JSON.parse(readFileSync(join(dir, "heartbeat.json"), "utf8"));
+  } catch {
+    heartbeat = undefined;
+  }
+  if (heartbeat?.server !== server || heartbeat?.conversation !== conversation || !(Date.now() - Number(heartbeat?.at) < HEARTBEAT_MAX_MS)) {
+    die(5, "error: the Firstmate Pi Pocket drop-in's worker bridge is not running for this session (update the drop-in with bin/fm-pi-pocket-install.sh and reload Pi Pocket, or run bin/fm-session-start.sh in the main Firstmate session)");
+  }
 }
 
 const read = (path) => readFileSync(path, "utf8");
-const request = { v: 1, id: `${Date.now()}-${process.pid}-${randomUUID().slice(0, 8)}`, verb, server, conversation, token, pid: process.pid };
+const request = { v: 1, id: `${Date.now()}-${process.pid}-${randomUUID().slice(0, 8)}`, verb, server, conversation, token, pid: process.pid, ...(runner === "" ? {} : { runner }) };
 const session = () => {
   const value = Number(opts.session);
   if (!Number.isSafeInteger(value) || value <= 0) die(2, "error: --session must be a positive session id");
@@ -162,6 +167,7 @@ for (;;) {
   }
   Atomics.wait(sleeper, 0, 0, POLL_MS);
 }
-if (result?.ok !== true) die(3, `error: ${String(result?.code ?? "error")}: ${String(result?.error ?? "the Pocket worker bridge refused the request")}`);
+if (result?.ok !== true) die(runner !== "" && verb === "spawn" && result?.code === "unconfirmed-start" ? 7 : 3,
+  `error: ${String(result?.code ?? "error")}: ${String(result?.error ?? "the Pocket worker bridge refused the request")}`);
 if (verb === "capture") process.stdout.write(`${String(result.text ?? "")}\n`);
 else process.stdout.write(`${JSON.stringify(result)}\n`);

@@ -47,7 +47,9 @@
 # A lock-owning Pi Pocket conversation has no terminal daemon: return clears its
 # flag and archives its record directly, never through bin/fm-afk-launch.sh.
 # A recorded daemon on that home is a lifecycle contradiction, preserved for repair.
-# Other harnesses retain the launch owner's ordered shutdown.
+# A Pocket runner uses the same record and return gate, but presents a bounded
+# runner wake receipt and has no native watcher heartbeat. Other harnesses
+# retain the launch owner's ordered shutdown.
 # The durable state/.afk-return-catchup file is written BEFORE daemon shutdown,
 # so a crash between stopping, wake presentation, and blocker handling fails
 # closed. It retains the presented wake, buffered-escalation, wedge-marker,
@@ -351,11 +353,14 @@ health_snapshot() {  # <evidence-file>
       lines="GAP: watcher downtime was detected during the away window (recovery marker present)"
     fi
   fi
-  if [ -e "$STATE/.afk" ] && ! fm_session_lock_recorded_pi_pocket "$STATE" && ! fm_afk_daemon_owns_supervision "$STATE"; then
+  if [ -z "${FM_POCKET_RUNNER_RETURN:-}" ] && [ -e "$STATE/.afk" ] && ! fm_session_lock_recorded_pi_pocket "$STATE" && ! fm_afk_daemon_owns_supervision "$STATE"; then
     lines="$lines
 GAP: the away daemon was not running at return (the away flag stood with no live daemon)"
   fi
-  if [ "$beat_age" -ge "$RETURN_GRACE" ]; then
+  if [ -n "${FM_POCKET_RUNNER_RETURN:-}" ]; then
+    lines="$lines
+The runner has no native heartbeat. Monitoring can pause when it disconnects."
+  elif [ "$beat_age" -ge "$RETURN_GRACE" ]; then
     lines="$lines
 GAP: the watcher beat was ${beat_age}s old at return (grace ${RETURN_GRACE}s)"
   fi
@@ -705,11 +710,11 @@ EOF
 }
 
 stop_posture() {
-  if ! fm_session_lock_recorded_pi_pocket "$STATE"; then
+  if [ -z "${FM_POCKET_RUNNER_RETURN:-}" ] && ! fm_session_lock_recorded_pi_pocket "$STATE"; then
     "$SCRIPT_DIR/fm-afk-launch.sh" stop
     return
   fi
-  fm_session_lock_owned_by_self "$STATE" || {
+  { [ -n "${FM_POCKET_RUNNER_RETURN:-}" ] || fm_session_lock_owned_by_self "$STATE"; } || {
     printf 'fm-afk-return: only the lock-owning Pi Pocket conversation can end this posture\n' >&2
     return 1
   }
@@ -721,6 +726,20 @@ stop_posture() {
   if fm_afk_contract_present "$STATE"; then
     "$CONTRACT" archive || return
   fi
+}
+
+return_drain() {
+  if [ -z "${FM_POCKET_RUNNER_RETURN:-}" ]; then
+    "$SCRIPT_DIR/fm-wake-drain.sh"
+    return
+  fi
+  local helper="$FM_HOME/pi-pocket/runner-monitor.sh" result status cursor token partial
+  [ -f "$helper" ] && [ ! -L "$helper" ] || return 1
+  result=$(bash "$helper" return-poll "$FM_POCKET_RUNNER_RETURN" "") || return 1
+  read -r status cursor token partial <<< "$result"
+  [ "$status" = ready ] && [ -n "$cursor" ] && [ "$partial" = false ] || return 1
+  [ "$token" != - ] || return 0
+  fm_pocket_runner_uuid "$token" && bash "$helper" drain "$token"
 }
 
 return_reconcile() {
@@ -785,7 +804,7 @@ EOF
     fi
   fi
 
-  if drained=$("$SCRIPT_DIR/fm-wake-drain.sh" 2> "$drain_err"); then
+  if drained=$(return_drain 2> "$drain_err"); then
     remove_evidence lifecycle 'durable wake drain failed; retry catch-up before ordinary work' "$evidence" || lifecycle_ok=0
   else
     append_evidence lifecycle 'durable wake drain failed; retry catch-up before ordinary work' "$evidence"
@@ -937,7 +956,12 @@ main() {
   . "$SCRIPT_DIR/fm-pr-lib.sh"
 
   mkdir -p "$STATE" || return 1
-  fm_lock_acquire_wait "$LOCK"
+  if [ -n "${FM_POCKET_RUNNER_RETURN:-}" ]; then
+    fm_pocket_runner_uuid "$FM_POCKET_RUNNER_RETURN" && fm_pocket_runner_command_owned "$FM_HOME" "$STATE" || return 1
+    fm_lock_acquire_wait_bounded "$LOCK" 1 || return 1
+  else
+    fm_lock_acquire_wait "$LOCK"
+  fi
   trap 'fm_lock_release "$LOCK"' EXIT
   window_epoch=$(window_start_epoch)
   contract_epoch=$(gate_contract_epoch)

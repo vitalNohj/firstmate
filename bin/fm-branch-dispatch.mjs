@@ -21,12 +21,13 @@
 //                       task or on fleet is in scope
 //     --heartbeat marks a heartbeat wake; --afk applies the away-posture
 //     collapse (docs/pi-supervision-branch.md "Postures").
-//   fm-branch-dispatch.mjs offer [--afk]
+//   fm-branch-dispatch.mjs offer [--afk] [--through <sequence>]
 //     Read one actionable close's reason line from stdin and print
 //     branchOfferForWake's verdict: eligible=0|1 (whether the branch may take
 //     this close at all, trigger class included), then the same five lines
 //     `scope` prints for the scan it judged. --afk judges it under the away
-//     posture.
+//     posture. --through caps the grant (including its task scope) at an
+//     existing bounded receipt, but does not ignore later queue vetoes.
 //   fm-branch-dispatch.mjs wake-prompt --report <surface> [--mirror-file <path>] [--away [--readback-file <path>]]
 //     Read the watcher's wake reason from stdin and print the branch wake
 //     prompt naming <surface> as the report surface. --mirror-file puts the
@@ -49,7 +50,7 @@ const dispatch = await import(pathToFileURL(path.join(root, ".pi", "extensions",
 
 function usage() {
   process.stderr.write(
-    "usage: fm-branch-dispatch.mjs scope [--heartbeat] [--afk] | offer [--afk] | wake-prompt --report <surface> [--mirror-file <path>] [--away [--readback-file <path>]]\n",
+    "usage: fm-branch-dispatch.mjs scope [--heartbeat] [--afk] | offer [--afk] [--through <sequence>] | wake-prompt --report <surface> [--mirror-file <path>] [--away [--readback-file <path>]]\n",
   );
   process.exit(2);
 }
@@ -93,12 +94,14 @@ if (command === "scope") {
   process.stdout.write(scopeLines(dispatch.scopeForUnreadWake(stateDir(), heartbeat, afk), heartbeat));
 } else if (command === "offer") {
   let afk = false;
-  for (const arg of args) {
-    if (arg === "--afk") afk = true;
+  let through;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--afk") afk = true;
+    else if (args[index] === "--through" && through === undefined && /^[1-9][0-9]{0,14}$/.test(args[index + 1] ?? "")) through = Number(args[++index]);
     else usage();
   }
   const message = readFileSync(0, "utf8").split(/\r?\n/)[0] ?? "";
-  const verdict = dispatch.branchOfferForWake(stateDir(), message, afk, true);
+  const verdict = dispatch.branchOfferForWake(stateDir(), message, afk, true, through);
   process.stdout.write(`eligible=${verdict.eligible ? 1 : 0}\n${scopeLines(verdict.scope, verdict.heartbeat)}`);
 } else if (command === "wake-prompt") {
   let report = "";

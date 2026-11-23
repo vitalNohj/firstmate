@@ -237,11 +237,12 @@ const RUNNER_RETRY_MS = positive("FM_POCKET_RUNNER_RETRY_MS", 90_000);
 const RUNNER_NO_SUPERVISION = "Runner supervision is not enabled for this conversation.";
 const RUNNER_PROMPT = [
     "This is a Firstmate home on a linked computer.",
-    "The add-on runs the startup preview when the home is claimed. The server-only watcher, session-start digest machinery, turn-end guard, fm-spawn workers, and posture commands are not available here.",
-    "Until Firstmate worker launch is available in step 4, delegate project work to Pi Pocket subagents or linked sessions on the same computer instead of doing it directly.",
-    "Keep design decisions and review their work in the main conversation.",
+    "The add-on runs the startup preview when the home is claimed. The server-only watcher, session-start digest machinery, turn-end guard, and posture commands are not available here.",
+    "Delegate project work on this computer instead of doing it directly. Keep design decisions and review their work in the main conversation.",
     SHELL_MODEL,
 ].join(" ");
+const RUNNER_WORKER_PROMPT = "For managed workers use fm_runner with action worker, operation spawn, send, control, or teardown, a task ID, and args as separate strings after the task ID. These call fm-spawn, fm-send, fm-control, or fm-teardown on this computer. Spawn requires config/backend to name pi-pocket and uses only the pi harness. Do not use raw bash for these lifecycle operations. For /afk or /quiet use fm_posture_pocket when managed sessions are enabled.";
+const RUNNER_PREVIEW_PROMPT = "Until the home is claimed, managed workers are unavailable. Use Pi Pocket subagents or linked sessions on the same computer to delegate project work.";
 // FileSystem.id is a namespace, not a runner ID. Only the documented Node namespace admits legacy server I/O.
 const SERVER_FILES = new NodeExecutionEnv({ cwd: "/" }).id;
 
@@ -325,12 +326,16 @@ class HomeOps {
  * Hooks from Durable receive a runtime (env function); codemode hooks and tools receive api.env directly.
  * Neither an agent snapshot nor a server path can substitute for an unavailable environment.
  */
+async function executionEnv(source: EnvSource, context: Context): Promise<ExecutionEnv | undefined> {
+    context.abortSignal?.throwIfAborted();
+    return typeof source.env === "function" ? await awaitWithContext(source.env(context), context) : source.env;
+}
+
 async function checkHome(source: EnvSource, context: Context): Promise<HomeCheck> {
     const probe = withAbortSignal(signalsOf(source.signal, AbortSignal.timeout(HOME_PROBE_MS)), context);
     let placement: Placement = "unknown";
     try {
-        probe.abortSignal?.throwIfAborted();
-        const env = typeof source.env === "function" ? await awaitWithContext(source.env(probe), probe) : source.env;
+        const env = await executionEnv(source, probe);
         if (env === undefined || env.cwd === "") return { kind: "unavailable", placement };
         placement = env.id === SERVER_FILES ? "server" : "nonlocal";
         const ops = new HomeOps(env);
@@ -420,7 +425,7 @@ function runnerOwner(installation: string, conversation: string, binding: Runner
 }
 
 /** Only a current, directly authenticated input may authorize a runner startup or handoff. */
-function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervision: ReturnType<typeof createSupervision>, web?: PocketSurface) {
+function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervision: ReturnType<typeof createSupervision>, workers: Workers, web?: PocketSurface) {
     const path = typeof host.dataDir === "string" ? join(host.dataDir, "firstmate-runner-owners.json") : undefined;
     if (path === undefined || host.on === undefined) return undefined;
     const observer = randomUUID();
@@ -548,7 +553,7 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
         if (previous?.state === next.state) return;
         host.notice?.(next.state === "healthy" ? "info" : "warning", `Firstmate runner monitoring ${next.state}${next.detail === undefined ? "." : `: ${next.detail}`}`, id);
     };
-    const command = async (id: ConversationId, claim: RunnerClaim, source: EnvSource, op: string, args: string[], context: Context) => {
+    const command = async (id: ConversationId, claim: RunnerClaim, source: EnvSource, op: string, args: string[], context: Context, timeout = HOME_COMMAND_MS) => {
         const authorized = async () => sameClaim(await lookup(id), claim) && active(id, claim);
         if (!(await authorized())) return { kind: "paused" as const, detail: "return to this conversation as its owner to check the binding." };
         const checked = await checkHome(source, context);
@@ -558,8 +563,13 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
         }
         const helper = await runnerHelper(checked, context);
         if (helper === undefined || !(await authorized())) return { kind: "paused" as const, detail: "the runner helper or its authority could not be verified." };
-        const result = await checked.ops.exec(["bash", helper, RUNNER_OWNER_VERSION, op, claim.home, claim.installation,
-            claim.homeId, String(id), claim.generation, ...args], {}, context);
+        const argv = ["bash", helper, RUNNER_OWNER_VERSION, op, claim.home, claim.installation,
+            claim.homeId, String(id), claim.generation, ...args] as const;
+        let result = await checked.ops.exec(argv, {}, context, timeout);
+        if ((op.startsWith("branch-") || op === "worker-run") && result.code === 0 && result.stdout === "busy\n" && result.stderr === "" && await authorized()) {
+            // A busy receipt means the helper did not start the operation. Do not retry a lost reply.
+            result = await checked.ops.exec(argv, {}, context, timeout);
+        }
         if (!(await authorized())) return { kind: "paused" as const, detail: "the conversation's authority changed." };
         if (result.code === 0 && result.stdout === "unavailable\n") {
             // The owner helper checks the claim before reporting the monitor unavailable.
@@ -591,8 +601,80 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
         }
     };
 
-    type BranchRuntime = Pick<TaskRuntime<RunnerClaim, RunnerPhase, null, object>, "conversationId" | "context" | "conversation"> & EnvSource;
+    type BranchRuntime = WorkerRuntime & EnvSource;
+    const branchCommands = new Map<number, { runtime: BranchRuntime; context: Context; token: string }>();
     const resultOk = (ran: Awaited<ReturnType<typeof command>>) => ran.kind === "ran" && ran.code === 0 && !/^(changed|incomplete|busy|invalid-home|unavailable)\n$/.test(ran.stdout);
+    const workerPort = (main: ConversationId, claim: RunnerClaim, source: EnvSource, context: Context): RunnerWorkerPort => ({
+        claim,
+        async call(op, args = []) {
+            const result = await command(main, claim, source, op, args, context);
+            if (result.kind !== "ran" || !resultOk(result)) throw new Error(result.kind === "ran" ? result.stderr.trim() || result.stdout.trim() || "no runner receipt" : "runner worker home is unavailable");
+            return result.stdout;
+        },
+    });
+    const workerCommand = async (runtime: BranchRuntime, claim: RunnerClaim, operation: string, task: string, args: string[], context: Context, grant?: string) => {
+        const request = JSON.stringify({ operation, task, args });
+        if (Buffer.byteLength(request) > 24_000) return say("Runner worker arguments are too large.", true);
+        const token = randomUUID();
+        const stop = new AbortController();
+        const live = withAbortSignal(stop.signal, context);
+        const port = workerPort(runtime.conversationId, claim, runtime, live);
+        const serving = workers.serveRunner(runtime, live, port, token);
+        try {
+            const result = await command(runtime.conversationId, claim, runtime, "worker-run", [token, request, ...(grant === undefined ? [] : [grant])], context, 180_000);
+            if (result.kind !== "ran") return say("Runner worker operation could not verify the home. Check the local task before retrying.", true);
+            const details = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
+            return resultOk(result) ? say(details || "Runner worker operation complete.") : say(`Runner worker operation refused${details === "" ? "." : `: ${details}`}`, true);
+        } finally {
+            stop.abort();
+            await serving.catch(() => undefined);
+        }
+    };
+    const branchWorkerCommand = async (api: ToolExecutionApi, actor: NonNullable<Awaited<ReturnType<typeof branchActor>>>, operation: string, task: string, args: string[], context: Context) => {
+        const turn = actor.branch?.turn;
+        const port = branchCommands.get(Number(api.conversationId));
+        if (turn === undefined || port?.token !== turn.token || port.runtime.conversationId !== actor.main || !turn.tasks.includes(task) ||
+            !(operation === "send" || operation === "teardown" || (operation === "control" && ["interrupt", "exit"].includes(args[0] ?? "")))) {
+            return say("Runner supervision can steer, interrupt, exit, or clean up only a worker named in its active grant.", true);
+        }
+        const scoped = context.abortSignal === undefined ? port.context : withAbortSignal(context.abortSignal, port.context);
+        return workerCommand(port.runtime, actor.claim, operation, task, args, scoped, turn.token);
+    };
+    const enterPosture = async (api: ToolExecutionApi & EnvSource, claim: RunnerClaim, args: string[], context: Context) => {
+        const input = await ownerInput(api, context);
+        if (input === undefined || automaticInput(input.text)) return say("Posture unchanged: use an owner message in this conversation.", true);
+        const key = "x.firstmate.runner-posture-enter";
+        const entered = await api.memo<Ran>(key, context) ?? await (async () => {
+            const result = await command(api.conversationId, claim, api, "branch-posture-enter", args, context);
+            return result.kind === "ran" ? await api.memo(key, result, context) : undefined;
+        })();
+        if (entered === undefined || !resultOk(entered)) return say(entered?.stderr.trim() || "Posture unchanged: the runner could not verify entry.", true);
+        if (args[0] === "away") await changeBranch(api.conversationId, claim, (old) => old && { ...old, processing: undefined });
+        return say(`${entered.stdout.trim()}\nNo terminal daemon was started.`);
+    };
+    const returnPosture = async (api: HookApi & EnvSource, claim: RunnerClaim, mode: "begin" | "check", context: Context) => {
+        const result = await command(api.conversationId, claim, api, "branch-posture-return", [mode, randomUUID()], context);
+        const clear = result.kind === "ran" && resultOk(result);
+        const receipt = result.kind === "ran" ? `${result.stdout}\n${result.stderr}`.trim() : "The runner is unavailable.";
+        return { clear, text: `FIRSTMATE RETURN BRIEF\n${clear ? "Return catch-up is clear." : "Return catch-up is not clear. Handle the listed blockers and use fm_runner with action return-check before ordinary fleet work."}\n\n${receipt}` };
+    };
+    const postureRequest = async (api: HookApi & EnvSource, claim: RunnerClaim, context: Context) => {
+        const key = "x.firstmate.runner-return";
+        const previous = await api.memo<{ clear: boolean; text: string }>(key, context);
+        if (previous !== undefined) return { brief: previous.text };
+        const result = await command(api.conversationId, claim, api, "branch-posture", [], context);
+        if (result.kind !== "ran" || !resultOk(result)) return undefined;
+        const mode = result.stdout.trim();
+        if (mode === "attended" || mode === "foreign") return undefined;
+        const input = await ownerInput(api, context);
+        const body = input === undefined || automaticInput(input.text) ? undefined : inputBody(input.text);
+        if (body !== undefined && (mode === "catchup" || (mode === "away" && !/^\/afk(?:\s|$)/.test(body)) || (mode === "quiet" && /^\/quiet\s+off\s*$/.test(body)))) {
+            const returned = await returnPosture(api, claim, "begin", context);
+            await api.memo(key, returned, context);
+            return { brief: returned.text };
+        }
+        return { mode };
+    };
     const runnerBranchPrompt = async (actor: NonNullable<Awaited<ReturnType<typeof branchActor>>>, env: EnvSource, context: Context) => {
         const ran = await command(actor.main, actor.claim, env, "branch-prompt", [], context);
         return ran.kind === "ran" && resultOk(ran) ? ran.stdout : "This runner supervision session cannot verify its Firstmate home. Do not handle work.";
@@ -629,8 +711,12 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
                 });
                 if (branch === undefined || !active(main, claim)) return "main";
                 const { key, model, thinking } = branch;
-                const started = await linked.start(main, { title: BRANCH_TITLE, cwd: claim.home, message: "This is the Firstmate supervision session. No work is pending. Reply only with ready.",
+                const start = () => linked.start(main, { title: BRANCH_TITLE, cwd: claim.home, message: "This is the Firstmate supervision session. No work is pending. Reply only with ready.",
                     report: "none", ...(model === undefined ? {} : { model }), ...(thinking === undefined ? {} : { thinking }) }, key);
+                const started = await start().catch(() => {
+                    if (!active(main, claim)) throw new Error("owner authority changed during the supervision start");
+                    return start();
+                }).catch((error: unknown) => { throw new Error(`Pi Pocket refused to confirm the supervision start: ${(error as Error).message}`); });
                 branch = await changeBranch(main, claim, (old) => old?.key === key ? { ...old, session: Number(started.session), address: started.address, startedAt: Date.now() } : old);
             }
             if (branch?.session === undefined || branch.address === undefined || branch.closed === true) return "main";
@@ -674,13 +760,22 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
                 const child = await runtime.conversation(branchId, context);
                 if (child !== undefined) {
                     const requestId = requestFor(branchId, `fm-runner-branch-${claim.generation}-${token}`);
-                    const submission = await child.submit({ type: "input", content: ready.stdout, whenBusy: "followUp", requestId }, context);
                     const deadline = withAbortSignal(AbortSignal.timeout(Math.max(1, current.start + BRANCH_TURN_TIMEOUT_MS - Date.now())), context);
-                    try { await awaitWithContext(submission.wait(deadline), deadline); }
-                    catch (error) {
+                    const commandPort = { runtime, context: deadline, token };
+                    branchCommands.set(Number(branchId), commandPort);
+                    try {
+                        const submission = await child.submit({ type: "input", content: ready.stdout, whenBusy: "followUp", requestId }, deadline);
+                        await awaitWithContext(submission.wait(deadline), deadline);
+                    } catch (error) {
                         context.abortSignal?.throwIfAborted();
-                        await linked.stop(main, { to: branch.address }, `${branch.key}-turn-stop-${token}`);
-                        throw error;
+                        const address = branch.address;
+                        await linked.stop(main, { to: address }, `${branch.key}-turn-stop-${token}-${randomUUID()}`);
+                        const stopped = (await linked.list(main)).find((candidate) => candidate.address === address);
+                        if (stopped?.busy !== false) throw error;
+                        warn(`Runner supervision did not complete its turn: ${(error as Error).message}`);
+                        // The child is confirmed idle. If it did not acknowledge the batch, release it to main.
+                    } finally {
+                        if (branchCommands.get(Number(branchId)) === commandPort) branchCommands.delete(Number(branchId));
                     }
                 }
             }
@@ -736,6 +831,7 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
                 }
                 const now = runtime.now();
                 await presentBranchOutcomes(runtime, task.input, context).catch(() => context.abortSignal?.throwIfAborted());
+                await workers.reconcileRunner(runtime, context, workerPort(id, task.input, runtime, context)).catch(() => context.abortSignal?.throwIfAborted());
                 let delivery = old.delivery?.token === next.token ? old.delivery : undefined;
                 if (delivery === undefined && next.token !== "-") {
                     delivery = { token: next.token, attempt: 0, requestId: runnerRequest(task.input, next.token, 0), retryAt: 0 };
@@ -838,6 +934,10 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
         if (old === undefined || branch === undefined) return undefined;
         if (branch.address === undefined || branch.session === undefined) return "The previous supervision start is unconfirmed. No handoff occurred.";
         if (!authorized()) return "Owner authority changed. No handoff occurred.";
+        const safe = await ops.exec(["bash", helper, RUNNER_OWNER_VERSION, "handoff-check", old.home, installation,
+            old.homeId, prior, old.generation], {}, context);
+        if (safe.code !== 0 || safe.stdout !== "") return "A worker or lifecycle command still holds the runner home. No handoff occurred.";
+        if (!authorized()) return "Owner authority changed. No handoff occurred.";
         const oldSource = Number(prior) as unknown as ConversationId;
         const closed = await stopAndArchiveLinked(host.linkedSessions, oldSource, branch.address, branch.key, randomUUID(), "the previous runner supervision session", true);
         if (!closed?.ok) return closed !== undefined && !closed.ok ? closed.error : "This Pi Pocket cannot verify linked-session cleanup.";
@@ -918,10 +1018,30 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
                     const authorized = () => archive.get(id) !== true && host.roleOf?.(input.person) === "owner" &&
                         host.requesterOf?.(api.conversationId) === input.person && (takeover === undefined ? archived && archive.get(Number(ownerId)) === true : takeover === generation);
                     if (!authorized()) return reply(`This runner home belongs to conversation ${ownerId}. Archive it or send exactly: take over ${generation}`);
-                    const refused = await closeBranchForHandoff(ownerId, record, installation, authorized, ops, helperPath, context);
-                    if (refused !== undefined) return reply(refused);
-                    if (!authorized()) return undefined;
-                    outcome = await invoke(record);
+                    const switched = await changeRecord(`${path}:handoff:${ownerId}`, async () => {
+                        let started = false;
+                        try {
+                            const refused = await closeBranchForHandoff(ownerId, record, installation, authorized, ops, helperPath, context);
+                            if (refused !== undefined) return { refused };
+                            if (!authorized()) return { refused: "Owner authority changed. No handoff occurred." };
+                            const result = await invoke(record);
+                            started = result.status === "started";
+                            return { result };
+                        } finally {
+                            // A refused takeover must leave the old main able to finish cleanup.
+                            // If the remote claim landed despite a lost reply, the local lock still fences it.
+                            if (!started) await changeRecord(path, async () => {
+                                const index = await load();
+                                const prior = index.sessions[ownerId];
+                                if (prior?.retiring !== true || runnerOwner(index.installation, ownerId, prior) !== record) return;
+                                delete prior.retiring;
+                                await writeJson(path, index);
+                                retiring.delete(Number(ownerId));
+                            });
+                        }
+                    });
+                    if (switched.refused !== undefined) return reply(switched.refused);
+                    outcome = switched.result;
                 }
             }
             if (outcome.status === "started") {
@@ -938,12 +1058,13 @@ function registerRunnerPreview(host: Partial<Host>, presented: boolean, supervis
             if (outcome.status === "foreign") return reply("The lock has a native or unrecognized owner. It was not changed.");
             if (outcome.status === "busy") return reply("The session lock is busy. No takeover occurred. Try another turn after startup finishes.");
             if (outcome.status === "retired") return reply("This conversation's runner claim was retired. Start a new main conversation to claim the home.");
+            if (outcome.status === "workers-pending") return reply("The previous conversation still has a worker without a verified cleanup receipt. Its worktree lease and the runner lock stay held.");
             return reply("Runner ownership could not be verified. No startup is reported.");
         } catch {
             return reply("Runner ownership or startup is unavailable. No startup is reported.");
         }
     };
-    return { admit, isBound, lookup, canUseTool, command, observe, ensure, monitor, health, branchOfRunner, branchActor, changeBranch, runnerBranchPrompt, resultOk, load };
+    return { admit, isBound, lookup, canUseTool, command, observe, ensure, monitor, health, branchOfRunner, branchActor, changeBranch, runnerBranchPrompt, resultOk, workerCommand, branchWorkerCommand, enterPosture, returnPosture, postureRequest, load };
 }
 
 function runnerHealthText(health: RunnerHealth | undefined) {
@@ -2164,11 +2285,14 @@ const WORKER_NUDGE =
     "Firstmate: the Pi Pocket server restarted while you were working, which interrupted your last tool call. Check where your task stands and continue it.";
 const WORKER_ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 const WORKERS_INDEX = "firstmate-pocket-workers.json";
+const RUNNER_WORKERS_INDEX = "firstmate-runner-workers.json";
 
 /** One worker, in state/pocket-bridge/workers/<task>.json: the durable registry a restarted server re-attaches from. */
 type WorkerRecord = {
     task: string;
     home: string;
+    /** Present only for a managed runner worker, with authoritative state in its runner home. */
+    runnerGeneration?: string;
     /** The main conversation that started it, and the linked session it is. */
     main: number;
     session: number;
@@ -2210,6 +2334,11 @@ type BridgeRequest = {
 };
 
 type BridgeResult = { ok: true; [key: string]: unknown } | { ok: false; code: string; error: string };
+
+type WorkerRuntime = Pick<TaskRuntime<unknown, { phase: string }, unknown, object>, "conversationId" | "conversation" | "context" | "snapshot">;
+type RunnerWorkerPort = { claim: RunnerClaim; call(op: string, args?: string[]): Promise<string> };
+type RunnerBridgeRequest = { request: BridgeRequest; task: string; current: WorkerRecord | null; lease?: string; error?: string };
+type RunnerBridge = RunnerBridgeRequest & { port: RunnerWorkerPort };
 
 const refuse = (code: string, error: string): BridgeResult => ({ ok: false, code, error });
 
@@ -2378,6 +2507,8 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
     const homes = new Set<string>();
     const lanes = new Map<number, Promise<unknown>>();
     const indexPath = typeof host.dataDir === "string" ? join(host.dataDir, WORKERS_INDEX) : undefined;
+    const runnerIndexPath = typeof host.dataDir === "string" ? join(host.dataDir, RUNNER_WORKERS_INDEX) : undefined;
+    const runnerRunEvents = new Map<number, boolean>();
 
     /** One change to one worker at a time, in arrival order. */
     function lane<T>(session: number, change: () => Promise<T>): Promise<T> {
@@ -2395,13 +2526,25 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         bySession.set(record.session, record);
     }
 
+    /** Keep the hook projection available before the runner reconnects. Fleet records stay on the runner. */
+    async function saveRunner(record: WorkerRecord, port: RunnerWorkerPort): Promise<void> {
+        if (runnerIndexPath === undefined) throw new Error("this Pi Pocket has no durable Firstmate data directory");
+        await port.call("worker-save", [JSON.stringify(record)]);
+        await changeRecord(runnerIndexPath, async () => {
+            const index = await readJson<Record<string, WorkerRecord>>(runnerIndexPath) ?? {};
+            index[record.session] = { ...record, busy: false };
+            await writeJson(runnerIndexPath, index);
+            bySession.set(record.session, record);
+        });
+    }
+
     /** Load a home's registry, once per home and again on request; remember the home for the next server process. */
     async function load(home: string): Promise<void> {
         const dir = join(bridgeDir(home), "workers");
         for (const name of await readdir(dir).catch(() => [] as string[])) {
             if (!name.endsWith(".json")) continue;
             const record = await readJson<WorkerRecord>(join(dir, name));
-            if (record !== undefined && Number.isSafeInteger(record.session) && record.home === home) bySession.set(record.session, record);
+            if (record !== undefined && record.runnerGeneration === undefined && Number.isSafeInteger(record.session) && record.home === home) bySession.set(record.session, record);
         }
         if (homes.has(home)) return;
         if (indexPath !== undefined) {
@@ -2416,6 +2559,11 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
 
     // A restarted server knows its workers before any bridge task runs: their hooks, prompt, and env must hold at once.
     const ready = (async () => {
+        if (runnerIndexPath !== undefined) {
+            for (const record of Object.values(await readJson<Record<string, WorkerRecord>>(runnerIndexPath) ?? {})) {
+                if (record.runnerGeneration !== undefined && HOME_ID.test(record.runnerGeneration) && validTask(record.task) && Number.isSafeInteger(record.session)) bySession.set(record.session, record);
+            }
+        }
         if (indexPath === undefined) return;
         const index = await readJson<{ homes?: unknown }>(indexPath);
         for (const home of Array.isArray(index?.homes) ? index.homes : []) if (typeof home === "string") await load(home).catch(() => undefined);
@@ -2431,6 +2579,7 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
 
     async function byTask(home: string, task: string): Promise<WorkerRecord | undefined> {
         const record = await readJson<WorkerRecord>(recordPath(home, task));
+        if (record?.runnerGeneration !== undefined) return undefined;
         if (record !== undefined) bySession.set(record.session, record);
 
         return record;
@@ -2442,14 +2591,14 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         // A relaunch replaces a task's record with its new session, so an old session id resolves to nothing rather
         // than to the replacement worker.
         const known = bySession.get(id);
-        if (known?.home === home) {
+        if (known?.home === home && known.runnerGeneration === undefined) {
             const latest = (await byTask(home, known.task)) ?? known;
             return latest.session === id ? latest : undefined;
         }
         await load(home);
         const found = bySession.get(id);
 
-        return found?.home === home && found.session === id ? found : undefined;
+        return found?.home === home && found.session === id && found.runnerGeneration === undefined ? found : undefined;
     }
 
     /** fm-busy-event.sh: the one writer of the busy record and the turn-ended notification. */
@@ -2462,7 +2611,12 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
     /** A run began or ended in a worker. A doubled or missed event is harmless: only a change of busy acts. */
     async function runEvent(session: number, busy: boolean, outcome?: { outcome?: string; failure?: string }, event = busy ? "run-started" : "run-ended") {
         await ready;
-        if (!bySession.has(session)) return;
+        const knownWorker = bySession.get(session);
+        if (knownWorker === undefined) return;
+        if (knownWorker.runnerGeneration !== undefined) {
+            if (knownWorker.archived !== true) runnerRunEvents.set(session, busy);
+            return;
+        }
 
         return lane(session, async () => {
             const known = bySession.get(session);
@@ -2554,7 +2708,7 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
 
     type Runtime = TaskRuntime<{ home: string }, { phase: "serve" }, null, object>;
 
-    async function submit(runtime: Runtime, context: Context, record: WorkerRecord, content: string, key: string, whenBusy: "followUp" | "steer"): Promise<BridgeResult> {
+    async function submit(runtime: WorkerRuntime, context: Context, record: WorkerRecord, content: string, key: string, whenBusy: "followUp" | "steer"): Promise<BridgeResult> {
         if (record.retired === true || record.archived === true) {
             return refuse("retired", `the worker for ${record.task} was torn down; Firstmate sends nothing more to it`);
         }
@@ -2592,16 +2746,16 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         return "ok" in chosen ? chosen : { ok: true, ...chosen };
     }
 
-    async function spawnWorker(home: string, main: ConversationId, request: BridgeRequest): Promise<BridgeResult> {
+    async function spawnWorker(home: string, main: ConversationId, request: BridgeRequest, runner?: RunnerBridge): Promise<BridgeResult> {
         const api = startApi(main);
         if ("ok" in api) return api;
         const task = request.task;
         if (!validTask(task)) return refuse("invalid", "spawn needs a valid task id");
         const cwd = typeof request.cwd === "string" ? request.cwd : "";
-        if (!cwd.startsWith("/") || !(await stat(cwd).catch(() => undefined))?.isDirectory()) return refuse("invalid", `the worker folder ${cwd} is not a directory`);
+        if (!cwd.startsWith("/") || (runner === undefined ? !(await stat(cwd).catch(() => undefined))?.isDirectory() : runner.lease === undefined)) return refuse("invalid", `the worker folder ${cwd} is not a verified worktree`);
         const env = workerEnv(request.env, home);
         const excludeTools = Array.isArray(request.excludeTools) ? request.excludeTools.filter((name): name is string => typeof name === "string" && name !== "") : [];
-        const existing = await byTask(home, task);
+        const existing = runner === undefined ? await byTask(home, task) : runner.current ?? undefined;
         if (existing !== undefined && existing.retired !== true && existing.archived !== true) {
             // The same spawn again (a lost reply): the session it already started.
             return { ok: true, session: existing.session, address: existing.address, model: existing.model, reused: true };
@@ -2609,26 +2763,29 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         const chosen = await selection(request.model, request.thinking);
         if ("ok" in chosen) return chosen;
         const attempt = typeof request.attempt === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(request.attempt) ? request.attempt : request.id;
-        const key = `firstmate-worker-${hash(home)}-${task}-${attempt}`;
+        const key = runner === undefined ? `firstmate-worker-${hash(home)}-${task}-${attempt}` :
+            `fm-runner-worker-${hash(JSON.stringify([runner.port.claim.generation, task, runner.lease, existing?.key ?? "first"]))}`;
+        const start = () => api.start(main, {
+            title: typeof request.title === "string" && request.title !== "" ? request.title : `fm-${task}`,
+            message: WORKER_FIRST_MESSAGE, cwd, model: chosen.model,
+            ...(chosen.thinking === undefined ? {} : { thinking: chosen.thinking }),
+        }, key);
+        if (runner !== undefined) {
+            // Save the key before the first call, so a lost reply never lets the lease go early.
+            const intent = JSON.stringify({ task, lease: runner.lease, key });
+            try { await runner.port.call("worker-intent", [intent]); }
+            catch (error) { return refuse("unconfirmed-start", (error as Error).message); }
+        }
         let started: { session: ConversationId; address: string };
         try {
-            started = await api.start(
-                main,
-                {
-                    title: typeof request.title === "string" && request.title !== "" ? request.title : `fm-${task}`,
-                    message: WORKER_FIRST_MESSAGE,
-                    cwd,
-                    model: chosen.model,
-                    ...(chosen.thinking === undefined ? {} : { thinking: chosen.thinking }),
-                },
-                key,
-            );
+            started = await (runner === undefined ? start() : start().catch(start));
         } catch (error) {
-            return refuse("start", `Pi Pocket refused to start the worker session: ${(error as Error).message}`);
+            return refuse(runner === undefined ? "start" : "unconfirmed-start", `Pi Pocket refused to start the worker session: ${(error as Error).message}`);
         }
         const record: WorkerRecord = {
             task,
             home,
+            ...(runner === undefined ? {} : { runnerGeneration: runner.port.claim.generation }),
             main: Number(main),
             session: Number(started.session),
             address: started.address,
@@ -2641,20 +2798,26 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
             key,
             busy: false,
         };
-        await save(record);
+        if (runner === undefined) await save(record);
+        else {
+            try { await saveRunner(record, runner.port); }
+            catch { return refuse("unconfirmed-start", "the runner did not confirm the worker binding; keep the worktree lease"); }
+        }
 
         return { ok: true, session: record.session, address: record.address, model: record.model, ...(record.thinking === undefined ? {} : { thinking: record.thinking }) };
     }
 
-    async function killWorker(record: WorkerRecord, runtime: Runtime, context: Context, attempt: string): Promise<BridgeResult> {
+    async function killWorker(record: WorkerRecord, runtime: WorkerRuntime, context: Context, attempt: string, runner?: RunnerBridge): Promise<BridgeResult> {
         const api = linked();
-        if (record.retired === true) return { ok: true, archived: record.archived === true, retired: true };
+        if (runner === undefined && record.retired === true) return { ok: true, archived: record.archived === true, retired: true };
         const closed = await stopAndArchiveLinked(api, record.main as unknown as ConversationId,
-            record.address, record.key, attempt, `the worker session ${String(record.session)}`, false);
+            record.address, record.key, attempt, `the worker session ${String(record.session)}`, runner !== undefined);
         if (closed !== undefined) {
-            if (closed.ok) await lane(record.session, () => save({ ...record, archived: true, busy: false }));
+            if (closed.ok) await lane(record.session, () => runner === undefined ? save({ ...record, archived: true, busy: false }) :
+                saveRunner({ ...record, archived: true, busy: false }, runner.port));
             return closed;
         }
+        if (runner !== undefined) return refuse("unsupported", "Pi Pocket cannot stop and archive this runner worker with readback");
         // No stop or archive in this Pi Pocket: abort its run and retire it, so Firstmate never sends to it again.
         const conversation = await runtime.conversation(record.session as unknown as ConversationId, context);
         await conversation?.abort(context);
@@ -2663,16 +2826,21 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         return { ok: true, archived: false, retired: true };
     }
 
-    async function handle(home: string, runtime: Runtime, context: Context, request: BridgeRequest): Promise<BridgeResult> {
+    async function handle(home: string, runtime: WorkerRuntime, context: Context, request: BridgeRequest, runner?: RunnerBridge): Promise<BridgeResult> {
         const main = runtime.conversationId;
         if (request.verb === "status") {
             const api = linked();
-            return { ok: true, pocketVersion: host.pocketVersion ?? "", stop: typeof api?.stop === "function" && typeof api.archive === "function" };
+            const stoppable = typeof api?.stop === "function" && typeof api.archive === "function";
+            if (runner !== undefined && (!stoppable || typeof api.list !== "function" || typeof api.start !== "function" || typeof host.commandEnv !== "function")) {
+                return refuse("unsupported", "runner workers need public linked start, list, stop, archive, and commandEnv");
+            }
+            return { ok: true, pocketVersion: host.pocketVersion ?? "", stop: stoppable };
         }
         if (request.verb === "preflight") return preflight(main, request);
-        if (request.verb === "spawn") return spawnWorker(home, main, request);
-        const record = await bySessionIn(home, request.session);
+        if (request.verb === "spawn") return spawnWorker(home, main, request, runner);
+        const record = runner === undefined ? await bySessionIn(home, request.session) : runner.current ?? undefined;
         if (record === undefined) {
+            if (runner !== undefined) return refuse("missing", "no matching runner worker is recorded; its cleanup is unconfirmed");
             return request.verb === "state" ? { ok: true, state: "missing", busy: "unknown" } : request.verb === "kill" ? { ok: true, archived: false, absent: true } : refuse("missing", `no Pocket worker is recorded for session ${String(request.session)}`);
         }
         if (record.main !== Number(main)) return refuse("foreign", `the worker session ${String(record.session)} belongs to another main session`);
@@ -2681,8 +2849,10 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
                 if (record.retired === true || record.archived === true) return refuse("retired", `the worker for ${record.task} was torn down`);
                 const env = workerEnv(request.env, record.home);
                 await lane(record.session, async () => {
-                    const latest = (await byTask(home, record.task)) ?? record;
-                    await save({ ...latest, env: { ...latest.env, ...env } });
+                    const latest = runner === undefined ? (await byTask(home, record.task)) ?? record : record;
+                    const updated = { ...latest, env: { ...latest.env, ...env } };
+                    if (runner === undefined) await save(updated);
+                    else await saveRunner(updated, runner.port);
                 });
                 return { ok: true };
             }
@@ -2719,10 +2889,49 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
                 return { ok: true, state: "alive", busy: row.busy === true ? "busy" : "idle" };
             }
             case "kill":
-                return killWorker(record, runtime, context, request.id);
+                return killWorker(record, runtime, context, request.id, runner);
         }
 
         return refuse("invalid", `unknown verb ${String(request.verb)}`);
+    }
+
+    async function serveRunner(runtime: WorkerRuntime, context: Context, port: RunnerWorkerPort, token: string): Promise<void> {
+        const signal = context.abortSignal!;
+        while (!signal.aborted) {
+            try {
+                const raw = await port.call("worker-next", [token]);
+                if (raw !== "") {
+                    const next = JSON.parse(raw) as RunnerBridgeRequest;
+                    const result = next.error === undefined ? await handle(port.claim.home, runtime, context, next.request, { ...next, port }) : refuse("scope", next.error);
+                    await port.call("worker-answer", [token, next.request.id, JSON.stringify(result)]);
+                    continue;
+                }
+            } catch (error) {
+                if (signal.aborted) return;
+            }
+            await pause(BRIDGE_POLL_MS, signal);
+        }
+    }
+
+    async function reconcileRunner(runtime: WorkerRuntime, context: Context, port: RunnerWorkerPort): Promise<void> {
+        await ready;
+        const api = linked();
+        const mine = [...bySession.values()].filter((record) => record.runnerGeneration === port.claim.generation &&
+            record.main === Number(runtime.conversationId) && record.archived !== true);
+        if (mine.length === 0 || typeof api?.list !== "function") return;
+        const rows = await api.list(runtime.conversationId);
+        for (const known of mine) {
+            const row = rows.find(({ address }) => address === known.address);
+            if (row === undefined || row.archived === true || typeof row.busy !== "boolean") continue;
+            const event = runnerRunEvents.get(known.session);
+            if (known.busy === row.busy && event === undefined) continue;
+            await lane(known.session, async () => {
+                await port.call("worker-busy", [known.task, String(known.session), row.busy ? "busy" : "idle"]);
+                const latest = bySession.get(known.session);
+                if (latest?.archived !== true && latest !== undefined) bySession.set(known.session, { ...latest, busy: row.busy === true });
+            });
+            if (event === runnerRunEvents.get(known.session)) runnerRunEvents.delete(known.session);
+        }
     }
 
     /** Read, check, and answer every waiting request once. A request that fails the trust check is answered and dropped. */
@@ -2767,7 +2976,7 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
     /** Busy from Pi Pocket's own list, for the run events a restart or reload lost or doubled; then the restart nudges. */
     async function reconcile(home: string, runtime: Runtime, context: Context): Promise<void> {
         await load(home);
-        const mine = [...bySession.values()].filter((record) => record.home === home && record.main === Number(runtime.conversationId) && record.retired !== true && record.archived !== true);
+        const mine = [...bySession.values()].filter((record) => record.runnerGeneration === undefined && record.home === home && record.main === Number(runtime.conversationId) && record.retired !== true && record.archived !== true);
         if (mine.length === 0) return;
         const api = linked();
         const rows = typeof api?.list === "function" ? await api.list(runtime.conversationId).catch(() => undefined) : undefined;
@@ -2874,7 +3083,7 @@ function createWorkers(host: Partial<Host>, web: PocketSurface | undefined) {
         abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
     });
 
-    return { bridge, worker, runEvent, load };
+    return { bridge, worker, runEvent, load, serveRunner, reconcileRunner };
 }
 
 type Workers = ReturnType<typeof createWorkers>;
@@ -2938,7 +3147,8 @@ function registerWorkerEvents(host: Partial<Host>, web: PocketSurface | undefine
                 const record = await workers.worker(command.conversationId);
                 if (record === undefined) return undefined;
                 // A worker's commands never carry a supervisor identity: the bridge and the lock trust none of them.
-                return { ...record.env, FM_HOME: record.home, FM_PI_POCKET_CONVERSATION: "", FM_PI_POCKET_SERVER_PID: "", FM_PI_POCKET_BRIDGE_TOKEN: "" };
+                if (record.runnerGeneration !== undefined && (record.archived === true || command.cwd !== record.cwd)) return undefined;
+                return { ...record.env, FM_HOME: record.home, FM_PI_POCKET_CONVERSATION: "", FM_PI_POCKET_SERVER_PID: "", FM_PI_POCKET_BRIDGE_TOKEN: "", FM_PI_POCKET_RUNNER_BRIDGE: "" };
             }),
         );
     }
@@ -3064,29 +3274,35 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
     registerCalm(host, web);
     registerClient(web);
     const supervision = createSupervision(host);
-    const runner = registerRunnerPreview(host, presented, supervision, web);
-    const watch = createWatchTask(host, supervision, presented);
     const workers = createWorkers(host, web);
+    const runner = registerRunnerPreview(host, presented, supervision, workers, web);
+    const watch = createWatchTask(host, supervision, presented);
     registerWorkerEvents(host, web, workers);
     const lastHomeNotice = new Map<ConversationId, string>();
     const runnerBranchTools = new Set(["read", RUNNER_TOOL, REPORT_TOOL, ...CONTEXT_TOOLS]);
 
     const runnerTool = defineTool({
         name: RUNNER_TOOL,
-        description: "Check the bound Firstmate runner monitor, restore its task, or handle a batch on that runner home. Call drain before handling a runner wake. Only ack the exact receipt after handling. Inbox acknowledgement is separate.",
+        description: "Check the bound Firstmate runner monitor, handle its wake batch, or manage a local Pocket worker. Drain before handling a wake and ack only the exact receipt afterward. Inbox acknowledgement is separate. For worker: provide operation, task, and args as the script arguments after the task ID.",
         parameters: Type.Object({
             action: Type.Union([Type.Literal("status"), Type.Literal("repair"), Type.Literal("read"), Type.Literal("drain"), Type.Literal("ack"),
-                Type.Literal("inbox-read"), Type.Literal("inbox-reply"), Type.Literal("inbox-ack")]),
+                Type.Literal("inbox-read"), Type.Literal("inbox-reply"), Type.Literal("inbox-ack"), Type.Literal("worker"), Type.Literal("return-check")]),
+            operation: Type.Optional(Type.Union([Type.Literal("spawn"), Type.Literal("send"), Type.Literal("control"), Type.Literal("teardown")])),
+            task: Type.Optional(Type.String({ maxLength: 128 })),
+            args: Type.Optional(Type.Array(Type.String({ maxLength: 8192 }), { maxItems: 48 })),
             receipt: Type.Optional(Type.String({ pattern: "^[0-9a-f-]{36}$" })),
             path: Type.Optional(Type.String({ maxLength: 140, description: "For read: state/<task>.status on this runner" })),
             note: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" })),
             text: Type.Optional(Type.String({ maxLength: 8192 })),
         }, { additionalProperties: false }),
-        execute: async ({ action, receipt, path, note, text }, api, context) => {
+        execute: async ({ action, receipt, path, note, text, operation, task, args: workerArgs }, api, context) => {
             const id = api.conversationId;
             try {
                 const actor = await runner?.branchActor(id);
                 if (runner !== undefined && actor !== undefined) {
+                    if (action === "worker" && operation !== undefined && validTask(task) && workerArgs !== undefined) {
+                        return runner.branchWorkerCommand(api, actor, operation, task, workerArgs, context);
+                    }
                     const turn = actor.branch?.turn;
                     if (turn === undefined || !["drain", "ack"].includes(action) || (receipt !== undefined && receipt !== turn.token)
                         || (action === "ack" && (receipt !== turn.token || !turn.reported))) {
@@ -3097,6 +3313,14 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                 }
                 const claim = await runner?.lookup(id);
                 if (runner === undefined || claim === undefined) return say("Runner operation refused: no bound Firstmate runner home.", true);
+                if (action === "return-check") {
+                    const returned = await runner.returnPosture(api, claim, "check", context);
+                    return say(returned.text, !returned.clear);
+                }
+                if (action === "worker") {
+                    if (operation === undefined || !validTask(task) || workerArgs === undefined) return say("Runner lifecycle operations need operation, task, and args.", true);
+                    return runner.workerCommand(api, claim, operation, task, workerArgs, context);
+                }
                 if (action === "repair" || action === "status") {
                     const status = await runner.observe(id, claim, api, "verify", [], context);
                     if (status.kind !== "ready") return say(`Runner monitor not available: ${status.kind === "paused" ? status.detail : status.kind === "changed" ? "ownership changed" : "runner offline"}`, true);
@@ -3152,6 +3376,14 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         execute: async (args, api, context) => {
             const checked = await checkHome(api, context);
             const refused = "posture unchanged: only the main Firstmate conversation that owns the fleet lock enters a posture";
+            const entryArgs = ["enter"];
+            if (args.words !== undefined) entryArgs.push("--words", args.words);
+            if (args.expectedReturn !== undefined) entryArgs.push("--expected-return", args.expectedReturn);
+            if (args.spend !== undefined) entryArgs.push("--spend", String(args.spend));
+            if (checked.kind === "preview" && runner !== undefined && await runner.canUseTool(api.conversationId)) {
+                const claim = await runner.lookup(api.conversationId);
+                if (claim !== undefined) return runner.enterPosture(api, claim, [args.mode, ...entryArgs.slice(1)], context);
+            }
             if (checked.kind !== "local") return say(homeNotice(checked) ?? refused, true);
             const { home } = checked;
             if ((await branchOf(home, api.conversationId)) !== undefined || (await ownership(home, api.conversationId)) !== "owned") {
@@ -3160,10 +3392,6 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
             const state = stateOf(home);
             if (await isFile(join(state, ".afk-return-catchup"))) return say("posture unchanged: run bin/fm-afk-return.sh check and finish return catch-up before entering again", true);
             if (args.mode === "quiet" && (await postureMode(home)) === "away") return say("posture unchanged: finish the /afk return before entering quiet mode", true);
-            const entryArgs = ["enter"];
-            if (args.words !== undefined) entryArgs.push("--words", args.words);
-            if (args.expectedReturn !== undefined) entryArgs.push("--expected-return", args.expectedReturn);
-            if (args.spend !== undefined) entryArgs.push("--spend", String(args.spend));
             // The record owner is the only writer of .afk-contract. The flag keeps the same mode/epoch layout as the
             // daemon's flag, but no launcher or daemon is involved in Pocket's supervision-session posture.
             const entered = await api.memo<{ code: number | null; stdout: string; stderr: string }>("x.firstmate.posture-enter", context) ??
@@ -3482,10 +3710,8 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
         sections: [
             section("firstmate", async (input, context) => {
                 const checked = await checkHome(input, context);
-                if (checked.placement === "server") {
-                    const assigned = await workers.worker(input.conversationId);
-                    if (assigned !== undefined) return workerPrompt(assigned);
-                }
+                const assigned = await workers.worker(input.conversationId);
+                if (assigned !== undefined && (assigned.runnerGeneration !== undefined || checked.placement === "server")) return workerPrompt(assigned);
                 if (checked.kind !== "local") return undefined;
                 const { home } = checked;
                 if ((await branchOf(home, input.conversationId)) !== undefined) return branchPrompt(home);
@@ -3576,15 +3802,24 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     if (checked.kind === "local" && await runner?.isBound(api.conversationId)) {
                         return SUPERVISOR_TOOLS.has(call.name) ? { block: RUNNER_NO_SUPERVISION } : undefined;
                     }
-                    if (checked.placement === "server") {
-                        const assigned = await workers.worker(api.conversationId);
-                        if (assigned !== undefined) {
-                            const block = workerBlock(assigned, call.name);
-                            return block === undefined ? undefined : { block };
-                        }
+                    const assigned = await workers.worker(api.conversationId);
+                    if (assigned?.runnerGeneration !== undefined) {
+                        const source = await runner?.lookup(assigned.main as unknown as ConversationId).catch(() => undefined);
+                        const probe = withAbortSignal(AbortSignal.timeout(HOME_PROBE_MS), context);
+                        const env = await executionEnv(api as HookApi & EnvSource, probe).catch(() => undefined);
+                        const why = assigned.archived === true ? "archived" : source?.generation !== assigned.runnerGeneration ? "claim" :
+                            host.requesterOf?.(api.conversationId) !== source.person || host.roleOf?.(source.person) !== "owner" ? "requester" : env === undefined ? "environment" :
+                            env.id === SERVER_FILES ? "server" : env.cwd !== assigned.cwd ? "worktree" : undefined;
+                        if (why !== undefined) return { block: `The runner worker role cannot verify its runner and worktree (${why}).` };
+                        const block = workerBlock(assigned, call.name);
+                        return block === undefined ? undefined : { block };
+                    }
+                    if (assigned !== undefined && checked.placement === "server") {
+                        const block = workerBlock(assigned, call.name);
+                        return block === undefined ? undefined : { block };
                     }
                     if (checked.kind !== "local") {
-                        if ((call.name === OUTCOMES_TOOL || call.name === PROCESSED_TOOL) && await runner?.canUseTool(api.conversationId)) return undefined;
+                        if ((call.name === OUTCOMES_TOOL || call.name === PROCESSED_TOOL || call.name === POSTURE_TOOL) && await runner?.canUseTool(api.conversationId)) return undefined;
                         const block = SUPERVISOR_TOOLS.has(call.name) ? homeNotice(checked) : undefined;
                         return block === undefined ? undefined : { block };
                     }
@@ -3655,17 +3890,26 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                         const health = runner?.health.get(Number(api.conversationId));
                         const instruction = runnerAllowed ? `${notice === undefined ? "" : `${notice} `}${runnerHealthText(health)} For runner wakes, call ${RUNNER_TOOL} to drain the batch first. Handle the shown work before acknowledging the exact receipt. Use inbox-read, inbox-reply and inbox-ack for notes; wake ack does not ack a note. Use status or repair only to check this monitor.` :
                             `${notice ?? RUNNER_NO_SUPERVISION} Only the bound owner can use ${RUNNER_TOOL}.`;
-                        return { messages: [{ role: "system" as const, content: "", timestamp: Date.now(),
-                            sections: { firstmate_runner: `${RUNNER_PROMPT} ${instruction}${preview?.digest === undefined ? "" : `\n\n${preview.digest}`}` },
+                        const claim = runnerAllowed ? (preview?.claim ?? await runner?.lookup(api.conversationId)) : undefined;
+                        // No need to run a remote posture probe on every ordinary model request.
+                        const marker = checked.kind === "preview" && claim !== undefined && (await checked.ops.info("state/.lock/runner-posture", withAbortSignal(AbortSignal.timeout(HOME_PROBE_MS), context), false).catch(() => undefined))?.kind === "file";
+                        const posture = marker && claim !== undefined ? await runner?.postureRequest(api as HookApi & EnvSource, claim, context).catch(() => undefined) : undefined;
+                        const policy = posture?.mode === "away" ? "AUTOMATIC INPUT WHILE AWAY: Do not end the posture or present captain outcomes. Handle only a safety fallback under the standing away authority." :
+                            posture?.mode === "quiet" ? "QUIET POSTURE: Ordinary chat does not exit it. Only an authenticated /quiet off exits. No away authority applies." :
+                            posture?.mode === "catchup" ? "RETURN CATCH-UP: Do not start ordinary fleet work. Resolve the blockers and use fm_runner with action return-check." : undefined;
+                        const runnerMessages = [{ role: "system" as const, content: "", timestamp: Date.now(),
+                            sections: { ...(policy === undefined ? {} : { firstmate_posture: policy }), firstmate_runner: `${RUNNER_PROMPT} ${runnerAllowed ? RUNNER_WORKER_PROMPT : RUNNER_PREVIEW_PROMPT} ${instruction}${preview?.digest === undefined ? "" : `\n\n${preview.digest}`}` },
                         }, ...messages.map((message) => {
                             if (message.role !== "system" || message.sections === undefined) return message;
                             // Remove server supervision and older runner instructions, not Pi Pocket's project context or skills.
                             const { firstmate, firstmate_runner, ...sections } = message.sections;
                             return { ...message, sections };
-                        })] };
+                        })];
+                        return { messages: posture?.brief === undefined ? runnerMessages : [...runnerMessages,
+                            { role: "user" as const, content: [{ type: "text" as const, text: posture.brief }], timestamp: Date.now() }] };
                     }
-                    const assigned = checked.placement === "server" ? await workers.worker(api.conversationId) : undefined;
-                    if (assigned !== undefined) {
+                    const assigned = await workers.worker(api.conversationId);
+                    if (assigned !== undefined && (assigned.runnerGeneration !== undefined || checked.placement === "server")) {
                         // System messages are patches. Keep only the latest worker instructions and codemode
                         // catalog, so older catalogs cannot expose supervisor tools after registration or a reload.
                         const latest = new Map(["firstmate", "codemode"].map((key) => [
