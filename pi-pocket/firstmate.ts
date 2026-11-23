@@ -235,6 +235,13 @@ const RUNNER_KIND = "x.firstmate.runner-monitor";
 const RUNNER_POLL_MS = positive("FM_POCKET_RUNNER_POLL_MS", 15_000);
 const RUNNER_RETRY_MS = positive("FM_POCKET_RUNNER_RETRY_MS", 90_000);
 const RUNNER_NO_SUPERVISION = "Runner supervision is not enabled for this conversation.";
+const RUNNER_PROMPT = [
+    "This is a Firstmate home on a linked computer.",
+    "The add-on runs the startup preview when the home is claimed. The server-only watcher, session-start digest machinery, turn-end guard, fm-spawn workers, and posture commands are not available here.",
+    "Until Firstmate worker launch is available in step 4, delegate project work to Pi Pocket subagents or linked sessions on the same computer instead of doing it directly.",
+    "Keep design decisions and review their work in the main conversation.",
+    SHELL_MODEL,
+].join(" ");
 // FileSystem.id is a namespace, not a runner ID. Only the documented Node namespace admits legacy server I/O.
 const SERVER_FILES = new NodeExecutionEnv({ cwd: "/" }).id;
 
@@ -3200,7 +3207,6 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     ...inner,
                     render: async (input, context) => {
                         const checked = await checkHome(input, context);
-                        if (checked.kind === "preview" || await runner?.isBound(input.conversationId)) return undefined;
                         if (checked.kind === "local" && (await branchOf(checked.home, input.conversationId)) !== undefined) return undefined;
                         return inner.render(input, context);
                     },
@@ -3307,12 +3313,13 @@ export default function createFirstmate(host: Partial<Host> = {}, web?: PocketSu
                     if (scoped) {
                         const health = runner?.health.get(Number(api.conversationId));
                         const instruction = runnerAllowed ? `${notice === undefined ? "" : `${notice} `}${runnerHealthText(health)} For runner wakes, call ${RUNNER_TOOL} to drain the batch first. Handle the shown work before acknowledging the exact receipt. Use inbox-read, inbox-reply and inbox-ack for notes; wake ack does not ack a note. Use status or repair only to check this monitor.` :
-                            (notice ?? RUNNER_NO_SUPERVISION);
+                            `${notice ?? RUNNER_NO_SUPERVISION} Only the bound owner can use ${RUNNER_TOOL}.`;
                         return { messages: [{ role: "system" as const, content: "", timestamp: Date.now(),
-                            sections: { firstmate_runner: `${instruction} No native Firstmate startup, watcher, lifecycle, or posture commands apply here.${preview?.digest === undefined ? "" : `\n\n${preview.digest}`}` },
+                            sections: { firstmate_runner: `${RUNNER_PROMPT} ${instruction}${preview?.digest === undefined ? "" : `\n\n${preview.digest}`}` },
                         }, ...messages.map((message) => {
                             if (message.role !== "system" || message.sections === undefined) return message;
-                            const { firstmate, firstmate_runner, project_context, skills, ...sections } = message.sections;
+                            // Remove server supervision and older runner instructions, not Pi Pocket's project context or skills.
+                            const { firstmate, firstmate_runner, ...sections } = message.sections;
                             return { ...message, sections };
                         })] };
                     }

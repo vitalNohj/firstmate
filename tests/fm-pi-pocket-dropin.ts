@@ -145,6 +145,12 @@ async function home({ runner = false } = {}): Promise<string> {
     return home;
 }
 
+function fixtureSkill(home: string, name: string): void {
+    const dir = join(home, ".pi", "skills", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: Exercise the prompt in the fixture home.\n---\nFixture skill.\n`);
+}
+
 function lines(path: string): string[] {
     return existsSync(path) ? readFileSync(path, "utf8").split("\n").filter((line) => line !== "") : [];
 }
@@ -938,6 +944,9 @@ test("experiment (b): a server killed while a wake waits redelivers the digest a
 
 test("the supervision session starts once as a visible linked session, takes a task wake, and its captain outcome reaches main through the store", async () => {
     const { app, id, fmHome } = await started();
+    const skill = "server-home-prompt-fixture";
+    fixtureSkill(fmHome, skill);
+    const from = systemPrompts.length;
 
     await say(app, id, "start firstmate");
     const branch = await branchStarted(app, fmHome);
@@ -949,9 +958,14 @@ test("the supervision session starts once as a visible linked session, takes a t
     assert.equal(listed[0]!.cwd, fmHome);
     assert.equal(listed[0]!.linkedFrom?.id, Number(id));
 
-    // The supervision session's prompt is the branch prompt, not main's supervisor contract.
-    assert.ok(systemPrompts.some((prompt) => prompt.includes("You are the SUPERVISION BRANCH of firstmate") && !prompt.includes("# Firstmate fixture")));
-    assert.ok(systemPrompts.some((prompt) => prompt.includes("# Firstmate fixture") && !prompt.includes("SUPERVISION BRANCH")));
+    // Only main sees the home's supervisor contract and skill list.
+    const prompts = systemPrompts.slice(from);
+    const branchPrompts = prompts.filter((prompt) => prompt.includes("You are the SUPERVISION BRANCH of firstmate"));
+    assert.ok(branchPrompts.length > 0, "the linked session receives the branch prompt");
+    assert.ok(branchPrompts.every((prompt) => !prompt.includes("# Firstmate fixture") && !prompt.includes("<skills>")), "the branch omits both sections");
+    const mainPrompt = prompts.find((prompt) => prompt.includes("The Firstmate Pi Pocket drop-in is active in this session"));
+    assert.ok(mainPrompt?.includes("# Firstmate fixture"), "server main receives its AGENTS.md");
+    assert.ok(mainPrompt.includes("<skills>") && mainPrompt.includes(skill), "server main receives its skills");
 
     fire(fmHome, queueTaskWake(fmHome, "task-report"));
     await until(() => outcomeRows(fmHome).length === 1, "the branch's outcome", LONG);
@@ -1434,6 +1448,44 @@ function runnerNotices(app: App, id: number, t: { after: (fn: () => void) => voi
     return () => tab.events.filter((item: { event: string }) => item.event === "notice")
         .map((item: { data: { message: string } }) => item.data.message) as string[];
 }
+
+test("a real runner owner and preview receive the home rules and skills", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
+    const fmHome = await home({ runner: true });
+    const rule = "# Runner home supervisor contract";
+    const skill = "runner-home-prompt-fixture";
+    writeFileSync(join(fmHome, "AGENTS.md"), `${rule}\n`);
+    fixtureSkill(fmHome, skill);
+    optIn(fmHome);
+    rmSync(join(fmHome, "state", ".wake-queue"));
+    const app = await open(mkdtempSync(join(root, "runner-prompt-")), true);
+    apps.push(app);
+    const runner = await runnerFixture(app, fmHome);
+    t.after(runner.close);
+    await runner.connect();
+    const id = (await app.commands.createSession(owner(app), { cwd: fmHome, runner: runner.link.id })).id;
+    await app.commands.configure(id, owner(app), { model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off" });
+    // Fork before the source sends any prompt, so a preview must render its own context.
+    const preview = (await app.commands.fork(id, owner(app), { place: { runner: runner.link.id, cwd: fmHome } })).id;
+
+    for (const [label, session] of [["bound owner", id], ["preview", preview]] as const) {
+        await t.test(label, async () => {
+            const from = systemPrompts.length;
+            await say(app, session, "check the runner home prompt");
+            assert.match(fixtureOwner(fmHome), new RegExp(`\\t${id}\\t`), "the main conversation owns the lock");
+            const prompt = systemPrompts.slice(from).find((text) => text.includes("Firstmate home"));
+            assert.ok(prompt?.includes(rule), `${label} must receive the runner home's AGENTS.md`);
+            assert.ok(prompt.includes("<skills>") && prompt.includes(skill), `${label} must receive the runner home's skills`);
+            assert.ok(prompt.includes("a Firstmate home on a linked computer"));
+            assert.ok(prompt.includes("The server-only watcher, session-start digest machinery, turn-end guard, fm-spawn workers, and posture commands are not available here."));
+            assert.ok(prompt.includes("step 4") && prompt.includes("delegate project work") && prompt.includes("Pi Pocket subagents or linked sessions on the same computer"));
+            assert.ok(prompt.includes("design decisions") && prompt.includes("review their work"));
+            assert.ok(prompt.includes("Every bash call starts a new shell"), "ordinary shell guidance still applies");
+            assert.ok(!prompt.includes("No native Firstmate startup, watcher, lifecycle, or posture commands apply here."));
+            assert.ok(!prompt.includes("The Firstmate Pi Pocket drop-in is active in this session"), "the server supervision section stays out");
+            assert.equal(prompt.includes("For runner wakes, call fm_runner"), session === id, "only the owner gets monitoring instructions");
+        });
+    }
+});
 
 test("a real runner owner and preview keep their ordinary tools", { skip: !runnerCapable, timeout: 60_000 }, async (t) => {
     const fmHome = await home({ runner: true });
